@@ -205,9 +205,9 @@ config_pushplus() {
     esac
 }
 
+# 状态查询含cron 
 show_status() {
     ensure_etf_dir
-
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if ps -p "$PID" > /dev/null 2>&1; then
@@ -218,6 +218,8 @@ show_status() {
     else
         echo "etf.py 当前未在运行。"
     fi
+    echo "当前cron任务："
+    crontab -l 2>/dev/null | grep "etf.sh --cron-check" || echo "无相关cron任务。"
 }
 
 
