@@ -5,6 +5,7 @@ from datetime import datetime
 import requests
 import os
 import logging
+import sys
 
 # ========= 路径 & 日志配置 =========
 
@@ -18,6 +19,7 @@ LOG_FILE = BASE_DIR / "etf.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y.%m.%d.%H:%M:%S",  # 日志时间格式，例如 2025.12.01.13:01:05
     handlers=[
         logging.FileHandler(LOG_FILE, encoding="utf-8"),
         logging.StreamHandler()
@@ -35,7 +37,7 @@ def load_config():
                 logging.error(f"配置文件 {CONFIG_FILE} 中缺少 'ETF_CONFIG' 字段。")
                 sys.exit(1)
             return cfg
-        except Exception as e:
+        except Exception:
             logging.exception(f"读取配置文件 {CONFIG_FILE} 失败")
             sys.exit(1)
     else:
@@ -66,7 +68,7 @@ def load_state():
                 if name not in state:
                     state[name] = {"last_price": None, "tick": 0}
             return state
-        except Exception as e:
+        except Exception:
             logging.exception(f"读取状态文件 {STATE_FILE} 失败，重新初始化状态")
     # 初始 state
     return {name: {"last_price": None, "tick": 0} for name in ETF_CONFIG.keys()}
@@ -76,7 +78,7 @@ def save_state(state):
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception as e:
+    except Exception:
         logging.exception(f"保存状态到 {STATE_FILE} 失败")
 
 
@@ -160,8 +162,8 @@ def send_notification(message: str):
         if data.get("code") != 200:
             logging.error(f"[PushPlus] 推送失败: {data}")
         else:
-            logging.info(f"[PushPlus] 推送成功：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    except Exception as e:
+            logging.info(f"[PushPlus] 推送成功：{datetime.now().strftime('%Y.%m.%d.%H:%M')}")
+    except Exception:
         logging.exception("[PushPlus] 推送异常")
         logging.error(f"消息内容如下：\n{message}")
 
@@ -212,7 +214,12 @@ def check_signals_for_etf(name: str, cfg: dict, state: dict):
     # 根据股息率决定当前网格和买卖模式
     grid_pct, can_buy, can_sell, dy_label = decide_grid_and_mode(cfg)
 
-    # tick 用来让价格查询有个“时间推进”的标记（目前只用于日志 / 模拟）
+    # 仓位参数
+    step_pct = cfg.get("step_pct", 0.01)          # 每格占总资金比例
+    base_units = cfg.get("base_units", 0)         # 底仓份额（如 10000 份）
+    step_units = int(base_units * step_pct) if base_units else 0  # 每格建议买/卖份额
+
+    # tick 用来让价格查询有个“时间推进”的标记（目前只用于状态）
     tick = state.get(name, {}).get("tick", 0) + 1
     state[name]["tick"] = tick
 
@@ -224,7 +231,10 @@ def check_signals_for_etf(name: str, cfg: dict, state: dict):
 
     # 第一次运行：只记录价格，不发信号
     if last_price is None:
-        logging.info(f"{name} 首次价格记录: {current_price}，股息率档位：{dy_label}")
+        logging.info(
+            f"{name} 首次价格记录: {current_price}，股息率档位：{dy_label}，"
+            f"底仓份额: {base_units}，每格建议份额: {step_units}"
+        )
         state[name]["last_price"] = current_price
         return []
 
@@ -237,7 +247,14 @@ def check_signals_for_etf(name: str, cfg: dict, state: dict):
     current_grid = int((price_ratio_now - 1) / grid_pct)
     last_grid = int((price_ratio_last - 1) / grid_pct)
 
-    logging.info(f"{name} 当前价格: {current_price}，股息率档位：{dy_label}，当前格子: {current_grid}，上次格子: {last_grid}")
+    logging.info(
+        f"{name} 当前价格: {current_price}，股息率档位：{dy_label}，"
+        f"当前格子: {current_grid}，上次格子: {last_grid}，"
+        f"底仓份额: {base_units}，每格建议份额: {step_units}"
+    )
+
+    # 时间字符串，例如 2025.12.01.13:01
+    now_str = datetime.now().strftime("%Y.%m.%d.%H:%M")
 
     # 向上穿越，触发卖出网格
     if current_grid > last_grid and can_sell:
@@ -245,12 +262,13 @@ def check_signals_for_etf(name: str, cfg: dict, state: dict):
             level_price = base_price * (1 + g * grid_pct)
             msg = (
                 f"{name} ({symbol}) 触发【卖出网格】:\n"
+                f"- 运行时间: {now_str}\n"
                 f"- 股息率档位: {dy_label}\n"
                 f"- 网格编号: {g}\n"
                 f"- 当前网格间距: {grid_pct:.2%}\n"
                 f"- 参考卖出价: {level_price:.4f}\n"
                 f"- 当前价: {current_price:.4f}\n"
-                f"- 建议：减一档网格仓（例如减 {cfg.get('step_pct', 0.01)*100:.1f}% 总资金），不动底仓。"
+                f"- 建议：减一档网格仓（约减 {step_units} 份，占总资金 {step_pct*100:.1f}%），不动底仓。"
             )
             messages.append(msg)
 
@@ -260,12 +278,13 @@ def check_signals_for_etf(name: str, cfg: dict, state: dict):
             level_price = base_price * (1 + g * grid_pct)
             msg = (
                 f"{name} ({symbol}) 触发【买入网格】:\n"
+                f"- 运行时间: {now_str}\n"
                 f"- 股息率档位: {dy_label}\n"
                 f"- 网格编号: {g}\n"
                 f"- 当前网格间距: {grid_pct:.2%}\n"
                 f"- 参考买入价: {level_price:.4f}\n"
                 f"- 当前价: {current_price:.4f}\n"
-                f"- 建议：加一档网格仓（例如加 {cfg.get('step_pct', 0.01)*100:.1f}% 总资金），不动底仓。"
+                f"- 建议：加一档网格仓（约加 {step_units} 份，占总资金 {step_pct*100:.1f}%），不动底仓。"
             )
             messages.append(msg)
 
@@ -288,7 +307,7 @@ def main_loop():
             try:
                 msgs = check_signals_for_etf(name, cfg, state)
                 all_messages.extend(msgs)
-            except Exception as e:
+            except Exception:
                 logging.exception(f"{name} 检查信号时出错")
 
         if all_messages:
