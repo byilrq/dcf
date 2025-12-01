@@ -34,6 +34,53 @@ ensure_etf_dir() {
     fi
 }
 
+
+add_cron_watchdog() {
+    # 每小时整点检查一次 etf.py 是否在跑
+    local cron_line="0 * * * * bash $SCRIPT_DIR/etf.sh --cron-check >/dev/null 2>&1"
+
+    # 先删掉旧的同类行，再追加新的，避免重复
+    (crontab -l 2>/dev/null | grep -v "etf.sh --cron-check"; echo "$cron_line") | crontab -
+
+    echo "已在 crontab 中添加每小时检查任务。"
+}
+
+remove_cron_watchdog() {
+    # 删除所有包含 etf.sh --cron-check 的行
+    crontab -l 2>/dev/null | grep -v "etf.sh --cron-check" | crontab - 2>/dev/null || true
+    echo "已从 crontab 中移除检查任务（如存在）。"
+}
+
+cron_check() {
+    # 供 cron 调用的检查模式，不进入交互菜单
+    ensure_etf_dir
+
+    # 若有 PushPlus 配置，加载
+    if [ -f "$PUSHPLUS_CONF" ]; then
+        # shellcheck disable=SC1090
+        source "$PUSHPLUS_CONF"
+    fi
+
+    # 如果有 PID 文件且进程还在，就什么都不做
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if ps -p "$PID" > /dev/null 2>&1; then
+            # 正常运行
+            exit 0
+        else
+            # PID 文件有，但进程没了，清理掉
+            rm -f "$PID_FILE"
+        fi
+    fi
+
+    # 走到这里说明进程不在运行 → 自动启动一遍
+    echo "$(date '+%Y.%m.%d.%H:%M:%S') [cron-check] 检测到 etf.py 未运行，自动重启..." >> "$LOG_FILE"
+    nohup "$PYTHON_CMD" "$PY_SCRIPT" >> "$LOG_FILE" 2>&1 &
+    NEW_PID=$!
+    echo "$NEW_PID" > "$PID_FILE"
+    echo "$(date '+%Y.%m.%d.%H:%M:%S') [cron-check] 已重新启动 etf.py，PID=$NEW_PID" >> "$LOG_FILE"
+}
+
 start_etf() {
     ensure_etf_dir
 
@@ -66,13 +113,19 @@ start_etf() {
 
     echo "etf.py 已启动，PID=$NEW_PID"
     echo "日志文件：$LOG_FILE"
+
+    # 添加 cron 看门狗
+    add_cron_watchdog
 }
+
 
 stop_etf() {
     ensure_etf_dir
 
     if [ ! -f "$PID_FILE" ]; then
         echo "没有找到 PID 文件，可能 etf.py 未在运行。"
+        # 既然都停了，也顺手移除 cron 看门狗
+        remove_cron_watchdog
         return
     fi
 
@@ -80,6 +133,7 @@ stop_etf() {
     if ! ps -p "$PID" > /dev/null 2>&1; then
         echo "PID 文件存在但进程未运行，清理 PID 文件。"
         rm -f "$PID_FILE"
+        remove_cron_watchdog
         return
     fi
 
@@ -94,6 +148,9 @@ stop_etf() {
 
     rm -f "$PID_FILE"
     echo "etf.py 已停止。"
+
+    # 停止时移除 cron 看门狗
+    remove_cron_watchdog
 }
 
 update_script() {
@@ -162,6 +219,14 @@ show_status() {
         echo "etf.py 当前未在运行。"
     fi
 }
+
+
+# ========= 若以 --cron-check 启动，则只做检查后退出 =========
+
+if [ "$1" = "--cron-check" ]; then
+    cron_check
+    exit 0
+fi
 
 
 show_menu() {
