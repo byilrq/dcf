@@ -47,6 +47,8 @@ def load_config():
 
 full_config = load_config()
 ETF_CONFIG = full_config["ETF_CONFIG"]
+ROTATION_CONFIG = full_config.get("ROTATION_CONFIG", None)
+
 
 # ========= PushPlus 设置 =========
 
@@ -291,7 +293,137 @@ def check_signals_for_etf(name: str, cfg: dict, state: dict):
 
     state[name]["last_price"] = current_price
     return messages
+    
+# ===============轮动计算函数====================
+def compute_rotation_suggestions():
+    """
+    根据 ROTATION_CONFIG，对一组 ETF（目前两只）给出轮动建议。
+    返回消息字符串列表。
+    """
+    if not ROTATION_CONFIG:
+        return []
+    if not ROTATION_CONFIG.get("enabled", False):
+        return []
 
+    members = ROTATION_CONFIG.get("members", [])
+    if len(members) < 2:
+        return []
+
+    # 只考虑配置里存在的标的
+    etfs = [m for m in members if m in ETF_CONFIG]
+    if len(etfs) < 2:
+        return []
+
+    total_base_units = ROTATION_CONFIG.get("total_base_units", 0)
+    if total_base_units <= 0:
+        # 若未设置，则用各自 base_units 之和
+        total_base_units = sum(ETF_CONFIG[n].get("base_units", 0) for n in etfs)
+    if total_base_units <= 0:
+        return []
+
+    min_w = ROTATION_CONFIG.get("min_weight", 0.3)
+    max_w = ROTATION_CONFIG.get("max_weight", 0.7)
+    rebalance_threshold = ROTATION_CONFIG.get("rebalance_threshold", 0.10)  # 权重偏离目标的阈值
+
+    # 1. 根据股息率计算 score & 初始权重
+    scores = {}
+    for name in etfs:
+        dy = ETF_CONFIG[name].get("dividend_yield", 0.0)
+        scores[name] = max(dy, 0.0)
+
+    total_score = sum(scores.values())
+    if total_score <= 0:
+        return []
+
+    raw_weights = {name: scores[name] / total_score for name in etfs}
+
+    # 2. 限制在 [min_w, max_w] 范围内，然后归一化
+    clipped_weights = {}
+    for name, w in raw_weights.items():
+        clipped_weights[name] = min(max(w, min_w), max_w)
+
+    clipped_sum = sum(clipped_weights.values())
+    weights = {name: clipped_weights[name] / clipped_sum for name in etfs}
+
+    # 3. 根据目标权重 → 目标份额
+    target_units = {name: int(round(total_base_units * weights[name])) for name in etfs}
+    current_units = {name: ETF_CONFIG[name].get("base_units", 0) for name in etfs}
+
+    # 当前真实权重（基于 base_units 估算）
+    current_total_units = sum(current_units.values())
+    if current_total_units <= 0:
+        return []
+
+    current_weights = {name: current_units[name] / current_total_units for name in etfs}
+
+    # 4. 判断是否需要轮动
+    #   若两只都接近目标权重（偏差 < rebalance_threshold/2），则不提示
+    need_rebalance = False
+    for name in etfs:
+        diff_w = abs(current_weights[name] - weights[name])
+        if diff_w >= rebalance_threshold / 2:
+            need_rebalance = True
+            break
+
+    if not need_rebalance:
+        return []
+
+    # 5. 计算建议调整份额：
+    #   从相对贵（权重>目标）的那只减仓，挪到相对便宜的那只
+    #   按 “一进一出” 取最小可行调整
+    diffs = {name: target_units[name] - current_units[name] for name in etfs}
+    # 正数 = 需要增加, 负数 = 需要减少
+    cheap = [name for name in etfs if diffs[name] > 0]
+    expensive = [name for name in etfs if diffs[name] < 0]
+
+    if not cheap or not expensive:
+        return []
+
+    # 为简单起见，只考虑一对（两只）
+    cheap_name = cheap[0]
+    expensive_name = expensive[0]
+
+    # 建议调整份额 = 需要加的份额与需要减的份额绝对值的较小值
+    suggested_units = min(diffs[cheap_name], -diffs[expensive_name])
+
+    # 为了避免非常小的调整，这里要求至少等于“较大一方 step_units”
+    step_units_cheap = int(ETF_CONFIG[cheap_name].get("base_units", 0) * ETF_CONFIG[cheap_name].get("step_pct", 0.01))
+    step_units_expensive = int(ETF_CONFIG[expensive_name].get("base_units", 0) * ETF_CONFIG[expensive_name].get("step_pct", 0.01))
+    min_units = max(step_units_cheap, step_units_expensive, 1)
+
+    if suggested_units < min_units:
+        return []
+
+    now_str = datetime.now().strftime("%Y.%m.%d.%H:%M")
+
+    msg = (
+        f"{ROTATION_CONFIG.get('group_name', '轮动策略')} 触发【轮动建议】:\n"
+        f"- 运行时间: {now_str}\n"
+        f"- 成员ETF: {', '.join(etfs)}\n"
+        f"- 当前份额: {expensive_name}={current_units[expensive_name]}，"
+        f"{cheap_name}={current_units[cheap_name]}\n"
+        f"- 目标份额: {expensive_name}={target_units[expensive_name]}，"
+        f"{cheap_name}={target_units[cheap_name]}\n"
+        f"- 当前权重: {expensive_name}={current_weights[expensive_name]*100:.1f}%，"
+        f"{cheap_name}={current_weights[cheap_name]*100:.1f}%\n"
+        f"- 目标权重: {expensive_name}={weights[expensive_name]*100:.1f}%，"
+        f"{cheap_name}={weights[cheap_name]*100:.1f}%\n"
+        f"- 建议操作: 从减仓约 {suggested_units} 份，"
+        f"轮换到加仓 {suggested_units} 份。\n"
+        f"  说明：基于当前股息率，{cheap_name} 相对更便宜，"
+        f"建议组合向其倾斜。"
+    )
+
+    logging.info(
+        f"轮动建议生成：从 {expensive_name} 减 {suggested_units} 份，"
+        f"加到 {cheap_name}。当前权重: "
+        f"{expensive_name}={current_weights[expensive_name]*100:.1f}%，"
+        f"{cheap_name}={current_weights[cheap_name]*100:.1f}%；"
+        f"目标权重: {expensive_name}={weights[expensive_name]*100:.1f}%，"
+        f"{cheap_name}={weights[cheap_name]*100:.1f}%"
+    )
+
+    return [msg]
 
 # ========= 主循环 =========
 
@@ -302,6 +434,7 @@ def main_loop():
     while True:
         all_messages = []
 
+        # 1. 单标的网格信号
         for name, cfg in ETF_CONFIG.items():
             try:
                 msgs = check_signals_for_etf(name, cfg, state)
@@ -309,6 +442,14 @@ def main_loop():
             except Exception:
                 logging.exception(f"{name} 检查信号时出错")
 
+        # 2. 轮动策略信号（双 ETF 之间）
+        try:
+            rotation_msgs = compute_rotation_suggestions()
+            all_messages.extend(rotation_msgs)
+        except Exception:
+            logging.exception("轮动策略计算时出错")
+
+        # 3. 如有任何信号 → 推送
         if all_messages:
             full_msg = "\n\n".join(all_messages)
             send_notification(full_msg)
@@ -317,8 +458,10 @@ def main_loop():
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
+
 if __name__ == "__main__":
     main_loop()
+
 
 
 
