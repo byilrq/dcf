@@ -73,7 +73,6 @@ def load_state():
     # 初始 state
     return {name: {"last_price": None, "tick": 0} for name in ETF_CONFIG.keys()}
 
-
 def save_state(state):
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -320,5 +319,6 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+
 
 
