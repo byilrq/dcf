@@ -12,7 +12,7 @@ import sys
 BASE_DIR = Path(__file__).parent
 
 # 状态文件 & 配置文件 & 日志文件都放在脚本同目录
-STATE_FILE = BASE_DIR / "etf_monitor_state.json"
+STATE_FILE = BASE_DIR / "etf_monitor.json"
 CONFIG_FILE = BASE_DIR / "etf.conf"
 LOG_FILE = BASE_DIR / "etf.log"
 
@@ -320,4 +320,5 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+
 
