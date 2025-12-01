@@ -4,6 +4,8 @@ from pathlib import Path
 from datetime import datetime
 import math
 import requests
+import os
+
 
 
 # ========= 配置区 =========
@@ -280,3 +282,4 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+
