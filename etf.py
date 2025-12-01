@@ -12,38 +12,20 @@ import os
 
 STATE_FILE = Path("etf_monitor_state.json")
 
-# 监控的ETF，替换代码即可
+# 监控的ETF标的配置文件
+CONFIG_FILE = Path(__file__).parent / "etf.conf"
 
-ETF_CONFIG = {
-    "港股红利ETF": {
-        "symbol": "SH520890",
-        "base_price": 1.10,
+def load_config():
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        print(f"配置文件 {CONFIG_FILE} 不存在，请先创建。")
+        exit(1)
 
-        # 当前估计股息率（手动维护，先简单来）
-        "dividend_yield": 0.068,   # 6.8%
+full_config = load_config()
 
-        # 不同估值档位的网格间距（可以按你喜好微调）
-        "grid_low": 0.03,          # 股息率 >= 7% 时
-        "grid_mid": 0.04,          # 股息率 6~7%
-        "grid_high": 0.05,         # 股息率 5~6%
-        "grid_expensive": 0.06,    # 股息率 <5% 时（只是给卖出用）
-
-        # 每个网格建议加/减仓的比例（占总资金）
-        "step_pct": 0.01           # 每格 1% 总资金
-    },
-    "A股红利ETF": {
-        "symbol": "SH515080",
-        "base_price": 1.20,
-        "dividend_yield": 0.062,   # 6.2%
-
-        "grid_low": 0.03,
-        "grid_mid": 0.04,
-        "grid_high": 0.05,
-        "grid_expensive": 0.06,
-
-        "step_pct": 0.01
-    }
-}
+ETF_CONFIG = full_config["ETF_CONFIG"]
 
 
 # pushplus 设置
@@ -282,4 +264,5 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+
 
