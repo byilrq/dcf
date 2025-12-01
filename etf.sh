@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 
+# 自动为脚本加执行权限（即使你是 bash etf.sh，也不会出问题）
+chmod +x "$0"
+
 # ========= 基本配置 =========
 
-# 脚本所在目录
+# 当前脚本所在目录（你是 wget 到 /root 下，那就是 /root）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Python 脚本名字
+# Python 脚本（监控程序）
 PY_SCRIPT="$SCRIPT_DIR/etf.py"
 
-# Python 命令（如果你用虚拟环境，可以改这里）
+# Python 命令（如果以后用虚拟环境，再改这里）
 PYTHON_CMD="python3"
 
 # 进程 PID 文件 & 日志文件
 PID_FILE="$SCRIPT_DIR/etf.pid"
 LOG_FILE="$SCRIPT_DIR/etf.log"
 
-# PushPlus 本地配置文件（不会上传到 GitHub）
+# PushPlus 配置文件（不会被提交到 GitHub）
 PUSHPLUS_CONF="$HOME/.etf_pushplus.conf"
 
 
@@ -23,17 +26,16 @@ PUSHPLUS_CONF="$HOME/.etf_pushplus.conf"
 
 start_etf() {
     if [ ! -f "$PY_SCRIPT" ]; then
-        echo "找不到 $PY_SCRIPT，请检查路径。"
+        echo "找不到 $PY_SCRIPT，请先用菜单 3 下载 etf.py。"
         return
     fi
 
-    # 如果有配置文件，加载 PushPlus Token
+    # 如果有 PushPlus 配置，就加载 Token
     if [ -f "$PUSHPLUS_CONF" ]; then
         # shellcheck disable=SC1090
         source "$PUSHPLUS_CONF"
     else
-        echo "提示：未找到 PushPlus 配置文件：$PUSHPLUS_CONF"
-        echo "启动后只会在终端/日志打印，不会推送。"
+        echo "提示：未配置 PushPlus Token，脚本只会打印，不会推送。"
     fi
 
     # 检查是否已有运行中的进程
@@ -47,14 +49,12 @@ start_etf() {
 
     echo "启动 etf.py ..."
 
-    # 后台运行，并记录 PID
     nohup "$PYTHON_CMD" "$PY_SCRIPT" >> "$LOG_FILE" 2>&1 &
-
     NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"
 
     echo "etf.py 已启动，PID=$NEW_PID"
-    echo "日志输出：$LOG_FILE"
+    echo "日志文件：$LOG_FILE"
 }
 
 stop_etf() {
@@ -65,7 +65,7 @@ stop_etf() {
 
     PID=$(cat "$PID_FILE")
     if ! ps -p "$PID" > /dev/null 2>&1; then
-        echo "PID=$PID 的进程不存在，清理 PID 文件。"
+        echo "PID 文件存在但进程未运行，清理 PID 文件。"
         rm -f "$PID_FILE"
         return
     fi
@@ -73,7 +73,6 @@ stop_etf() {
     echo "正在停止 etf.py (PID=$PID)..."
     kill "$PID"
 
-    # 等几秒看是否退出
     sleep 2
     if ps -p "$PID" > /dev/null 2>&1; then
         echo "进程未退出，尝试强制 kill -9..."
@@ -85,25 +84,26 @@ stop_etf() {
 }
 
 update_script() {
-    echo "下载最新 etf.py..."
-    wget -N --no-check-certificate https://raw.githubusercontent.com/byilrq/etf/main/etf.py -O "$SCRIPT_DIR/etf.py"
+    echo "下载最新 etf.py ..."
+    wget -N --no-check-certificate \
+      https://raw.githubusercontent.com/byilrq/etf/main/etf.py \
+      -O "$SCRIPT_DIR/etf.py"
 
     if [ $? -eq 0 ]; then
-        echo "etf.py 已成功更新。"
+        echo "etf.py 已成功更新到最新版本。"
     else
         echo "更新失败，请检查网络或 GitHub 路径。"
     fi
 }
 
-
 config_pushplus() {
-    echo "当前 PushPlus 配置文件：$PUSHPLUS_CONF"
+    echo "当前 PushPlus 配置文件路径：$PUSHPLUS_CONF"
 
     if [ -f "$PUSHPLUS_CONF" ]; then
-        echo "已存在配置文件，内容为："
+        echo "已存在配置文件，当前内容为："
         grep "PUSHPLUS_TOKEN" "$PUSHPLUS_CONF" || echo "(未找到 PUSHPLUS_TOKEN 行)"
     else
-        echo "尚未创建配置文件。"
+        echo "尚未创建 PushPlus 配置文件。"
     fi
 
     echo
@@ -122,8 +122,8 @@ config_pushplus() {
             } > "$PUSHPLUS_CONF"
 
             chmod 600 "$PUSHPLUS_CONF"
-            echo "已写入配置到 $PUSHPLUS_CONF，并设置权限为 600。"
-            echo "下次通过菜单启动脚本时会自动加载该 Token。"
+            echo "已写入 Token 到 $PUSHPLUS_CONF，并设置权限为 600。"
+            echo "下次使用菜单 1 启动时，会自动加载该 Token。"
             ;;
         *)
             echo "已取消修改。"
@@ -137,15 +137,13 @@ show_status() {
         if ps -p "$PID" > /dev/null 2>&1; then
             echo "etf.py 正在运行（PID=$PID）。"
         else
-            echo "PID 文件存在，但进程不在运行。"
+            echo "PID 文件存在，但进程未运行。"
         fi
     else
         echo "etf.py 当前未在运行。"
     fi
 }
 
-
-# ========= 菜单 =========
 
 show_menu() {
     echo "==============================="
@@ -154,32 +152,24 @@ show_menu() {
     echo "==============================="
     echo "1) 启动脚本"
     echo "2) 停止脚本"
-    echo "3) 更新脚本 (git pull)"
+    echo "3) 更新脚本 (下载最新 etf.py)"
     echo "4) PushPlus 推送设置"
     echo "5) 查看运行状态"
     echo "0) 退出"
     echo "==============================="
 }
 
+# ========= 主循环 =========
+
 while true; do
     show_menu
     read -r -p "请选择操作: " choice
     case "$choice" in
-        1)
-            start_etf
-            ;;
-        2)
-            stop_etf
-            ;;
-        3)
-            update_script
-            ;;
-        4)
-            config_pushplus
-            ;;
-        5)
-            show_status
-            ;;
+        1) start_etf ;;
+        2) stop_etf ;;
+        3) update_script ;;
+        4) config_pushplus ;;
+        5) show_status ;;
         0)
             echo "退出管理脚本。"
             exit 0
