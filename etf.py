@@ -43,7 +43,7 @@ ETF_CONFIG = full_config["ETF_CONFIG"]
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
 PUSHPLUS_URL = "http://www.pushplus.plus/send"
 # 轮询间隔（秒）
-POLL_INTERVAL_SECONDS = 10 # 调试用，实盘可改为 600（10 分钟）
+POLL_INTERVAL_SECONDS = 60 # 调试用，实盘可改为 600（10 分钟）
 # ========= 状态读写 =========
 def load_state():
     if STATE_FILE.exists():
@@ -255,3 +255,4 @@ def main_loop():
         time.sleep(POLL_INTERVAL_SECONDS)
 if __name__ == "__main__":
     main_loop()
+
