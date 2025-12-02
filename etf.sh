@@ -222,6 +222,206 @@ show_status() {
     crontab -l 2>/dev/null | grep "etf.sh --cron-check" || echo "无相关cron任务。"
 }
 
+# 利润计算
+etf_profit() {
+    local log_file="${ETF_DIR}/trade_log.csv"
+
+    echo "================================"
+    echo "  ETF 网格策略 收益分析"
+    echo "  交易流水文件: ${log_file}"
+    echo "================================"
+
+    if [[ ! -f "$log_file" ]]; then
+        echo "错误：未找到交易流水文件：${log_file}"
+        echo "请确认策略已产生日志（trade_log.csv）后再执行分析。"
+        return 1
+    fi
+
+    python3 - "$log_file" << 'PYCODE'
+import csv
+import sys
+import os
+from collections import defaultdict
+from datetime import datetime
+
+trade_log_path = sys.argv[1]
+
+# ====== 读取 CSV，并尽量按日期排序 ======
+rows = []
+with open(trade_log_path, newline='', encoding='utf-8') as f:
+    reader = csv.DictReader(f)
+    required_cols = {"date", "etf_name", "symbol", "price", "qty", "side", "reason"}
+    if not required_cols.issubset(reader.fieldnames or []):
+        raise SystemExit(
+            f"CSV 字段缺失，至少需要字段：{', '.join(sorted(required_cols))}\n"
+            f"当前字段：{reader.fieldnames}"
+        )
+
+    for r in reader:
+        rows.append(r)
+
+def parse_dt(s):
+    # 尝试按常见格式解析日期；失败则返回 None，保持原顺序
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y.%m.%d.%H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            pass
+    return None
+
+# 尽可能按日期排序（无效日期的保持原顺序放在前面）
+rows_with_dt = []
+rows_no_dt = []
+for r in rows:
+    dt_obj = parse_dt(r.get("date", ""))
+    if dt_obj is None:
+        rows_no_dt.append(r)
+    else:
+        rows_with_dt.append((dt_obj, r))
+
+rows_with_dt.sort(key=lambda x: x[0])
+ordered_rows = rows_no_dt + [r for _, r in rows_with_dt]
+
+# ====== 分析逻辑 ======
+class ETFStat:
+    def __init__(self, name, symbol):
+        self.name = name
+        self.symbol = symbol
+
+        self.trade_count = 0
+        self.buy_count = 0
+        self.sell_count = 0
+
+        self.buy_qty = 0
+        self.sell_qty = 0
+
+        self.position = 0      # 当前持仓份额
+        self.avg_cost = 0.0    # 当前持仓的加权平均成本
+
+        self.realized_pnl = 0.0
+        self.realized_by_reason = defaultdict(float)
+
+    def on_buy(self, price, qty, reason):
+        self.trade_count += 1
+        self.buy_count += 1
+        self.buy_qty += qty
+
+        # 加权平均成本更新
+        total_cost_before = self.avg_cost * self.position
+        total_cost_after = total_cost_before + price * qty
+        self.position += qty
+        if self.position > 0:
+            self.avg_cost = total_cost_after / self.position
+        else:
+            self.avg_cost = 0.0
+
+    def on_sell(self, price, qty, reason):
+        self.trade_count += 1
+        self.sell_count += 1
+        self.sell_qty += qty
+
+        # 用当前 avg_cost 估算已实现收益（简化：不做逐笔 FIFO）
+        realized = (price - self.avg_cost) * qty
+        self.realized_pnl += realized
+        self.realized_by_reason[reason or "UNKNOWN"] += realized
+
+        self.position -= qty
+        if self.position <= 0:
+            self.position = max(self.position, 0)
+            self.avg_cost = 0.0
+
+# 每只 ETF 的统计
+etf_stats = {}
+
+# ====== 逐行处理交易 ======
+for r in ordered_rows:
+    try:
+        name = r.get("etf_name", "").strip() or "UNKNOWN"
+        symbol = r.get("symbol", "").strip() or ""
+        price = float(r.get("price", 0.0))
+        qty = int(float(r.get("qty", 0)))
+        side = (r.get("side") or "").strip().upper()
+        reason = (r.get("reason") or "").strip().upper()
+    except Exception as e:
+        print(f"跳过无法解析的行：{r}，错误：{e}", file=sys.stderr)
+        continue
+
+    key = (name, symbol)
+    if key not in etf_stats:
+        etf_stats[key] = ETFStat(name, symbol)
+    stat = etf_stats[key]
+
+    if side == "BUY":
+        stat.on_buy(price, qty, reason)
+    elif side == "SELL":
+        stat.on_sell(price, qty, reason)
+    else:
+        print(f"警告：未知 side={side}，行数据：{r}", file=sys.stderr)
+
+# ====== 汇总输出 ======
+print(f"======== ETF 交易流水分析 ========")
+print(f"文件：{os.path.abspath(trade_log_path)}")
+print(f"总记录数：{len(ordered_rows)}")
+print()
+
+# 总体统计（按“网格 vs 非网格”）
+total_realized = 0.0
+total_grid_realized = 0.0
+total_non_grid_realized = 0.0
+
+def is_grid_reason(reason: str) -> bool:
+    \"\"\"网格收益的定义：reason 中包含 BOX_GRID（比如 BOX_GRID_SELL / BOX_GRID_BUY）\"\"\"
+    return "BOX_GRID" in reason
+
+for (name, symbol), stat in sorted(etf_stats.items(), key=lambda x: x[0][0]):
+    print(f"--- 标的：{name} ({symbol}) ---")
+    print(f"成交笔数：{stat.trade_count}  （买入 {stat.buy_count} 笔 / 卖出 {stat.sell_count} 笔）")
+    print(f"成交数量：买入 {stat.buy_qty} 份 / 卖出 {stat.sell_qty} 份")
+    print(f"当前持仓：{stat.position} 份")
+
+    if stat.position > 0:
+        print(f"当前持仓成本（加权平均）：{stat.avg_cost:.4f}")
+    else:
+        print(f"当前无持仓（或持仓为 0），成本记为 0")
+
+    print(f"已实现收益合计（所有 reason）：{stat.realized_pnl:.2f}")
+
+    # 按 reason 细分
+    if stat.realized_by_reason:
+        print("已实现收益按原因拆分：")
+        for reason, pnl in sorted(stat.realized_by_reason.items(), key=lambda x: -x[1]):
+            print(f"  {reason:<20} : {pnl:>10.2f}")
+    else:
+        print("尚无任何卖出成交记录（未产生已实现收益）")
+
+    # 网格 vs 非网格拆分（仅对 SELL 的 realized 有意义）
+    grid_pnl = sum(p for r, p in stat.realized_by_reason.items() if is_grid_reason(r))
+    non_grid_pnl = stat.realized_pnl - grid_pnl
+
+    print(f"  其中：")
+    print(f"    网格相关已实现收益（reason 含 BOX_GRID）：{grid_pnl:.2f}")
+    print(f"    非网格已实现收益：{non_grid_pnl:.2f}")
+    print()
+
+    total_realized += stat.realized_pnl
+    total_grid_realized += grid_pnl
+    total_non_grid_realized += non_grid_pnl
+
+print("======== 全部 ETF 汇总 ========")
+print(f"所有标的合计已实现收益：{total_realized:.2f}")
+print(f"  其中：网格相关已实现收益：{total_grid_realized:.2f}")
+print(f"        非网格已实现收益：{total_non_grid_realized:.2f}")
+
+if abs(total_realized) > 1e-8:
+    grid_ratio = total_grid_realized / total_realized * 100
+    print(f"  网格收益占全部已实现收益比例：{grid_ratio:.2f}%")
+else:
+    print("  目前总已实现收益为 0，无法计算网格收益占比。")
+
+print("================================")
+
+PYCODE
+}
 
 # ========= 若以 --cron-check 启动，则只做检查后退出 =========
 
@@ -242,6 +442,7 @@ show_menu() {
     echo "3) 更新脚本"
     echo "4) PushPlus设置"
     echo "5) 查看运行状态"
+    echo "6) 分析收益"
     echo "0) 退出"
     echo "==============================="
 }
@@ -257,6 +458,7 @@ while true; do
         3) update_script ;;
         4) config_pushplus ;;
         5) show_status ;;
+        6) etf_profit ;;
         0)
             echo "退出管理脚本。"
             exit 0
