@@ -9,28 +9,28 @@ chmod +x "$0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 所有运行时文件都放在 dcf 子目录中，避免把 /root 搞乱
-ETF_DIR="$SCRIPT_DIR/dcf"
+DCF_DIR="$SCRIPT_DIR/dcf"
 
 # Python 监控脚本路径
-PY_SCRIPT="$ETF_DIR/dcf.py"
+PY_SCRIPT="$DCF_DIR/dcf.py"
 
 # Python 命令（如未来用虚拟环境，再改这里）
 PYTHON_CMD="python3"
 
 # PID & 日志文件也放在 dcf 目录
-PID_FILE="$ETF_DIR/dcf.pid"
-LOG_FILE="$ETF_DIR/dcf.log"
+PID_FILE="$DCF_DIR/dcf.pid"
+LOG_FILE="$DCF_DIR/dcf.log"
 
 # PushPlus 配置也放在 dcf 目录
-PUSHPLUS_CONF="$ETF_DIR/push.conf"
+PUSHPLUS_CONF="$DCF_DIR/push.conf"
 
 
 # ========= 公共函数 =========
 
 ensure_dcf_dir() {
-    if [ ! -d "$ETF_DIR" ]; then
-        echo "创建目录: $ETF_DIR"
-        mkdir -p "$ETF_DIR"
+    if [ ! -d "$DCF_DIR" ]; then
+        echo "创建目录: $DCF_DIR"
+        mkdir -p "$DCF_DIR"
     fi
 }
 
@@ -157,7 +157,7 @@ stop_dcf() {
 update_script() {
     ensure_dcf_dir
 
-    echo "下载最新 dcf.py 到 $ETF_DIR ..."
+    echo "下载最新 dcf.py 到 $DCF_DIR ..."
     wget -N --no-check-certificate \
       https://raw.githubusercontent.com/byilrq/dcf/main/dcf.py \
       -O "$PY_SCRIPT"
@@ -376,12 +376,12 @@ show_status() {
 #                          利润计算函数
 # ===============================================================
 dcf_profit() {
-    local log_file="${ETF_DIR}/trade_log.csv"
-    local state_file="${ETF_DIR}/dcf_monitor_state.json"
-    local config_file="${ETF_DIR}/dcf.conf"
+    local log_file="${DCF_DIR}/trade_log.csv"
+    local state_file="${DCF_DIR}/dcf_monitor_state.json"
+    local config_file="${DCF_DIR}/dcf.conf"
 
     echo "================================="
-    echo "  ETF 策略收益分析（修复版）"
+    echo "  策略收益分析"
     echo "  交易流水文件: ${log_file}"
     echo "================================="
 
@@ -459,7 +459,7 @@ rows_with_dt.sort(key=lambda x: x[0])
 ordered_rows = rows_no_dt + [r for _, r in rows_with_dt]
 
 # ====== 分析逻辑 ======
-class ETFStat:
+class DCFStat:
     def __init__(self, name, symbol):
         self.name = name
         self.symbol = symbol
@@ -615,7 +615,7 @@ for row in ordered_rows:
         
         key = (name, symbol)
         if key not in dcf_stats:
-            dcf_stats[key] = ETFStat(name, symbol)
+            dcf_stats[key] = DCFStat(name, symbol)
         
         dcf_stats[key].process_trade(row)
         
@@ -624,7 +624,7 @@ for row in ordered_rows:
 
 # ====== 输出分析结果 ======
 print(f"\n{'='*60}")
-print("ETF 策略收益分析（基于完整交易记录）")
+print("DCF 策略收益分析（基于完整交易记录）")
 print(f"{'='*60}")
 
 if not dcf_stats:
@@ -779,9 +779,9 @@ fi
 
 show_menu() {
     echo "==============================="
-    echo "  ETF 网格监控 管理菜单"
+    echo "  DCF 网格监控 管理菜单"
     echo " （管理脚本目录：$SCRIPT_DIR）"
-    echo " （运行文件目录：$ETF_DIR）"
+    echo " （运行文件目录：$DCF_DIR）"
     echo "==============================="
     echo "1) 启动脚本"
     echo "2) 停止脚本"
