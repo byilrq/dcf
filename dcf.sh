@@ -254,6 +254,11 @@ update_script() {
 # 推送设置入口（PushPlus & Telegram）
 # 修复：统一使用 $PUSHPLUS_CONF
 # ============================================
+# ============================================
+# 推送设置入口（PushPlus & Telegram）
+# 修复：统一使用 $PUSHPLUS_CONF
+# 增加：测试推送（PushPlus / Telegram）
+# ============================================
 config_push() {
     ensure_dcf_dir
     ensure_push_conf_file
@@ -277,25 +282,29 @@ config_push() {
     fi
     echo "----------------------------------------"
     echo
-    echo "请选择要配置的推送方式："
-    echo "1) PushPlus"
-    echo "2) Telegram"
+    echo "请选择要配置/测试的推送方式："
+    echo "1) 配置 PushPlus"
+    echo "2) 配置 Telegram"
     echo "3) 两者都配置"
-    echo "4) 退出"
+    echo "4) 发送测试消息到 PushPlus"
+    echo "5) 发送测试消息到 Telegram"
+    echo "6) 退出"
 
-    read -r -p "请选择 [1-4]: " choice
+    read -r -p "请选择 [1-6]: " choice
     echo
 
     case "$choice" in
         1) config_pushplus ;;
         2) config_telegram ;;
         3) config_pushplus; echo; config_telegram ;;
-        4) echo "已取消修改。"; return ;;
+        4) test_pushplus ;;
+        5) test_telegram ;;
+        6) echo "已取消修改。"; return ;;
         *) echo "无效的选择，已取消。"; return ;;
     esac
 
-    chmod 600 "$PUSHPLUS_CONF"
-    echo "配置文件已更新并设置权限为 600：$PUSHPLUS_CONF"
+    chmod 600 "$PUSHPLUS_CONF" 2>/dev/null || true
+    echo "配置文件权限已设置为 600：$PUSHPLUS_CONF"
     echo "你现在在 dcf 目录里应该能看到：$(basename "$PUSHPLUS_CONF")"
 }
 
@@ -387,6 +396,98 @@ config_telegram() {
             ;;
     esac
 }
+# ============================================
+# 发送测试消息到 PushPlus
+# ============================================
+test_pushplus() {
+    ensure_dcf_dir
+    ensure_push_conf_file
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "错误：未安装 curl，无法发送测试消息。"
+        echo "Debian/Ubuntu: apt-get update && apt-get install -y curl"
+        echo "CentOS/RHEL:   yum install -y curl"
+        return 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$PUSHPLUS_CONF" 2>/dev/null || true
+
+    if [[ -z "${PUSHPLUS_TOKEN:-}" ]]; then
+        echo "PUSHPLUS_TOKEN 未配置，请先在菜单中配置 PushPlus。"
+        return 1
+    fi
+
+    local title="DCF 测试 PushPlus"
+    local content="PushPlus 测试消息发送成功 ✅\n时间：$(date '+%Y-%m-%d %H:%M:%S')\n主机：$(hostname)\n"
+
+    echo "正在发送 PushPlus 测试消息..."
+    # PushPlus v1 API：form 提交
+    local resp
+    resp="$(curl -sS --max-time 10 \
+        -X POST "http://www.pushplus.plus/send" \
+        -d "token=${PUSHPLUS_TOKEN}" \
+        --data-urlencode "title=${title}" \
+        --data-urlencode "content=${content}" \
+        -d "template=txt" || true)"
+
+    if echo "$resp" | grep -qiE '"code"[[:space:]]*:[[:space:]]*0|success'; then
+        echo "PushPlus 测试消息发送成功。"
+        return 0
+    fi
+
+    echo "PushPlus 测试消息可能发送失败，返回："
+    echo "$resp"
+    return 1
+}
+# ============================================
+# 发送测试消息到 Telegram
+# ============================================
+test_telegram() {
+    ensure_dcf_dir
+    ensure_push_conf_file
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "错误：未安装 curl，无法发送测试消息。"
+        echo "Debian/Ubuntu: apt-get update && apt-get install -y curl"
+        echo "CentOS/RHEL:   yum install -y curl"
+        return 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$PUSHPLUS_CONF" 2>/dev/null || true
+
+    if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+        echo "Telegram 未配置完整：需要 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID"
+        echo "请先在菜单中配置 Telegram。"
+        return 1
+    fi
+
+    local text
+    text=$'DCF Telegram 测试消息发送成功 ✅\n'
+    text+="时间：$(date '+%Y-%m-%d %H:%M:%S')"$'\n'
+    text+="主机：$(hostname)"$'\n'
+
+    echo "正在发送 Telegram 测试消息..."
+    local url="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    local resp
+    resp="$(curl -sS --max-time 10 \
+        -X POST "$url" \
+        -d "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=${text}" \
+        -d "disable_web_page_preview=true" || true)"
+
+    if echo "$resp" | grep -qi '"ok"[[:space:]]*:[[:space:]]*true'; then
+        echo "Telegram 测试消息发送成功。"
+        return 0
+    fi
+
+    echo "Telegram 测试消息可能发送失败，返回："
+    echo "$resp"
+    return 1
+}
+
 
 # ============================================
 # 状态查询（含 cron）
