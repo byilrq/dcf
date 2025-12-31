@@ -995,6 +995,8 @@ if [ "${1:-}" = "--cron-check" ]; then
 fi
 # ================历史回测 =============
 dcf_backtest() {
+    ensure_dcf_dir
+
     echo "=== 单标的回测 ==="
     read -r -p "请输入股票代码（如 SH000001 / SZ000001 / HK00700）: " symbol
     symbol="$(echo "$symbol" | tr -d ' ' | tr '[:lower:]' '[:upper:]')"
@@ -1003,7 +1005,6 @@ dcf_backtest() {
     if [[ -z "$days" ]]; then
         days=800
     fi
-
     if ! [[ "$days" =~ ^[0-9]+$ ]]; then
         echo "❌ 回测天数必须是整数"
         return 1
@@ -1015,15 +1016,31 @@ dcf_backtest() {
         echo "❌ 未找到 dcf.yaml（目录：$DCF_DIR）"
         return 1
     fi
-
     if [[ ! -f "backtest_dcf.py" ]]; then
-        echo "❌ 未找到 backtest_dcf.py（请把我给你的回测脚本放到 $DCF_DIR）"
+        echo "❌ 未找到 backtest_dcf.py（请放到 $DCF_DIR）"
+        return 1
+    fi
+
+    # ✅ 强制用 venv python
+    local VPY="$VENV_DIR/bin/python"
+    if [[ ! -x "$VPY" ]]; then
+        echo "❌ 未找到虚拟环境 Python：$VPY"
+        echo "   请先执行：菜单 3) 安装/更新依赖"
+        return 1
+    fi
+
+    # ✅ 先做依赖自检，避免跑到一半才爆
+    if ! "$VPY" -c "import requests, yaml, json5" >/dev/null 2>&1; then
+        echo "❌ venv 中缺少依赖 requests/yaml/json5"
+        echo "   请先执行：菜单 3) 安装/更新依赖"
+        echo "   或手动：source $VENV_DIR/bin/activate && pip install -U requests pyyaml json5"
         return 1
     fi
 
     echo "🚀 开始回测：$symbol，天数：$days"
-    python3 backtest_dcf.py --config "./dcf.yaml" --symbol "$symbol" --days "$days"
+    "$VPY" backtest_dcf.py --config "./dcf.yaml" --symbol "$symbol" --days "$days"
 }
+
 
 show_menu() {
     echo "==============================="
