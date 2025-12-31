@@ -906,6 +906,37 @@ if [ "${1:-}" = "--cron-check" ]; then
     cron_check
     exit 0
 fi
+# ================历史回测 =============
+dcf_backtest() {
+    echo "=== 单标的回测 ==="
+    read -r -p "请输入股票代码（如 SH000001 / SZ000001 / HK00700）: " symbol
+    symbol="$(echo "$symbol" | tr -d ' ' | tr '[:lower:]' '[:upper:]')"
+
+    read -r -p "请输入回测天数（例如 800；直接回车默认 800）: " days
+    if [[ -z "$days" ]]; then
+        days=800
+    fi
+
+    if ! [[ "$days" =~ ^[0-9]+$ ]]; then
+        echo "❌ 回测天数必须是整数"
+        return 1
+    fi
+
+    cd "$DCF_DIR" || return 1
+
+    if [[ ! -f "dcf.yaml" ]]; then
+        echo "❌ 未找到 dcf.yaml（目录：$DCF_DIR）"
+        return 1
+    fi
+
+    if [[ ! -f "backtest_dcf.py" ]]; then
+        echo "❌ 未找到 backtest_dcf.py（请把我给你的回测脚本放到 $DCF_DIR）"
+        return 1
+    fi
+
+    echo "🚀 开始回测：$symbol，天数：$days"
+    python3 backtest_dcf.py --config "./dcf.yaml" --symbol "$symbol" --days "$days"
+}
 
 show_menu() {
     echo "==============================="
@@ -921,6 +952,7 @@ show_menu() {
     echo "6) 分析收益"
     echo "7) 设置上海时区"
     echo "8) 更新 dcf.py（从GitHub）"
+    echo "9) 单标的回测（输入代码+天数）"
     echo "0) 退出"
     echo "==============================="
 }
@@ -938,6 +970,7 @@ while true; do
         6) dcf_profit ;;
         7) change_tz ;;
         8) update_script ;;
+        9) dcf_backtest ;;
         0)
             echo "退出管理脚本。"
             exit 0
