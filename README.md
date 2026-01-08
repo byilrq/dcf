@@ -2,3 +2,4 @@
 -----------------------------------
 wget -N --no-check-certificate https://raw.githubusercontent.com/byilrq/dcf/main/dcf.sh && bash dcf.sh
 
+wget -N --no-check-certificate https://raw.githubusercontent.com/byilrq/dcf/main/etf.sh && bash etf.sh
