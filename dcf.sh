@@ -58,14 +58,12 @@ update_rely() {
 
     # ---------- 1) 系统依赖 ----------
     echo "[1/4] 安装系统依赖（python3-venv / python3-pip 等）"
-    # 常见：apt 锁/网络问题提示
     if ! sudo apt-get update -y; then
         echo "❌ apt-get update 失败。可能是网络/源/锁占用问题。"
         echo "   你可以先执行：sudo lsof /var/lib/dpkg/lock-frontend 或等待系统自动更新完成。"
         return 1
     fi
 
-    # 这些包覆盖绝大多数场景；build-essential 用于某些包编译（虽不一定需要，但更稳）
     if ! sudo apt-get install -y \
         python3 python3-venv python3-pip \
         ca-certificates curl wget \
@@ -77,14 +75,12 @@ update_rely() {
     # ---------- 2) 创建/更新虚拟环境 ----------
     echo "[2/4] 准备虚拟环境: $VENV_DIR"
 
-    # 如果 venv 目录存在但已损坏（缺少 python），则重建
     if [ -d "$VENV_DIR" ] && [ ! -x "$VENV_DIR/bin/python" ]; then
         echo "⚠️ 检测到虚拟环境可能损坏（缺少 $VENV_DIR/bin/python），将重建..."
         rm -rf "$VENV_DIR"
     fi
 
     if [ ! -d "$VENV_DIR" ]; then
-        # 优先用 python3 创建 venv，避免 $PYTHON_CMD 指向不稳定
         if ! python3 -m venv "$VENV_DIR"; then
             echo "❌ 创建虚拟环境失败。"
             return 1
@@ -97,7 +93,6 @@ update_rely() {
         return 1
     }
 
-    # 统一用 venv 里的 python/pip（避免用到系统 pip）
     local VPY="$VENV_DIR/bin/python"
     local VPIP="$VENV_DIR/bin/pip"
 
@@ -114,11 +109,6 @@ update_rely() {
     # ---------- 3) 安装 Python 依赖 ----------
     echo "[4/4] 安装 Python 依赖"
 
-    # 如果你以后维护 requirements.txt，就优先用它
-    # 示例 requirements.txt:
-    # requests
-    # pyyaml
-    # json5
     if [ -f "$DCF_DIR/requirements.txt" ]; then
         echo "   检测到 requirements.txt，按其安装/更新依赖..."
         if ! $VPY -m pip install -U -r "$DCF_DIR/requirements.txt"; then
@@ -127,8 +117,8 @@ update_rely() {
             return 1
         fi
     else
-        echo "   未检测到 requirements.txt，安装默认依赖（requests / pyyaml / json5）"
-        if ! $VPY -m pip install -U requests pyyaml json5; then
+        echo "   未检测到 requirements.txt，安装默认依赖（requests / pyyaml / json5 / pandas / yfinance / scipy）"
+        if ! $VPY -m pip install -U requests pyyaml json5 pandas yfinance scipy; then
             echo "❌ 依赖安装失败。"
             deactivate || true
             return 1
@@ -136,11 +126,11 @@ update_rely() {
     fi
 
     # ---------- 自检：import 测试 ----------
-    echo "   进行依赖自检（import requests/yaml/json5）..."
+    echo "   进行依赖自检（import requests/yaml/json5/pandas/yfinance/scipy）..."
     if ! $VPY - <<'PY'
 import sys
 ok = True
-for mod in ("requests", "yaml", "json5"):
+for mod in ("requests", "yaml", "json5", "pandas", "yfinance", "scipy"):
     try:
         __import__(mod)
         print(f"✅ import {mod} OK")
@@ -154,12 +144,16 @@ PY
         deactivate || true
         return 1
     fi
-echo "已安装的关键包版本："
-"$VPY" - <<'PY'
-import yaml, json5, requests
+
+    echo "已安装的关键包版本："
+    "$VPY" - <<'PY'
+import yaml, json5, requests, pandas, yfinance, scipy
 print("requests:", requests.__version__)
 print("pyyaml:  ", yaml.__version__)
 print("json5:   ", json5.__version__)
+print("pandas:  ", pandas.__version__)
+print("yfinance:", yfinance.__version__)
+print("scipy:   ", scipy.__version__)
 PY
 
     echo "================================="
