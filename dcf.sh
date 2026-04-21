@@ -29,7 +29,60 @@ PUSHPLUS_CONF="$DCF_DIR/push.conf"
 VENV_DIR="$DCF_DIR/.venv"
 
 
+# ========= 终端颜色（支持时启用） =========
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m'
+    C_RED=$'\033[31m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_BLUE=$'\033[34m'
+    C_MAGENTA=$'\033[35m'
+    C_CYAN=$'\033[36m'
+else
+    C_RESET=""
+    C_BOLD=""
+    C_DIM=""
+    C_RED=""
+    C_GREEN=""
+    C_YELLOW=""
+    C_BLUE=""
+    C_MAGENTA=""
+    C_CYAN=""
+fi
+
 # ========= 公共函数 =========
+
+
+setup_interactive_input() {
+    if [ -t 0 ]; then
+        stty sane 2>/dev/null || true
+        stty erase '^?' 2>/dev/null || true
+        bind "set enable-bracketed-paste off" >/dev/null 2>&1 || true
+        bind "set editing-mode emacs" >/dev/null 2>&1 || true
+    fi
+}
+
+prompt_read() {
+    local __var_name="$1"
+    local __prompt="$2"
+    local __default="${3-}"
+    local __value=""
+
+    if [ -t 0 ]; then
+        setup_interactive_input
+        if [ -n "$__default" ]; then
+            read -e -r -p "$__prompt" -i "$__default" __value || return 1
+        else
+            read -e -r -p "$__prompt" __value || return 1
+        fi
+    else
+        read -r -p "$__prompt" __value || return 1
+    fi
+
+    printf -v "$__var_name" '%s' "$__value"
+}
 
 ensure_dcf_dir() {
     if [ ! -d "$DCF_DIR" ]; then
@@ -66,7 +119,7 @@ update_rely() {
 
     if ! sudo apt-get install -y \
         python3 python3-venv python3-pip \
-        ca-certificates curl wget \
+        ca-certificates curl wget nginx openssl \
         build-essential; then
         echo "❌ apt-get install 失败。"
         return 1
@@ -117,8 +170,8 @@ update_rely() {
             return 1
         fi
     else
-        echo "   未检测到 requirements.txt，安装默认依赖（requests / pyyaml / json5 / pandas / yfinance / scipy）"
-        if ! $VPY -m pip install -U requests pyyaml json5 pandas yfinance scipy; then
+        echo "   未检测到 requirements.txt，安装默认依赖（requests / pyyaml / json5 / pandas / yfinance / scipy / flask / gunicorn / ruamel.yaml / werkzeug）"
+        if ! $VPY -m pip install -U requests pyyaml json5 pandas yfinance scipy flask gunicorn ruamel.yaml werkzeug; then
             echo "❌ 依赖安装失败。"
             deactivate || true
             return 1
@@ -126,17 +179,18 @@ update_rely() {
     fi
 
     # ---------- 自检：import 测试 ----------
-    echo "   进行依赖自检（import requests/yaml/json5/pandas/yfinance/scipy）..."
+    echo "   进行依赖自检（import requests/yaml/json5/pandas/yfinance/scipy/flask/ruamel）..."
     if ! $VPY - <<'PY'
 import sys
 ok = True
-for mod in ("requests", "yaml", "json5", "pandas", "yfinance", "scipy"):
+checks = [("requests","requests"),("yaml","yaml"),("json5","json5"),("pandas","pandas"),("yfinance","yfinance"),("scipy","scipy"),("flask","flask"),("ruamel","ruamel.yaml")]
+for label, mod in checks:
     try:
         __import__(mod)
-        print(f"✅ import {mod} OK")
+        print(f"✅ import {label} OK")
     except Exception as e:
         ok = False
-        print(f"❌ import {mod} FAILED: {e}")
+        print(f"❌ import {label} FAILED: {e}")
 sys.exit(0 if ok else 1)
 PY
     then
@@ -147,13 +201,15 @@ PY
 
     echo "已安装的关键包版本："
     "$VPY" - <<'PY'
-import yaml, json5, requests, pandas, yfinance, scipy
+import yaml, json5, requests, pandas, yfinance, scipy, flask, ruamel.yaml
 print("requests:", requests.__version__)
 print("pyyaml:  ", yaml.__version__)
 print("json5:   ", json5.__version__)
 print("pandas:  ", pandas.__version__)
 print("yfinance:", yfinance.__version__)
 print("scipy:   ", scipy.__version__)
+print("flask:   ", flask.__version__)
+print("ruamel:  ", ruamel.yaml.__version__)
 PY
 
     echo "================================="
@@ -163,6 +219,13 @@ PY
     echo "================================="
 
     deactivate || true
+
+    echo
+    prompt_read _web_ans "是否现在配置 Web 管理端（nginx 819 + 登录页）？(y/n): " "n"
+    if [[ "${_web_ans:-n}" =~ ^[yY]$ ]]; then
+        configure_web_portal
+    fi
+
     return 0
 }
 
@@ -318,25 +381,6 @@ stop_dcf() {
 
     remove_cron_watchdog
 }
-
-# ============================================
-# 更新 dcf.py（从 GitHub 拉取）
-# ============================================
-update_script() {
-    ensure_dcf_dir
-
-    echo "下载最新 dcf.py 到 $DCF_DIR ..."
-    wget -N --no-check-certificate \
-      https://raw.githubusercontent.com/byilrq/dcf/main/dcf.py \
-      -O "$PY_SCRIPT"
-
-    if [ $? -eq 0 ]; then
-        echo "dcf.py 已成功更新到最新版本。"
-    else
-        echo "更新失败，请检查网络或 GitHub 路径。"
-    fi
-}
-
 # ============================================
 # 推送设置入口（PushPlus & Telegram）
 # 修复：统一使用 $PUSHPLUS_CONF
@@ -372,7 +416,7 @@ config_push() {
     echo "5) 发送测试消息到 Telegram"
     echo "6) 退出"
 
-    read -r -p "请选择 [1-6]: " choice
+    prompt_read choice "请选择 [1-6]: "
     echo
 
     case "$choice" in
@@ -401,10 +445,10 @@ config_pushplus() {
         echo "当前 PushPlus Token: (未配置)"
     fi
 
-    read -r -p "是否设置 PushPlus Token？(y/n): " ans
+    prompt_read ans "是否设置 PushPlus Token？(y/n): "
     case "$ans" in
         y|Y)
-            read -r -p "请输入 PushPlus Token（注意不要泄露给他人）: " token
+            prompt_read token "请输入 PushPlus Token（注意不要泄露给他人）: "
             if [ -z "$token" ]; then
                 echo "Token 为空，取消设置。"
                 return
@@ -445,16 +489,16 @@ config_telegram() {
         echo "当前 Telegram Chat ID: (未配置)"
     fi
 
-    read -r -p "是否设置 Telegram 配置？(y/n): " ans
+    prompt_read ans "是否设置 Telegram 配置？(y/n): "
     case "$ans" in
         y|Y)
-            read -r -p "请输入 Telegram Bot Token: " bot_token
+            prompt_read bot_token "请输入 Telegram Bot Token: "
             if [ -z "$bot_token" ]; then
                 echo "Bot Token 为空，取消设置。"
                 return
             fi
 
-            read -r -p "请输入 Telegram Chat ID: " chat_id
+            prompt_read chat_id "请输入 Telegram Chat ID: "
             if [ -z "$chat_id" ]; then
                 echo "Chat ID 为空，取消设置。"
                 return
@@ -584,402 +628,7 @@ show_status() {
     crontab -l 2>/dev/null | grep "dcf.sh --cron-check" || echo "无相关cron任务。"
 }
 
-# ===============================================================
-#                          利润计算函数
-# ===============================================================
-dcf_profit() {
-    local log_file="${DCF_DIR}/trade_log.csv"
-    local state_file="${DCF_DIR}/dcf_monitor_state.json"
-    local config_file="${DCF_DIR}/dcf.conf"
 
-    echo "================================="
-    echo "  策略收益分析"
-    echo "  交易流水文件: ${log_file}"
-    echo "================================="
-
-    if [[ ! -f "$log_file" ]]; then
-        echo "错误：未找到交易流水文件：${log_file}"
-        return 1
-    fi
-
-    python3 - "$log_file" "$state_file" "$config_file" << 'PYCODE'
-import csv
-import sys
-import os
-import json
-from collections import defaultdict
-from datetime import datetime, timedelta
-import math
-
-trade_log_path = sys.argv[1]
-state_file_path = sys.argv[2]
-config_file_path = sys.argv[3]
-
-# ====== 读取数据 ======
-config = {}
-if os.path.exists(config_file_path):
-    try:
-        with open(config_file_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    except Exception as e:
-        print(f"警告：读取配置文件失败: {e}")
-
-state = {}
-if os.path.exists(state_file_path):
-    try:
-        with open(state_file_path, 'r', encoding='utf-8') as f:
-            state = json.load(f)
-    except Exception as e:
-        print(f"警告：读取状态文件失败: {e}")
-
-# ====== 读取交易记录 ======
-rows = []
-with open(trade_log_path, newline='', encoding='utf-8') as f:
-    reader = csv.DictReader(f)
-    required_cols = {"date", "dcf_name", "symbol", "price", "qty", "side", "reason", 
-                     "zone", "pos_before", "pos_after", "avg_cost_before", "avg_cost_after"}
-    
-    if not required_cols.issubset(reader.fieldnames or []):
-        print(f"错误：交易记录文件缺少必要字段")
-        print(f"需要的字段：{', '.join(sorted(required_cols))}")
-        print(f"当前字段：{reader.fieldnames}")
-        print("请先运行修复后的策略程序生成完整的交易记录")
-        sys.exit(1)
-    
-    for r in reader:
-        rows.append(r)
-
-def parse_dt(s):
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y.%m.%d.%H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S"):
-        try:
-            return datetime.strptime(s, fmt)
-        except Exception:
-            pass
-    return None
-
-# 按日期排序
-rows_with_dt = []
-rows_no_dt = []
-for r in rows:
-    dt_obj = parse_dt(r.get("date", ""))
-    if dt_obj is None:
-        rows_no_dt.append(r)
-    else:
-        rows_with_dt.append((dt_obj, r))
-
-rows_with_dt.sort(key=lambda x: x[0])
-ordered_rows = rows_no_dt + [r for _, r in rows_with_dt]
-
-# ====== 分析逻辑 ======
-class DCFStat:
-    def __init__(self, name, symbol):
-        self.name = name
-        self.symbol = symbol
-        
-        self.trade_count = 0
-        self.buy_count = 0
-        self.sell_count = 0
-        
-        self.buy_qty = 0
-        self.sell_qty = 0
-        self.buy_amount = 0.0
-        self.sell_amount = 0.0
-        
-        self.position = 0
-        self.avg_cost = 0.0
-        self.total_investment = 0.0  # 总投入资金
-        
-        self.realized_pnl = 0.0
-        self.realized_by_type = defaultdict(float)
-        self.realized_by_zone = defaultdict(float)
-        
-        self.trades = []
-        self.first_trade_date = None
-        self.last_trade_date = None
-    
-    def process_trade(self, row):
-        try:
-            date_str = row.get("date", "")
-            price = float(row.get("price", 0))
-            qty = int(float(row.get("qty", 0)))
-            side = row.get("side", "").upper()
-            reason = row.get("reason", "").upper()
-            zone = row.get("zone", "")
-            pos_before = int(float(row.get("pos_before", 0))) if row.get("pos_before") else 0
-            pos_after = int(float(row.get("pos_after", 0))) if row.get("pos_after") else 0
-            avg_cost_before = float(row.get("avg_cost_before", 0)) if row.get("avg_cost_before") else 0
-            avg_cost_after = float(row.get("avg_cost_after", 0)) if row.get("avg_cost_after") else 0
-            
-            dt = parse_dt(date_str)
-            if dt:
-                if self.first_trade_date is None or dt < self.first_trade_date:
-                    self.first_trade_date = dt
-                if self.last_trade_date is None or dt > self.last_trade_date:
-                    self.last_trade_date = dt
-            
-            self.trade_count += 1
-            
-            if side == "BUY":
-                self.buy_count += 1
-                self.buy_qty += qty
-                amount = price * qty
-                self.buy_amount += amount
-                self.total_investment += amount
-                
-                # 更新持仓
-                self.position = pos_after
-                self.avg_cost = avg_cost_after if avg_cost_after > 0 else self.avg_cost
-                
-                self.trades.append({
-                    'date': dt or date_str,
-                    'type': 'BUY',
-                    'price': price,
-                    'qty': qty,
-                    'amount': amount,
-                    'reason': reason,
-                    'zone': zone,
-                    'position_after': pos_after,
-                    'avg_cost_after': avg_cost_after
-                })
-                
-            elif side == "SELL":
-                self.sell_count += 1
-                self.sell_qty += qty
-                amount = price * qty
-                self.sell_amount += amount
-                
-                # 计算已实现收益
-                realized_pnl = 0
-                if avg_cost_before > 0:
-                    realized_pnl = (price - avg_cost_before) * qty
-                
-                self.realized_pnl += realized_pnl
-                
-                # 按交易类型分类
-                if "BOX_GRID" in reason:
-                    self.realized_by_type['网格收益'] += realized_pnl
-                elif "ABOVE_120" in reason:
-                    self.realized_by_type['趋势收益'] += realized_pnl
-                elif "BETWEEN_300_150" in reason or "PYRAMID" in reason:
-                    self.realized_by_type['底仓收益'] += realized_pnl
-                else:
-                    self.realized_by_type['其他收益'] += realized_pnl
-                
-                self.realized_by_zone[zone] += realized_pnl
-                
-                # 更新持仓
-                self.position = pos_after
-                self.avg_cost = avg_cost_after if avg_cost_after > 0 else self.avg_cost
-                
-                self.trades.append({
-                    'date': dt or date_str,
-                    'type': 'SELL',
-                    'price': price,
-                    'qty': qty,
-                    'amount': amount,
-                    'realized_pnl': realized_pnl,
-                    'reason': reason,
-                    'zone': zone,
-                    'position_after': pos_after,
-                    'avg_cost_after': avg_cost_after
-                })
-                
-        except Exception as e:
-            print(f"处理交易记录失败: {row}, 错误: {e}")
-    
-    def get_trading_days(self):
-        if self.first_trade_date and self.last_trade_date:
-            return (self.last_trade_date - self.first_trade_date).days + 1
-        return 0
-    
-    def get_annualized_return(self):
-        """计算年化收益率（修正版）"""
-        if self.total_investment == 0 or self.get_trading_days() < 1:
-            return 0.0
-        
-        total_return = self.realized_pnl / self.total_investment
-        years = self.get_trading_days() / 365.0
-        
-        if years > 0 and total_return > -1:
-            return ((1 + total_return) ** (1 / years) - 1) * 100
-        return 0.0
-    
-    def get_current_value(self, current_price=0):
-        """计算当前持仓价值"""
-        if current_price > 0:
-            return self.position * current_price
-        elif self.avg_cost > 0:
-            return self.position * self.avg_cost
-        return 0.0
-    
-    def get_floating_pnl(self, current_price=0):
-        """计算浮动盈亏"""
-        if current_price > 0 and self.position > 0 and self.avg_cost > 0:
-            return (current_price - self.avg_cost) * self.position
-        return 0.0
-
-# ====== 处理所有交易 ======
-dcf_stats = {}
-for row in ordered_rows:
-    try:
-        name = row.get("dcf_name", "").strip() or "UNKNOWN"
-        symbol = row.get("symbol", "").strip() or ""
-        
-        key = (name, symbol)
-        if key not in dcf_stats:
-            dcf_stats[key] = DCFStat(name, symbol)
-        
-        dcf_stats[key].process_trade(row)
-        
-    except Exception as e:
-        print(f"跳过无法处理的记录: {row}, 错误: {e}")
-
-# ====== 输出分析结果 ======
-print(f"\n{'='*60}")
-print("DCF 策略收益分析（基于完整交易记录）")
-print(f"{'='*60}")
-
-if not dcf_stats:
-    print("未找到有效的交易记录")
-    sys.exit(0)
-
-total_realized = 0.0
-total_investment = 0.0
-total_current_value = 0.0
-total_profit_by_type = defaultdict(float)
-
-# 获取当前价格信息
-current_prices = {}
-if state:
-    for dcf_name, dcf_state in state.items():
-        if dcf_name == "_meta":
-            continue
-        current_prices[dcf_name] = dcf_state.get('last_price', 0)
-
-for (name, symbol), stat in sorted(dcf_stats.items(), key=lambda x: x[0][0]):
-    print(f"\n{'='*50}")
-    print(f"标的: {name} ({symbol})")
-    print(f"{'-'*50}")
-    
-    # 基本信息
-    print(f"交易统计:")
-    print(f"  总交易笔数: {stat.trade_count:6d}  (买入: {stat.buy_count:3d} / 卖出: {stat.sell_count:3d})")
-    print(f"  交易数量: 买入 {stat.buy_qty:10,d} 股 / 卖出 {stat.sell_qty:10,d} 股")
-    print(f"  交易金额: 买入 ¥{stat.buy_amount:12,.2f} / 卖出 ¥{stat.sell_amount:12,.2f}")
-    print(f"  总投入资金: ¥{stat.total_investment:12,.2f}")
-    
-    if stat.first_trade_date:
-        days = stat.get_trading_days()
-        print(f"  首笔交易: {stat.first_trade_date.strftime('%Y-%m-%d')}  (运行 {days} 天)")
-    
-    # 持仓信息
-    print(f"\n持仓信息:")
-    print(f"  当前持仓: {stat.position:10,d} 股")
-    print(f"  持仓成本: ¥{stat.avg_cost:10.4f} / 股")
-    
-    # 当前价格和浮动盈亏
-    current_price = current_prices.get(name, stat.avg_cost)
-    current_value = stat.get_current_value(current_price)
-    floating_pnl = stat.get_floating_pnl(current_price)
-    
-    if current_price > 0:
-        print(f"  当前价格: ¥{current_price:10.4f} / 股")
-        print(f"  持仓市值: ¥{current_value:12,.2f}")
-        if stat.avg_cost > 0:
-            pnl_pct = (current_price / stat.avg_cost - 1) * 100
-            print(f"  浮动盈亏: ¥{floating_pnl:12,.2f} ({pnl_pct:+.2f}%)")
-    
-    # 收益分析
-    print(f"\n收益分析:")
-    print(f"  已实现收益: ¥{stat.realized_pnl:12,.2f}")
-    
-    if stat.total_investment > 0:
-        return_pct = (stat.realized_pnl / stat.total_investment) * 100
-        print(f"  收益率: {return_pct:+.2f}%")
-    
-    # 按类型分解收益
-    if stat.realized_by_type:
-        print(f"  收益分解:")
-        for profit_type, amount in sorted(stat.realized_by_type.items()):
-            if amount != 0:
-                pct = (amount / stat.realized_pnl * 100) if stat.realized_pnl != 0 else 0
-                print(f"    {profit_type:<8}: ¥{amount:12,.2f} ({pct:5.1f}%)")
-    
-    # 年化收益率
-    annualized_return = stat.get_annualized_return()
-    if abs(annualized_return) < 100000:  # 过滤异常值
-        print(f"  年化收益率: {annualized_return:+.2f}%")
-    
-    # 交易质量
-    if stat.sell_count > 0:
-        avg_profit = stat.realized_pnl / stat.sell_count
-        print(f"  平均每笔卖出盈利: ¥{avg_profit:10,.2f}")
-    
-    # 累计到总计
-    total_realized += stat.realized_pnl
-    total_investment += stat.total_investment
-    total_current_value += current_value
-    
-    for profit_type, amount in stat.realized_by_type.items():
-        total_profit_by_type[profit_type] += amount
-
-# 总体汇总
-print(f"\n{'='*60}")
-print("总体汇总")
-print(f"{'='*60}")
-
-print(f"总投入资金: ¥{total_investment:,.2f}")
-print(f"总已实现收益: ¥{total_realized:,.2f}")
-
-if total_investment > 0:
-    total_return_pct = (total_realized / total_investment) * 100
-    print(f"总收益率: {total_return_pct:+.2f}%")
-
-# 收益构成
-if total_realized != 0:
-    print(f"收益构成:")
-    for profit_type in ['底仓收益', '网格收益', '趋势收益', '其他收益']:
-        amount = total_profit_by_type.get(profit_type, 0)
-        pct = (amount / total_realized) * 100
-        print(f"  {profit_type:<6}: ¥{amount:12,.2f} ({pct:5.1f}%)")
-
-# 总资产
-total_assets = total_current_value + total_realized
-print(f"\n总资产状况:")
-print(f"  当前持仓市值: ¥{total_current_value:,.2f}")
-print(f"  已实现收益: ¥{total_realized:,.2f}")
-print(f"  总资产: ¥{total_assets:,.2f}")
-
-if total_investment > 0:
-    total_return_all = (total_assets / total_investment - 1) * 100
-    print(f"  综合收益率: {total_return_all:+.2f}%")
-
-# 计算总体年化收益率（简化）
-first_date = min(s.first_trade_date for s in dcf_stats.values() if s.first_trade_date)
-last_date = max(s.last_trade_date for s in dcf_stats.values() if s.last_trade_date)
-
-if first_date and last_date:
-    total_days = (last_date - first_date).days + 1
-    total_years = total_days / 365.0
-    
-    if total_years > 0.01 and total_investment > 0:  # 至少运行3.65天
-        total_return = total_realized / total_investment
-        annualized_return = ((1 + total_return) ** (1 / total_years) - 1) * 100
-        if abs(annualized_return) < 1000:  # 过滤异常值
-            print(f"\n总体年化收益率: {annualized_return:+.2f}%")
-            print(f"运行时间: {total_days} 天 ({total_years:.2f} 年)")
-
-print(f"\n{'='*60}")
-print("说明:")
-print("1. 底仓收益: 在MA300-MA150区间建立底仓和加仓的收益")
-print("2. 网格收益: 在箱体区(MA150-MA150*1.2)网格交易的收益")
-print("3. 趋势收益: 在强势区(>MA150*1.2)减仓的收益")
-print("4. 收益率基于完整交易记录计算，考虑了持仓成本")
-print("5. 年化收益率已过滤异常值，避免数据失真")
-print(f"{'='*60}")
-
-PYCODE
-}
 
 # =================设置时区 =============
 change_tz(){
@@ -993,121 +642,283 @@ if [ "${1:-}" = "--cron-check" ]; then
     cron_check
     exit 0
 fi
-# ================历史回测 =============
-dcf_backtest() {
+
+# ============================================
+# Web 管理端（Flask + gunicorn + nginx:819）
+# ============================================
+WEB_APP_FILE="$DCF_DIR/dcf_web.py"
+WEB_CONF_FILE="$DCF_DIR/web_portal.json"
+WEB_SERVICE_FILE="/etc/systemd/system/dcf-web.service"
+WEB_NGINX_SITE="/etc/nginx/sites-available/dcf-web-819.conf"
+WEB_NGINX_LINK="/etc/nginx/sites-enabled/dcf-web-819.conf"
+WEB_INTERNAL_PORT="1819"
+WEB_PUBLIC_PORT="819"
+
+configure_web_portal() {
     ensure_dcf_dir
 
-    echo "=== 单标的回测 ==="
-    read -r -p "请输入股票代码（如 SH000001 / SZ000001 / HK00700）: " symbol
-    symbol="$(echo "$symbol" | tr -d ' ' | tr '[:lower:]' '[:upper:]')"
-
-    read -r -p "请输入回测天数（例如 800；直接回车默认 800）: " days
-    if [[ -z "$days" ]]; then
-        days=800
-    fi
-    if ! [[ "$days" =~ ^[0-9]+$ ]]; then
-        echo "❌ 回测天数必须是整数"
+    if [ ! -f "$WEB_APP_FILE" ]; then
+        echo "❌ 未找到 $WEB_APP_FILE，请先把 dcf_web.py / web_templates / web_static 放到 $DCF_DIR"
         return 1
     fi
 
-    cd "$DCF_DIR" || return 1
+    local domain="sharq.eu.org"
+    local admin_user="admin"
+    local admin_pass=""
+    local admin_pass2=""
+    local cert_dir="$DCF_DIR/certs"
+    local cert_file="$cert_dir/dcf-web.crt"
+    local key_file="$cert_dir/dcf-web.key"
+    local le_dir="/etc/letsencrypt/live/$domain"
+    local le_fullchain="$le_dir/fullchain.pem"
+    local le_privkey="$le_dir/privkey.pem"
 
-    if [[ ! -f "dcf.yaml" ]]; then
-        echo "❌ 未找到 dcf.yaml（目录：$DCF_DIR）"
+    mkdir -p "$cert_dir"
+
+    echo
+    echo "${C_CYAN}${C_BOLD}Web 管理端配置${C_RESET}"
+    prompt_read domain "请输入访问域名（默认 sharq.eu.org）: " "$domain"
+    domain="${domain:-sharq.eu.org}"
+    prompt_read admin_user "请输入管理账号（默认 admin）: " "$admin_user"
+    admin_user="${admin_user:-admin}"
+    prompt_read admin_pass "请输入登录密码: " ""
+    prompt_read admin_pass2 "请再次输入登录密码: " ""
+
+    if [ -z "$admin_pass" ] || [ "$admin_pass" != "$admin_pass2" ]; then
+        echo "❌ 两次密码不一致或为空。"
         return 1
     fi
-    if [[ ! -f "backtest_dcf.py" ]]; then
-        echo "❌ 未找到 backtest_dcf.py（请放到 $DCF_DIR）"
+
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
+        echo "❌ 未检测到虚拟环境 Python：$VENV_DIR/bin/python，请先执行菜单 3。"
         return 1
     fi
 
-    local VPY="$VENV_DIR/bin/python"
-    local VPIP="$VENV_DIR/bin/pip"
+    local password_hash
+    password_hash="$($VENV_DIR/bin/python - <<PY
+from werkzeug.security import generate_password_hash
+print(generate_password_hash(${admin_pass@Q}))
+PY
+)"
 
-    echo "---------------------------------"
-    echo "诊断信息："
-    echo "SCRIPT_DIR=$SCRIPT_DIR"
-    echo "DCF_DIR=$DCF_DIR"
-    echo "VENV_DIR=$VENV_DIR"
-    echo "VPY=$VPY"
-    echo "---------------------------------"
+    local secret_key
+    secret_key="$($VENV_DIR/bin/python - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
+)"
 
-    if [[ ! -x "$VPY" ]]; then
-        echo "❌ 未找到虚拟环境 Python：$VPY"
+    ADMIN_USER="$admin_user" \
+    PASSWORD_HASH="$password_hash" \
+    SECRET_KEY="$secret_key" \
+    DOMAIN_NAME="$domain" \
+    WEB_CONF_FILE="$WEB_CONF_FILE" \
+    $VENV_DIR/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+cfg = {
+    "app_name": "资产管理系统",
+    "admin_username": os.environ["ADMIN_USER"],
+    "password_hash": os.environ["PASSWORD_HASH"],
+    "secret_key": os.environ["SECRET_KEY"],
+    "domain": os.environ["DOMAIN_NAME"],
+    "public_port": 819,
+    "internal_port": 1819,
+}
+Path(os.environ["WEB_CONF_FILE"]).write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+
+
+    if [ -f "$le_fullchain" ] && [ -f "$le_privkey" ]; then
+        echo "检测到 Let's Encrypt 正式证书，优先使用：$le_dir"
+        cert_file="$le_fullchain"
+        key_file="$le_privkey"
+    else
+        if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
+            echo "未检测到正式证书，生成自签名证书（可后续替换为正式证书）..."
+            openssl req -x509 -nodes -newkey rsa:2048 \
+                -keyout "$key_file" \
+                -out "$cert_file" \
+                -days 3650 \
+                -subj "/CN=$domain" >/dev/null 2>&1
+        fi
+    fi
+
+    echo "检查 Web 程序与模板目录..."
+    if [ ! -d "$DCF_DIR/web_templates" ] || [ ! -d "$DCF_DIR/web_static" ]; then
+        echo "❌ 缺少 web_templates 或 web_static 目录，请确认已复制到 $DCF_DIR"
+        return 1
+    fi
+    if ! (cd "$DCF_DIR" && "$VENV_DIR/bin/python" -c "import dcf_web; print('dcf_web import ok')") ; then
+        echo "❌ dcf_web.py 导入失败，请检查依赖或文件内容。"
+        return 1
+    fi
+
+    sudo tee "$WEB_SERVICE_FILE" >/dev/null <<SERVICE
+[Unit]
+Description=DCF Web Portal
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$DCF_DIR
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$VENV_DIR/bin/gunicorn -w 2 -b 127.0.0.1:$WEB_INTERNAL_PORT dcf_web:app
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+    sudo tee "$WEB_NGINX_SITE" >/dev/null <<NGINX
+server {
+    listen $WEB_PUBLIC_PORT ssl;
+    listen [::]:$WEB_PUBLIC_PORT ssl;
+    server_name $domain;
+
+    ssl_certificate     $cert_file;
+    ssl_certificate_key $key_file;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:$WEB_INTERNAL_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60;
+    }
+}
+NGINX
+
+    sudo ln -sf "$WEB_NGINX_SITE" "$WEB_NGINX_LINK"
+    sudo nginx -t || return 1
+    sudo systemctl daemon-reload
+    sudo systemctl enable dcf-web >/dev/null 2>&1 || true
+    sudo systemctl restart dcf-web
+
+    sleep 2
+    if ! sudo systemctl is-active --quiet dcf-web; then
+        echo "❌ dcf-web 服务启动失败，最近日志如下："
+        sudo systemctl --no-pager --full status dcf-web || true
+        echo "----------------------------------------"
+        sudo journalctl -u dcf-web -n 50 --no-pager || true
+        return 1
+    fi
+
+    if ! curl -ksS "http://127.0.0.1:$WEB_INTERNAL_PORT/login" >/dev/null 2>&1; then
+        echo "❌ 后端服务未正常响应 http://127.0.0.1:$WEB_INTERNAL_PORT/login"
+        sudo journalctl -u dcf-web -n 50 --no-pager || true
+        return 1
+    fi
+
+    sudo systemctl reload nginx
+
+    echo
+    echo "✅ Web 管理端已配置完成"
+    echo "访问地址: https://$domain:$WEB_PUBLIC_PORT/login"
+    if [ "$cert_file" = "$le_fullchain" ]; then
+        echo "证书来源: Let's Encrypt ($le_dir)"
+    else
+        echo "证书来源: 自签名证书 ($cert_file)"
+    fi
+}
+
+
+restart_web_portal() {
+    echo "=============== 重启 Web 管理端 ==============="
+    if [ ! -f "$DCF_DIR/dcf_web.py" ]; then
+        echo "❌ 未找到 $DCF_DIR/dcf_web.py"
+        return 1
+    fi
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
+        echo "❌ 未找到虚拟环境 Python：$VENV_DIR/bin/python"
         echo "   请先执行：菜单 3) 安装/更新依赖"
         return 1
     fi
 
-    echo "Venv Python: $("$VPY" -V 2>/dev/null || true)"
-    echo "Venv pip:    $("$VPIP" -V 2>/dev/null || true)"
-
-    echo "检查 venv 中是否已安装 pyyaml/json5..."
-    "$VPY" - <<'PY' || true
-import sys, pkgutil
-mods = ["requests","yaml","json5"]
-for m in mods:
-    ok = pkgutil.find_loader(m) is not None
-    print(f"{m:<8} => {'OK' if ok else 'MISSING'}")
-PY
-
-    # ✅ 依赖自检，失败则提示并可选择自动安装
-    if ! "$VPY" -c "import requests, yaml, json5" >/dev/null 2>&1; then
-        echo "❌ venv 中缺少依赖 requests / pyyaml / json5"
-        echo "   建议先执行：菜单 3) 安装/更新依赖"
-        read -r -p "是否现在自动在 venv 中安装？(y/n): " ans
-        if [[ "$ans" =~ ^[yY]$ ]]; then
-            "$VPY" -m pip install -U pip setuptools wheel
-            "$VPY" -m pip install -U requests pyyaml json5
-        else
-            return 1
-        fi
-    fi
-
-    # 二次确认
-    if ! "$VPY" -c "import requests, yaml, json5; print('✅ imports ok')" ; then
-        echo "❌ 依赖仍然不完整（可能网络/pip源问题）。"
-        echo "   你可以尝试：$VPY -m pip install -U requests pyyaml json5 -i https://pypi.tuna.tsinghua.edu.cn/simple"
+    echo "检查 nginx 配置..."
+    if ! sudo nginx -t; then
+        echo "❌ nginx 配置检查失败，已取消重启网页端。"
         return 1
     fi
 
-    echo "🚀 开始回测：$symbol，天数：$days"
-    "$VPY" backtest_dcf.py --config "./dcf.yaml" --symbol "$symbol" --days "$days"
+    echo "重启 dcf-web 服务..."
+    sudo systemctl restart dcf-web
+    sleep 1
+
+    if ! sudo systemctl is-active --quiet dcf-web; then
+        echo "❌ dcf-web 服务启动失败，最近日志如下："
+        sudo systemctl --no-pager --full status dcf-web || true
+        echo "--------------------------------------------"
+        sudo journalctl -u dcf-web -n 80 --no-pager || true
+        return 1
+    fi
+
+    echo "重新加载 nginx..."
+    sudo systemctl reload nginx || sudo systemctl restart nginx
+    echo "✅ Web 管理端已重启。"
+    echo "--------------------------------------------"
+    web_portal_status
+}
+
+web_portal_status() {
+    echo "=============== Web 管理端状态 ==============="
+    if [ -f "$WEB_CONF_FILE" ]; then
+        cat "$WEB_CONF_FILE"
+    else
+        echo "web_portal.json 未配置"
+    fi
+    echo "--------------------------------------------"
+    sudo systemctl status dcf-web --no-pager -n 5 2>/dev/null || echo "dcf-web 服务未安装"
+    echo "--------------------------------------------"
+    sudo nginx -t 2>/dev/null || true
 }
 
 
+
+
 show_menu() {
-    echo "==============================="
-    echo "  DCF 网格监控 管理菜单"
-    echo " （管理脚本目录：$SCRIPT_DIR）"
-    echo " （运行文件目录：$DCF_DIR）"
-    echo "==============================="
-    echo "1) 启动脚本"
-    echo "2) 停止脚本"
-    echo "3) 安装/更新依赖"
-    echo "4) Push设置"
-    echo "5) 查看运行状态"
-    echo "6) 分析收益"
-    echo "7) 设置上海时区"
-    echo "8) 更新 dcf.py（从GitHub）"
-    echo "9) 单标的回测（输入代码+天数）"
-    echo "0) 退出"
-    echo "==============================="
+    echo -e "${C_CYAN}===============================${C_RESET}"
+    echo -e "${C_BOLD}${C_GREEN}  DCF 网格监控 管理菜单${C_RESET}"
+    echo -e "${C_DIM} （管理脚本目录：$SCRIPT_DIR）${C_RESET}"
+    echo -e "${C_DIM} （运行文件目录：$DCF_DIR）${C_RESET}"
+    echo -e "${C_CYAN}===============================${C_RESET}"
+    echo -e "${C_YELLOW}1)${C_RESET} 安装/更新依赖"	
+    echo -e "${C_GREEN}2)${C_RESET} 启动脚本"
+    echo -e "${C_RED}3)${C_RESET} 停止脚本"
+    echo -e "${C_BLUE}4)${C_RESET} Push设置"
+    echo -e "${C_CYAN}5)${C_RESET} 查看运行状态"
+    echo -e "${C_YELLOW}6)${C_RESET} 设置上海时区"
+    echo -e "${C_YELLOW}7)${C_RESET} 重启网页端"
+    echo -e "${C_CYAN}8)${C_RESET} 查看网页端状态"
+    echo -e "${C_RED}0)${C_RESET} 退出"
+    echo -e "${C_CYAN}===============================${C_RESET}"
 }
 
 # ========= 主循环 =========
 while true; do
     show_menu
-    read -r -p "请选择操作: " choice
+    echo -ne "${C_BOLD}请选择操作: ${C_RESET}"
+    read -r choice
     case "$choice" in
-        1) start_dcf ;;
-        2) stop_dcf ;;
-        3) update_rely ;;
+	    1) update_rely ;;
+        2) start_dcf ;;
+        3) stop_dcf ;;
         4) config_push ;;
         5) show_status ;;
-        6) dcf_profit ;;
-        7) change_tz ;;
-        8) update_script ;;
-        9) dcf_backtest ;;
+        6) change_tz ;;
+        7) restart_web_portal ;;
+        8) web_portal_status ;;
         0)
             echo "退出管理脚本。"
             exit 0
