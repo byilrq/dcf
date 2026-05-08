@@ -1,0 +1,1015 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
+  <style>
+    .topbar h1{margin-bottom:6px;}
+    .symbol-subtitle{margin:0;color:rgba(235,245,255,.68);font-size:14px;line-height:1.5;letter-spacing:.2px;}
+    .topbar-right{align-self:center;}
+    .current-chip{display:none !important;}
+    .page-nav{
+      position:static !important;
+      top:auto !important;
+      bottom:auto !important;
+      left:auto !important;
+      right:auto !important;
+      transform:none !important;
+      z-index:auto !important;
+      width:min(100%, 760px);
+      margin:18px auto 20px;
+      padding:10px;
+      display:grid;
+      grid-template-columns:repeat(5,minmax(0,1fr));
+      justify-content:center;
+      align-items:center;
+      gap:10px;
+      border-radius:22px;
+      background:linear-gradient(135deg, rgba(42,80,116,.30), rgba(32,100,120,.22));
+      border:1px solid rgba(255,255,255,.16);
+      box-shadow:0 10px 24px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.12);
+      backdrop-filter:blur(18px) saturate(125%);
+      -webkit-backdrop-filter:blur(18px) saturate(125%);
+      box-sizing:border-box;
+    }
+    .page-nav-link{
+      width:100%;
+      min-width:0;
+      min-height:42px;
+      padding:9px 12px;
+      font-size:15px;
+      line-height:1.2;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      box-sizing:border-box;
+      white-space:nowrap;
+    }
+    .action-btn,
+    .artifact-btn{
+      min-height:44px;
+      padding:10px 18px;
+      font-size:15px;
+      line-height:1.2;
+      box-sizing:border-box;
+    }
+    .section-note{margin:4px 0 0;color:rgba(235,245,255,.58);font-size:13px;line-height:1.5;}
+    @media (max-width: 640px){
+      .topbar{padding-bottom:18px;}
+      .topbar h1{font-size:30px;line-height:1.12;}
+      .symbol-subtitle{font-size:13px;}
+      .page-nav{
+        width:calc(100% - 20px);
+        margin:14px auto 18px;
+        padding:8px;
+        gap:6px;
+        border-radius:18px;
+        grid-template-columns:repeat(5,minmax(0,1fr));
+      }
+      .page-nav-link{
+        min-height:38px;
+        padding:8px 5px;
+        font-size:14px;
+        border-radius:13px;
+        text-align:center;
+      }
+      .artifact-row{display:flex;flex-wrap:wrap;gap:10px;}
+      .action-btn,
+      .artifact-btn{width:auto;}
+    }
+    @media (max-width: 360px){
+      .page-nav{width:calc(100% - 12px);padding:6px;gap:5px;}
+      .page-nav-link{font-size:12px;min-height:34px;padding-left:2px;padding-right:2px;}
+    }
+
+    /* === refined topbar and symbol page fixes === */
+    .topbar{
+      width:min(100% - 40px, 960px);
+      margin:18px auto 0;
+      padding:16px 20px;
+      display:flex !important;
+      align-items:center !important;
+      justify-content:space-between !important;
+      gap:14px;
+      border-radius:24px;
+      background:linear-gradient(135deg, rgba(56,92,128,.34), rgba(36,110,130,.24)) !important;
+      border:1px solid rgba(255,255,255,.18);
+      box-shadow:0 12px 30px rgba(0,0,0,.11), inset 0 1px 0 rgba(255,255,255,.14);
+      backdrop-filter:blur(20px) saturate(128%);
+      -webkit-backdrop-filter:blur(20px) saturate(128%);
+      box-sizing:border-box;
+    }
+
+    .topbar::before{
+      content:"";
+      position:absolute;
+      inset:0;
+      border-radius:inherit;
+      background:radial-gradient(circle at 18% 0%, rgba(255,255,255,.16), transparent 36%), linear-gradient(180deg, rgba(255,255,255,.075), transparent 66%);
+      pointer-events:none;
+    }
+    .topbar{position:relative;overflow:hidden;}
+    .topbar-brand,.topbar-right{position:relative;z-index:1;}
+    .topbar-brand{
+      min-width:0;
+      flex:1 1 auto;
+      display:flex;
+      align-items:center;
+      gap:12px;
+    }
+    .topbar-logo{
+      width:46px;
+      height:46px;
+      flex:0 0 46px;
+      object-fit:contain;
+      border-radius:50%;
+      background:rgba(255,255,255,.12);
+      border:1px solid rgba(255,255,255,.20);
+      box-shadow:0 8px 18px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.18);
+      backdrop-filter:blur(10px);
+      -webkit-backdrop-filter:blur(10px);
+      padding:5px;
+      box-sizing:border-box;
+    }
+    .topbar-title-wrap{min-width:0;}
+    .topbar h1{
+      margin:0 !important;
+      font-size:30px;
+      line-height:1.12;
+      letter-spacing:.7px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .symbol-subtitle{display:none !important;}
+    .topbar-right{
+      flex:0 0 auto;
+      margin-left:auto !important;
+      display:flex;
+      align-items:center;
+      justify-content:flex-end;
+    }
+    .logout-btn{
+      flex:0 0 auto;
+      white-space:nowrap;
+      text-align:center;
+    }
+    .symbols-current-card .section-header{
+      margin-bottom:14px;
+    }
+    .symbols-current-card .section-header h2{
+      margin:0;
+    }
+    .symbol-select-field > label{
+      position:absolute;
+      width:1px;
+      height:1px;
+      padding:0;
+      margin:-1px;
+      overflow:hidden;
+      clip:rect(0,0,0,0);
+      white-space:nowrap;
+      border:0;
+    }
+    .symbols-current-card .selected-symbol-select{
+      background-image:none !important;
+      text-shadow:none !important;
+    }
+
+    @media (max-width: 640px){
+      .topbar{
+        width:calc(100% - 24px);
+        margin-top:12px;
+        padding:13px 14px;
+        border-radius:21px;
+        box-shadow:0 10px 24px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.14);
+        flex-direction:row !important;
+      }
+      .topbar-brand{gap:10px;min-width:0;}
+      .topbar-logo{
+        width:40px;
+        height:40px;
+        flex-basis:40px;
+        border-radius:50%;
+        padding:4px;
+      }
+      .topbar h1{
+        font-size:24px !important;
+        max-width:calc(100vw - 172px);
+      }
+      .topbar-right{
+        margin-left:auto !important;
+        align-self:center !important;
+        justify-content:flex-end !important;
+      }
+      .logout-btn{
+        min-height:38px;
+        padding:8px 14px !important;
+        border-radius:14px;
+        font-size:14px;
+      }
+      .page-nav{
+        width:calc(100% - 12px) !important;
+      }
+      .symbol-switcher-row{
+        align-items:stretch;
+      }
+      .symbol-switcher-row .grow{
+        min-width:100%;
+      }
+      .symbol-switcher-row .action-btn{
+        flex:1 1 0;
+      }
+    }
+    @media (max-width: 360px){
+      .topbar{width:calc(100% - 18px);padding:12px 12px;}
+      .topbar-logo{width:38px;height:38px;flex-basis:38px;}
+      .topbar h1{font-size:22px !important;max-width:calc(100vw - 158px);}
+      .logout-btn{padding-left:12px !important;padding-right:12px !important;}
+    }
+
+    /* === non-floating soft glass overrides === */
+    .page-nav{
+      position:static !important;
+      inset:auto !important;
+      transform:none !important;
+      z-index:auto !important;
+      background:linear-gradient(135deg, rgba(54,92,128,.28), rgba(36,102,124,.20)) !important;
+      border-color:rgba(255,255,255,.16) !important;
+      box-shadow:0 10px 24px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.12) !important;
+      backdrop-filter:blur(18px) saturate(125%) !important;
+      -webkit-backdrop-filter:blur(18px) saturate(125%) !important;
+    }
+    .topbar{
+      background:linear-gradient(135deg, rgba(58,94,130,.34), rgba(38,108,128,.24)) !important;
+      border-color:rgba(255,255,255,.18) !important;
+      box-shadow:0 12px 30px rgba(0,0,0,.11), inset 0 1px 0 rgba(255,255,255,.14) !important;
+      backdrop-filter:blur(20px) saturate(128%) !important;
+      -webkit-backdrop-filter:blur(20px) saturate(128%) !important;
+    }
+    .topbar-logo{border-radius:50% !important;}
+
+    /* === backtest return help === */
+    .backtest-run-actions{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      flex-wrap:wrap;
+      margin-top:2px;
+    }
+    .backtest-run-help-btn{
+      width:34px;
+      height:34px;
+      min-width:34px;
+      min-height:34px;
+      padding:0;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:50%;
+      border:1px solid rgba(255,255,255,.24);
+      background:linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.07));
+      color:rgba(245,250,255,.95);
+      font-weight:800;
+      font-size:16px;
+      line-height:1;
+      cursor:pointer;
+      box-shadow:0 8px 18px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.16);
+      backdrop-filter:blur(14px) saturate(130%);
+      -webkit-backdrop-filter:blur(14px) saturate(130%);
+    }
+    .backtest-run-help-btn:hover,
+    .backtest-run-help-btn:active{
+      background:linear-gradient(135deg, rgba(47,214,190,.28), rgba(80,145,255,.12));
+      border-color:rgba(115,235,220,.38);
+    }
+    .return-help-panel{
+      margin:12px 0 0;
+      padding:15px 16px;
+      border-radius:18px;
+      border:1px solid rgba(255,255,255,.16);
+      background:linear-gradient(135deg, rgba(18,48,76,.54), rgba(22,76,92,.36));
+      box-shadow:0 14px 28px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.10);
+      backdrop-filter:blur(18px) saturate(125%);
+      -webkit-backdrop-filter:blur(18px) saturate(125%);
+      color:rgba(240,248,255,.90);
+      font-size:13px;
+      line-height:1.72;
+    }
+    .return-help-panel h3{
+      margin:0 0 8px;
+      font-size:15px;
+      line-height:1.4;
+      color:rgba(255,255,255,.96);
+    }
+    .return-help-panel h4{
+      margin:12px 0 6px;
+      font-size:13px;
+      color:rgba(199,244,238,.96);
+    }
+    .return-help-panel ul{
+      margin:0;
+      padding-left:1.2em;
+    }
+    .return-help-panel li{
+      margin:3px 0;
+    }
+    .return-help-panel code{
+      padding:1px 5px;
+      border-radius:7px;
+      background:rgba(255,255,255,.09);
+      color:rgba(255,255,255,.96);
+      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size:.94em;
+    }
+    .hidden{display:none !important;}
+    @media (max-width:640px){
+      .backtest-run-actions{
+        gap:8px;
+      }
+      .backtest-run-actions .primary-btn{
+        flex:1 1 auto;
+      }
+      .backtest-run-help-btn{
+        width:32px;
+        height:32px;
+        min-width:32px;
+        min-height:32px;
+        font-size:15px;
+      }
+      .return-help-panel{
+        padding:13px 14px;
+        border-radius:16px;
+        font-size:12.5px;
+      }
+    }
+
+    /* === x3-ui inspired dark theme === */
+    body.theme-x3-dark{background:linear-gradient(180deg,#0b1322 0%,#0b1220 48%,#09101d 100%) !important;color:#d9e2ef;}
+    body.theme-x3-dark::before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 18% 4%, rgba(20,184,166,.10), transparent 32%),radial-gradient(circle at 84% 10%, rgba(45,91,150,.13), transparent 34%),linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),linear-gradient(180deg, rgba(255,255,255,.014) 1px, transparent 1px);background-size:auto,auto,44px 44px,44px 44px;opacity:.95;z-index:-1;}
+    body.theme-x3-dark .page-wrap{color:#d9e2ef;}
+    body.theme-x3-dark .topbar{background:linear-gradient(135deg, rgba(24,35,54,.88), rgba(17,41,58,.78)) !important;border-color:rgba(113,134,166,.26) !important;box-shadow:0 22px 55px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.08) !important;}
+    body.theme-x3-dark .topbar::before{background:radial-gradient(circle at 16% 0%, rgba(76,118,164,.20), transparent 36%),radial-gradient(circle at 88% 12%, rgba(20,184,166,.10), transparent 34%),linear-gradient(180deg, rgba(255,255,255,.055), transparent 70%);}
+    body.theme-x3-dark .topbar-logo{background:rgba(8,18,31,.44) !important;border-color:rgba(148,163,184,.26) !important;box-shadow:0 10px 24px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.10) !important;}
+    body.theme-x3-dark .card,body.theme-x3-dark .page-card,body.theme-x3-dark .symbols-current-card{background:linear-gradient(180deg, rgba(22,33,52,.88), rgba(17,29,46,.82)) !important;border:1px solid rgba(91,113,143,.25) !important;box-shadow:0 18px 44px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.055) !important;backdrop-filter:blur(18px) saturate(118%) !important;-webkit-backdrop-filter:blur(18px) saturate(118%) !important;}
+    body.theme-x3-dark .section-header{border-color:rgba(103,125,155,.22) !important;}
+    body.theme-x3-dark .page-nav{background:linear-gradient(135deg, rgba(20,32,50,.82), rgba(13,58,61,.62)) !important;border-color:rgba(103,125,155,.25) !important;box-shadow:0 16px 34px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.07) !important;}
+    body.theme-x3-dark .page-nav-link{color:rgba(220,230,242,.78) !important;border:1px solid rgba(148,163,184,.12);background:rgba(255,255,255,.025);}
+    body.theme-x3-dark .page-nav-link.active,body.theme-x3-dark .page-nav-link:hover{color:#ecfeff !important;background:linear-gradient(135deg, rgba(0,137,112,.82), rgba(6,118,104,.72)) !important;border-color:rgba(45,212,191,.38) !important;box-shadow:0 10px 24px rgba(5,150,125,.18), inset 0 1px 0 rgba(255,255,255,.12) !important;}
+    body.theme-x3-dark input,body.theme-x3-dark select,body.theme-x3-dark textarea{background:rgba(8,16,29,.52) !important;border-color:rgba(103,125,155,.28) !important;color:#e5edf7 !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.04) !important;}
+    body.theme-x3-dark input::placeholder,body.theme-x3-dark textarea::placeholder{color:rgba(203,213,225,.45) !important;}
+    body.theme-x3-dark .primary-btn,body.theme-x3-dark .action-btn.primary-btn{background:linear-gradient(135deg,#07806b,#059669) !important;color:#ecfeff !important;border-color:rgba(45,212,191,.40) !important;box-shadow:0 12px 28px rgba(5,150,105,.20), inset 0 1px 0 rgba(255,255,255,.13) !important;}
+    body.theme-x3-dark .artifact-btn,body.theme-x3-dark .logout-btn{background:rgba(255,255,255,.055) !important;border-color:rgba(148,163,184,.24) !important;color:rgba(235,245,255,.90) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.08) !important;}
+    body.theme-x3-dark .summary-line{background:rgba(8,16,29,.38) !important;border-color:rgba(103,125,155,.20) !important;}
+    body.theme-x3-dark .summary-label{color:rgba(203,213,225,.76) !important;}
+    body.theme-x3-dark .summary-value{color:#eaf2ff !important;}
+    body.theme-x3-dark .summary-value.negative-value{color:#fca5a5 !important;}
+    .help-btn.large,.help-btn.return-help-style,.backtest-run-help-btn{width:34px !important;height:34px !important;min-width:34px !important;min-height:34px !important;padding:0 !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;border-radius:50% !important;border:1px solid rgba(45,212,191,.34) !important;background:linear-gradient(135deg, rgba(15,118,110,.42), rgba(30,41,59,.44)) !important;color:rgba(236,254,255,.96) !important;font-weight:800 !important;font-size:16px !important;line-height:1 !important;cursor:pointer !important;box-shadow:0 10px 22px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.12) !important;backdrop-filter:blur(14px) saturate(130%) !important;-webkit-backdrop-filter:blur(14px) saturate(130%) !important;}
+    .help-btn.large:hover,.help-btn.return-help-style:hover,.backtest-run-help-btn:hover{background:linear-gradient(135deg, rgba(13,148,136,.70), rgba(37,99,235,.22)) !important;border-color:rgba(94,234,212,.52) !important;}
+    .help-panel,.return-help-panel{border-color:rgba(91,113,143,.26) !important;background:linear-gradient(180deg, rgba(18,31,49,.92), rgba(12,27,43,.86)) !important;color:rgba(226,236,248,.92) !important;box-shadow:0 18px 40px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.06) !important;}
+    .return-help-panel h3,.return-help-panel h4{color:#ccfbf1 !important;}
+    .return-help-panel code{background:rgba(8,16,29,.58) !important;color:#e0f2fe !important;}
+    @media (max-width:640px){.help-btn.large,.help-btn.return-help-style,.backtest-run-help-btn{width:32px !important;height:32px !important;min-width:32px !important;min-height:32px !important;font-size:15px !important;}}
+
+
+
+    /* === refined light/dark theme switch and readable panels === */
+    .topbar-right{gap:10px;}
+    .theme-switch{position:relative;z-index:2;display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:6px 8px 6px 10px;border-radius:999px;border:1px solid rgba(148,163,184,.22);background:rgba(255,255,255,.055);box-shadow:inset 0 1px 0 rgba(255,255,255,.08);backdrop-filter:blur(12px) saturate(125%);-webkit-backdrop-filter:blur(12px) saturate(125%);cursor:pointer;user-select:none;white-space:nowrap;}
+    .theme-switch-label{font-size:13px;font-weight:700;color:rgba(226,236,248,.84);letter-spacing:.2px;}
+    .theme-switch input{position:absolute;opacity:0;pointer-events:none;}
+    .theme-slider{position:relative;width:44px;height:24px;border-radius:999px;background:rgba(15,23,42,.45);border:1px solid rgba(148,163,184,.28);box-shadow:inset 0 1px 4px rgba(0,0,0,.28);transition:background .2s ease,border-color .2s ease;}
+    .theme-slider::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:linear-gradient(180deg,#ffffff,#cbd5e1);box-shadow:0 2px 8px rgba(0,0,0,.30);transition:transform .22s ease,background .2s ease;}
+    #theme-toggle:checked + .theme-slider{background:linear-gradient(135deg,#047857,#0f766e);border-color:rgba(94,234,212,.48);}
+    #theme-toggle:checked + .theme-slider::after{transform:translateX(20px);background:linear-gradient(180deg,#ecfeff,#99f6e4);}
+
+    body:not(.theme-x3-dark){background:#f3f5f7 !important;color:#334155;}
+    body:not(.theme-x3-dark)::before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 16% 0%, rgba(20,184,166,.06), transparent 32%),linear-gradient(90deg, rgba(15,23,42,.035) 1px, transparent 1px),linear-gradient(180deg, rgba(15,23,42,.03) 1px, transparent 1px);background-size:auto,44px 44px,44px 44px;z-index:-1;}
+    body:not(.theme-x3-dark) .topbar{background:rgba(255,255,255,.78) !important;border-color:rgba(15,23,42,.10) !important;box-shadow:0 12px 28px rgba(15,23,42,.08), inset 0 1px 0 rgba(255,255,255,.78) !important;color:#1f2937 !important;}
+    body:not(.theme-x3-dark) .topbar::before{background:radial-gradient(circle at 20% 0%, rgba(20,184,166,.08), transparent 34%),linear-gradient(180deg, rgba(255,255,255,.60), transparent 70%) !important;}
+    body:not(.theme-x3-dark) .topbar h1{color:#1f2937 !important;}
+    body:not(.theme-x3-dark) .topbar-logo{background:rgba(255,255,255,.72) !important;border-color:rgba(15,23,42,.10) !important;box-shadow:0 8px 18px rgba(15,23,42,.08), inset 0 1px 0 rgba(255,255,255,.90) !important;}
+    body:not(.theme-x3-dark) .theme-switch{background:rgba(15,23,42,.035);border-color:rgba(15,23,42,.10);box-shadow:inset 0 1px 0 rgba(255,255,255,.72);}
+    body:not(.theme-x3-dark) .theme-switch-label{color:rgba(51,65,85,.82);}
+    body:not(.theme-x3-dark) .theme-slider{background:#e5e7eb;border-color:rgba(15,23,42,.12);box-shadow:inset 0 1px 3px rgba(15,23,42,.12);}
+    body:not(.theme-x3-dark) .logout-btn,body:not(.theme-x3-dark) .artifact-btn{background:rgba(255,255,255,.72) !important;color:#334155 !important;border-color:rgba(15,23,42,.10) !important;}
+    body:not(.theme-x3-dark) .page-nav{background:rgba(255,255,255,.72) !important;border-color:rgba(15,23,42,.08) !important;box-shadow:0 10px 24px rgba(15,23,42,.06), inset 0 1px 0 rgba(255,255,255,.72) !important;}
+    body:not(.theme-x3-dark) .page-nav-link{color:#475569 !important;background:rgba(255,255,255,.44);border-color:rgba(15,23,42,.06);}
+    body:not(.theme-x3-dark) .page-nav-link.active,body:not(.theme-x3-dark) .page-nav-link:hover{color:#fff !important;background:linear-gradient(135deg,#047857,#059669) !important;border-color:rgba(5,150,105,.28) !important;box-shadow:0 10px 20px rgba(5,150,105,.16) !important;}
+    body:not(.theme-x3-dark) .card,body:not(.theme-x3-dark) .page-card,body:not(.theme-x3-dark) .symbols-current-card{background:rgba(255,255,255,.82) !important;border-color:rgba(15,23,42,.08) !important;box-shadow:0 12px 28px rgba(15,23,42,.07), inset 0 1px 0 rgba(255,255,255,.85) !important;color:#1f2937;}
+    body:not(.theme-x3-dark) .section-header{border-color:rgba(15,23,42,.08) !important;}
+    body:not(.theme-x3-dark) .section-header h2,body:not(.theme-x3-dark) .section-header h3,body:not(.theme-x3-dark) .subsection-title{color:#1f2937 !important;}
+    body:not(.theme-x3-dark) input,body:not(.theme-x3-dark) select,body:not(.theme-x3-dark) textarea{background:rgba(255,255,255,.90) !important;border-color:rgba(15,23,42,.12) !important;color:#1f2937 !important;}
+    body:not(.theme-x3-dark) .status-box,body:not(.theme-x3-dark) .output-box{background:rgba(255,255,255,.82) !important;border-color:rgba(15,23,42,.08) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.72) !important;}
+    body:not(.theme-x3-dark) .status-box pre,body:not(.theme-x3-dark) .output-box pre,body:not(.theme-x3-dark) .help-panel pre{color:#334155 !important;text-shadow:none !important;}
+
+    body.theme-x3-dark .status-box,body.theme-x3-dark .output-box{background:rgba(8,16,29,.64) !important;border:1px solid rgba(103,125,155,.26) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 12px 28px rgba(0,0,0,.18) !important;}
+    body.theme-x3-dark .status-box pre,body.theme-x3-dark .output-box pre,body.theme-x3-dark .help-panel pre{color:#dbeafe !important;text-shadow:none !important;opacity:1 !important;}
+    body.theme-x3-dark .raw-output summary{color:#dbeafe !important;background:rgba(8,16,29,.45) !important;border:1px solid rgba(103,125,155,.22) !important;border-radius:14px;padding:10px 12px;}
+    body.theme-x3-dark .selected-symbol-select{background:linear-gradient(135deg, rgba(5,150,105,.28), rgba(15,23,42,.62)) !important;border-color:rgba(45,212,191,.56) !important;color:#ecfeff !important;box-shadow:0 0 0 2px rgba(45,212,191,.08), inset 0 1px 0 rgba(255,255,255,.08) !important;}
+    body.theme-x3-dark .selected-symbol-pending{background:linear-gradient(135deg, rgba(180,83,9,.26), rgba(15,23,42,.58)) !important;border-color:rgba(251,191,36,.48) !important;color:#fffbeb !important;}
+
+    .backtest-run-actions{display:grid !important;grid-template-columns:auto 1fr auto;align-items:center;width:100%;gap:10px;}
+    .backtest-run-actions .primary-btn{grid-column:1;justify-self:start;}
+    .backtest-run-actions .backtest-run-help-btn{grid-column:3;justify-self:end;margin-left:auto;}
+    .raw-head{display:flex !important;align-items:center !important;justify-content:space-between !important;gap:12px;}
+    .help-btn.large,.help-btn.return-help-style,.backtest-run-help-btn{width:34px !important;height:34px !important;min-width:34px !important;min-height:34px !important;padding:0 !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;border-radius:50% !important;font-weight:800 !important;font-size:16px !important;line-height:1 !important;}
+    body:not(.theme-x3-dark) .help-btn.large,body:not(.theme-x3-dark) .help-btn.return-help-style,body:not(.theme-x3-dark) .backtest-run-help-btn{background:rgba(255,255,255,.78) !important;color:#047857 !important;border:1px solid rgba(5,150,105,.28) !important;box-shadow:0 8px 18px rgba(15,23,42,.07), inset 0 1px 0 rgba(255,255,255,.78) !important;}
+    body.theme-x3-dark .help-btn.large,body.theme-x3-dark .help-btn.return-help-style,body.theme-x3-dark .backtest-run-help-btn{background:linear-gradient(135deg, rgba(15,118,110,.42), rgba(30,41,59,.44)) !important;color:rgba(236,254,255,.96) !important;border:1px solid rgba(45,212,191,.34) !important;box-shadow:0 10px 22px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.12) !important;}
+    body:not(.theme-x3-dark) .return-help-panel,body:not(.theme-x3-dark) .help-panel{background:rgba(255,255,255,.88) !important;color:#334155 !important;border-color:rgba(15,23,42,.08) !important;box-shadow:0 12px 28px rgba(15,23,42,.07) !important;}
+    body:not(.theme-x3-dark) .return-help-panel h3,body:not(.theme-x3-dark) .return-help-panel h4{color:#047857 !important;}
+    body:not(.theme-x3-dark) .return-help-panel code{background:rgba(15,23,42,.06) !important;color:#0f172a !important;}
+    @media (max-width:640px){.theme-switch-label{display:none}.theme-switch{padding:6px}.theme-slider{width:42px}.backtest-run-actions{grid-template-columns:1fr auto}.backtest-run-actions .primary-btn{grid-column:1}.backtest-run-actions .backtest-run-help-btn{grid-column:2}}
+
+
+
+
+    /* === dark-theme readable text blocks === */
+    body.theme-x3-dark .status-box,
+    body.theme-x3-dark .output-box,
+    body.theme-x3-dark .raw-output,
+    body.theme-x3-dark .raw-output pre,
+    body.theme-x3-dark .status-box pre,
+    body.theme-x3-dark .output-box pre {
+      color:#e5edf7 !important;
+      opacity:1 !important;
+      text-shadow:none !important;
+    }
+    body.theme-x3-dark .status-box *,
+    body.theme-x3-dark .output-box * {
+      color:inherit;
+      opacity:1;
+    }
+
+    /* === dark-theme native select dropdown readability fix === */
+    body.theme-x3-dark select option,
+    body.theme-x3-dark select optgroup {
+      background-color:#0f1b2d !important;
+      color:#eaf2ff !important;
+    }
+    body.theme-x3-dark select option:checked {
+      background:linear-gradient(135deg,#047857,#0f766e) !important;
+      background-color:#047857 !important;
+      color:#ffffff !important;
+      font-weight:800 !important;
+    }
+    body.theme-x3-dark select option:hover {
+      background-color:#12314a !important;
+      color:#ffffff !important;
+    }
+    body.theme-x3-dark .symbols-current-card .selected-symbol-select {
+      background-color:#0b1b2d !important;
+      color:#f0fdfa !important;
+      caret-color:#99f6e4 !important;
+    }
+
+    /* === stronger light-theme selected symbol contrast === */
+    body.theme-x3-light .symbols-current-card .selected-symbol-select,
+    body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-select{
+      background:
+        linear-gradient(135deg, rgba(4,120,87,.15), rgba(20,184,166,.09)),
+        rgba(255,255,255,.96) !important;
+      border:2px solid rgba(4,120,87,.64) !important;
+      color:#064e3b !important;
+      font-weight:800 !important;
+      box-shadow:
+        0 0 0 4px rgba(5,150,105,.10),
+        0 12px 24px rgba(5,150,105,.12),
+        inset 0 1px 0 rgba(255,255,255,.95) !important;
+    }
+    body.theme-x3-light .symbols-current-card .selected-symbol-select:focus,
+    body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-select:focus{
+      outline:none !important;
+      border-color:rgba(4,120,87,.84) !important;
+      box-shadow:
+        0 0 0 5px rgba(5,150,105,.16),
+        0 14px 28px rgba(5,150,105,.16),
+        inset 0 1px 0 rgba(255,255,255,.95) !important;
+    }
+    body.theme-x3-light .symbols-current-card .selected-symbol-pending,
+    body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-pending{
+      background:
+        linear-gradient(135deg, rgba(245,158,11,.18), rgba(251,191,36,.10)),
+        rgba(255,255,255,.96) !important;
+      border:2px solid rgba(217,119,6,.66) !important;
+      color:#7c2d12 !important;
+      font-weight:800 !important;
+      box-shadow:
+        0 0 0 4px rgba(245,158,11,.12),
+        0 12px 24px rgba(217,119,6,.10),
+        inset 0 1px 0 rgba(255,255,255,.95) !important;
+    }
+    body.theme-x3-light .symbol-switcher-row .secondary-btn,
+    body:not(.theme-x3-dark) .symbol-switcher-row .secondary-btn{
+      background:linear-gradient(135deg,#047857,#059669) !important;
+      color:#fff !important;
+      border-color:rgba(5,150,105,.38) !important;
+      box-shadow:0 12px 24px rgba(5,150,105,.16), inset 0 1px 0 rgba(255,255,255,.22) !important;
+      font-weight:800 !important;
+    }
+
+
+    /* === push config page === */
+    .push-config-layout{display:block;}
+    .push-config-grid{display:grid;grid-template-columns:1fr;gap:14px;}
+    .push-field-row{display:grid;grid-template-columns:220px minmax(0,1fr);gap:14px;align-items:start;padding:14px 0;border-bottom:1px solid rgba(148,163,184,.16);}
+    .push-field-row:last-child{border-bottom:0;}
+    .push-field-help{margin:5px 0 0;font-size:13px;line-height:1.5;color:rgba(203,213,225,.68);}
+    .push-field-row input[readonly],.push-field-row select:disabled{opacity:.76;cursor:not-allowed;background:rgba(148,163,184,.12) !important;color:rgba(226,236,248,.72) !important;}
+    body:not(.theme-x3-dark) .push-field-row input[readonly],body:not(.theme-x3-dark) .push-field-row select:disabled{background:rgba(15,23,42,.06) !important;color:#64748b !important;}
+    .push-field-telegram_bot_token input{width:100%;max-width:560px;}
+    .push-field-telegram_chat_id input{width:100%;max-width:260px;}
+    .push-field-gotify_url input{width:100%;max-width:560px;}
+    .push-field-gotify_token input{width:100%;max-width:560px;}
+    .push-field-gotify_priority input{width:120px;}
+    .push-field-ntfy_url input{width:100%;max-width:560px;}
+    .push-field-ntfy_topic input{width:100%;max-width:320px;}
+    .push-field-ntfy_username input{width:100%;max-width:260px;}
+    .push-field-ntfy_password input{width:100%;max-width:360px;}
+    .push-field-ntfy_priority input{width:120px;}
+    .push-field-ntfy_tags input{width:100%;max-width:420px;}
+    .push-field-pushplus_token input{width:100%;max-width:560px;}
+    .push-field-row.channel-hidden{display:none !important;}
+    .push-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:18px;}
+    .push-test-inline{display:inline-flex;margin:0;}
+    .push-log-card{margin-top:18px;}
+    .push-log-list{display:grid;gap:8px;margin-top:12px;}
+    .push-log-item{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(148,163,184,.14);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;}
+    .push-log-empty{margin-top:12px;color:rgba(203,213,225,.70);}
+    .panel-toggle{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;white-space:nowrap;}
+    .panel-toggle input{position:absolute;opacity:0;pointer-events:none;}
+    .panel-toggle-text{font-size:13px;font-weight:800;color:rgba(226,236,248,.82);}
+    .panel-toggle-slider{position:relative;width:44px;height:24px;border-radius:999px;background:rgba(15,23,42,.45);border:1px solid rgba(148,163,184,.28);box-shadow:inset 0 1px 4px rgba(0,0,0,.28);}
+    .panel-toggle-slider::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:linear-gradient(180deg,#ffffff,#cbd5e1);box-shadow:0 2px 8px rgba(0,0,0,.30);transition:transform .22s ease;}
+    .panel-toggle input:checked + .panel-toggle-slider{background:linear-gradient(135deg,#047857,#0f766e);border-color:rgba(94,234,212,.48);}
+    .panel-toggle input:checked + .panel-toggle-slider::after{transform:translateX(20px);}
+    .push-enable-switch{justify-content:flex-start;}
+    .push-enable-switch .panel-toggle-text{font-size:14px;}
+    body:not(.theme-x3-dark) .push-field-help{color:#64748b;}
+    body:not(.theme-x3-dark) .push-field-row{border-bottom-color:rgba(15,23,42,.08);}
+    body:not(.theme-x3-dark) .push-log-item{background:rgba(15,23,42,.035);border-color:rgba(15,23,42,.08);color:#334155;}
+    body:not(.theme-x3-dark) .push-log-empty{color:#64748b;}
+    body:not(.theme-x3-dark) .panel-toggle-text{color:#475569;}
+    body:not(.theme-x3-dark) .panel-toggle-slider{background:#e5e7eb;border-color:rgba(15,23,42,.12);box-shadow:inset 0 1px 3px rgba(15,23,42,.12);}
+    @media (max-width:860px){.push-field-row{grid-template-columns:1fr;gap:8px;}.push-field-telegram_chat_id input,.push-field-ntfy_topic input,.push-field-ntfy_username input,.push-field-ntfy_password input,.push-field-ntfy_priority input{max-width:100%;}}
+    @media (max-width:640px){
+      .page-nav{grid-template-columns:repeat(5,minmax(0,1fr)) !important;gap:5px !important;padding:6px !important;}
+      .page-nav-link{font-size:13px !important;min-height:36px !important;padding:7px 2px !important;border-radius:12px !important;}
+      .push-action-row .action-btn,.push-test-inline{flex:1 1 auto;}
+      .push-test-inline .action-btn{width:100%;}
+    }
+    @media (max-width:360px){
+      .page-nav{gap:4px !important;padding:5px !important;}
+      .page-nav-link{font-size:12px !important;min-height:34px !important;padding-left:1px !important;padding-right:1px !important;}
+    }
+
+  </style>
+</head>
+<body class="dash-body theme-x3-dark">
+  <header class="topbar">
+    <div class="topbar-brand">
+      <img class="topbar-logo" src="{{ url_for('static', filename='login.png') }}" alt="">
+      <div class="topbar-title-wrap">
+        <h1>{{ app_name }}</h1>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <label class="theme-switch" title="切换明暗主题">
+        <span class="theme-switch-label">主题</span>
+        <input type="checkbox" id="theme-toggle" aria-label="切换明暗主题">
+        <span class="theme-slider"></span>
+      </label>
+      <a class="logout-btn" href="{{ url_for('logout') }}">退出</a>
+    </div>
+  </header>
+
+  <nav class="page-nav" aria-label="主导航" style="justify-content:center;">
+    {% for endpoint, label in nav_items.items() %}
+      <a class="page-nav-link {% if page_name == endpoint %}active{% endif %}" href="{{ url_for(endpoint ~ '_page') }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  <main class="page-wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="card flash-stack">
+          {% for category, msg in messages %}
+            <div class="flash {{ category }}">{{ msg }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    {% if page_name == 'symbols' %}
+      <section class="card page-card symbols-current-card">
+        <div class="section-header">
+          <div>
+            <h2>当前标的</h2>
+          </div>
+        </div>
+        <form method="post" class="symbol-switcher-row" id="symbol-switcher-form">
+          <input type="hidden" name="action" id="symbol-form-action" value="set_symbol">
+          <div class="field-block grow symbol-select-field">
+            <label for="symbol-key-select">选择标的</label>
+            <select name="symbol_key" id="symbol-key-select" class="selected-symbol-select" data-selected="{{ selected }}" onchange="markSymbolSelectionChanged(this)">
+              {% for card in symbol_cards %}
+              <option value="{{ card.key }}" {% if card.active %}selected{% endif %}>{{ card.label }}{% if card.symbol %} ({{ card.symbol }}){% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="secondary-btn action-btn">选定</button>
+          {% if selected != 'COMMON_BACKTEST_CONFIG' %}
+            <button type="button" class="danger-btn action-btn" onclick="openSymbolDeleteDialog('{{ selected_label|e }}','{{ selected_symbol_code|e }}')">删除</button>
+          {% else %}
+            <button type="button" class="disabled-btn action-btn" disabled>删除</button>
+          {% endif %}
+        </form>
+      </section>
+
+      <section class="card page-card">
+        <div class="section-header"><h2>新增标的</h2></div>
+        <form method="post" class="symbol-editor-form">
+          <input type="hidden" name="action" value="add_symbol">
+          <div class="symbol-editor-grid">
+            <div class="field-block">
+              <label>标的名称</label>
+              <input type="text" name="new_name" placeholder="如 福耀 / 腾讯 / 陕能">
+            </div>
+            <div class="field-block">
+              <label>股票代码</label>
+              <input type="text" name="new_symbol" placeholder="如 SH600660 / HK00700 / 600660">
+            </div>
+          </div>
+          <div class="symbol-action-row one-btn-row">
+            <button type="submit" class="primary-btn action-btn">新增</button>
+          </div>
+        </form>
+      </section>
+    {% endif %}
+
+    {% if page_name == 'status' %}
+      <section class="card page-card">
+        <div class="section-header"><h2>状态</h2></div>
+        <div class="status-box"><pre>{{ status_text }}</pre></div>
+      </section>
+    {% endif %}
+
+    {% if page_name == 'params' %}
+      <section class="card page-card">
+        <form method="post" action="{{ url_for('params_page') }}" id="params-form" class="params-form">
+          <input type="hidden" name="action" value="save_params">
+          <div class="section-header between">
+            <h2>参数</h2>
+            <button type="button" id="params-edit-btn" class="primary-btn action-btn" data-mode="edit" onclick="toggleParamsEdit(this)">修改</button>
+          </div>
+          <section class="page-card-group compact-group">
+            {% for group in grouped_fields %}
+              <div class="config-card">
+                <div class="subsection-title">{{ group['title'] }}</div>
+                <div class="form-grid">
+                  {% for field in group['items'] %}
+                    <div class="field-block readonly-block">
+                      <label>
+                        {{ field['label'] }}
+                        {% if field['help'] %}
+                          <button type="button" class="help-btn" aria-label="参数说明" onclick="toggleHelp(this)">?</button>
+                        {% endif %}
+                      </label>
+                      {% if field['help'] %}
+                        <div class="help-popover hidden">{{ field['help'] }}</div>
+                      {% endif %}
+                      {% if field['type'] == 'select' or field['options'] %}
+                        <select name="{{ field['key'] }}" disabled data-lock="1">
+                          {% for opt_value, opt_label in field['options'] %}
+                            <option value="{{ opt_value }}" {% if field['value'] == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+                          {% endfor %}
+                        </select>
+                      {% else %}
+                        <input type="text" name="{{ field['key'] }}" value="{{ field['value'] }}" readonly data-lock="1">
+                      {% endif %}
+                    </div>
+                  {% endfor %}
+                </div>
+              </div>
+            {% endfor %}
+          </section>
+        </form>
+      </section>
+    {% endif %}
+
+    {% if page_name == 'backtest' %}
+      <section class="card page-card">
+        <div class="section-header"><h2>回测</h2></div>
+        <form method="post" action="{{ url_for('backtest_page') }}" class="tool-form">
+          <input type="hidden" name="action" value="run_backtest">
+          <div class="form-grid compact-grid">
+            <div class="field-block">
+              <label>股票代码</label>
+              <input type="text" name="bt_symbol" value="{{ bt_symbol_default }}" placeholder="如 SH600660 / HK00700">
+            </div>
+            <div class="field-block">
+              <label>回测天数</label>
+              <input type="text" name="bt_days" value="800">
+            </div>
+            <div class="field-block">
+              <label>初始仓位</label>
+              <input type="text" name="bt_base_units" value="{{ bt_base_default }}">
+            </div>
+            <div class="field-block">
+              <label>目标仓位</label>
+              <input type="text" name="bt_target_units" value="{{ bt_target_default }}">
+            </div>
+          </div>
+          <div class="inline-actions backtest-run-actions">
+            <button type="submit" class="primary-btn action-btn">执行回测</button>
+            <button type="button" class="backtest-run-help-btn return-help-style" aria-label="收益计算说明" title="收益计算说明" onclick="toggleReturnCalcHelp()">?</button>
+          </div>
+          <div id="return-calc-help" class="return-help-panel hidden" role="note" aria-label="收益计算说明">
+            <h3>回测收益计算口径</h3>
+            <h4>价格和参数选用</h4>
+            <ul>
+              <li>信号、MA150、区间判断使用复权价 <code>Adj Close</code>。</li>
+              <li>成交、估值、成本、最新价格和收益计算使用原始价 <code>Close</code>。</li>
+              <li>百分比模式下，<code>qty / units</code> 表示仓位比例或成本权重，不是股数。</li>
+              <li>历史回测初始成本使用回测窗口第一天原始价；<code>current_avg_cost</code> 只用于实盘监控。</li>
+              <li>累计投入仓位 = 回测起始持仓 + 回测期间所有买入仓位之和。</li>
+            </ul>
+            <h4>收益率计算</h4>
+            <ul>
+              <li>分红收益率 = 分红现金贡献 ÷ 累计投入仓位；分红按除息日、按当时持仓比例入账。</li>
+              <li>交易实现收益率 = 已实现卖出收益贡献 ÷ 累计投入仓位；卖出收益贡献 = 卖出仓位 × (卖出原始价 ÷ 当时持仓成本 - 1)。</li>
+              <li>持仓收益率 = 期末浮盈贡献 ÷ 累计投入仓位；期末浮盈贡献 = 期末市值权重 - 期末剩余持仓成本权重，不含分红和已实现收益摊薄。</li>
+              <li>综合收益率 = 分红收益率 + 交易实现收益率 + 持仓收益率 = 总收益贡献 ÷ 累计投入仓位。</li>
+              <li>摊薄后持仓成本会把分红现金贡献和已实现交易收益贡献摊回期末剩余持仓成本；若收益已覆盖原始成本，页面允许按负成本展示。</li>
+              <li>期末持仓收益率按程序当前口径计算；摊薄后持仓成本可显示为负数，但负成本只作为展示，不反向影响综合收益率、分红收益率、交易实现收益率和持仓收益率。</li>
+            </ul>
+          </div>
+        </form>
+
+        {% if backtest_cards %}
+          <div class="summary-list backtest-summary-list">
+            {% for label, value in backtest_cards %}
+              <div class="summary-line"><span class="summary-label">{{ label }}：</span><span class="summary-value">{{ value }}</span></div>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <!-- 修改：遍历所有回测生成的文件，显示下载链接 -->
+        {% if backtest_files %}
+          <div class="artifact-row">
+            {% for file_key, file_info in backtest_files.items() %}
+              <a class="artifact-btn" href="{{ file_info.url }}">下载 {{ file_info.name }}</a>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="section-header subhead raw-head">
+          <h3>原始输出</h3>
+          <button type="button" class="help-btn large" aria-label="说明" onclick="toggleBacktestHelp()">?</button>
+        </div>
+        <div id="backtest-help" class="help-panel hidden"><pre>{{ backtest_help_text }}</pre></div>
+        <details class="raw-output" {% if backtest_output %}open{% endif %}>
+          <summary>展开 / 收起</summary>
+          <div class="output-box"><pre>{{ backtest_output or '这里会显示回测输出。' }}</pre></div>
+        </details>
+      </section>
+    {% endif %}
+
+    {% if page_name == 'push' %}
+      <section class="card page-card">
+        <div class="section-header between">
+          <div>
+            <h2>推送配置</h2>
+            <p class="section-note">配置文件：{{ push_config_path }}</p>
+          </div>
+          <label class="panel-toggle" title="显示或隐藏推送配置">
+            <span class="panel-toggle-text">显示配置</span>
+            <input type="checkbox" id="push-config-toggle" checked aria-label="显示或隐藏推送配置">
+            <span class="panel-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="push-config-panel" class="push-config-layout">
+          <form method="post" action="{{ url_for('push_page') }}" class="push-config-form" id="push-config-form">
+            <input type="hidden" name="action" value="save_push">
+            <div class="push-config-grid">
+              {% for item in push_fields %}
+                <div class="push-field-row push-field-{{ item.key|lower }}" data-push-channel="{{ item.channel }}">
+                  <div>
+                    <label for="{{ item.key }}">{{ item.label }}</label>
+                    {% if item.help %}<div class="push-field-help">{{ item.help }}</div>{% endif %}
+                  </div>
+                  <div>
+                    {% if item.type == 'select' %}
+                      <select id="{{ item.key }}" name="{{ item.key }}" disabled data-push-lock="1" {% if item.key == 'PUSH_CHANNEL' %}onchange="refreshPushChannelFields()"{% endif %}>
+                        {% for opt_value, opt_label in push_select_options.get(item.key, []) %}
+                          <option value="{{ opt_value }}" {% if push_config.get(item.key, '') == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+                        {% endfor %}
+                      </select>
+                    {% elif item.type == 'switch' %}
+                      <label class="panel-toggle push-enable-switch" title="拨动后立即保存并生效">
+                        <input id="{{ item.key }}" name="{{ item.key }}" value="yes" type="checkbox" {% if push_config.get(item.key, 'yes') == 'yes' %}checked{% endif %} onchange="submitPushEnabledToggle(this)">
+                        <span class="panel-toggle-slider"></span>
+                        <span class="panel-toggle-text">{{ '已启用' if push_config.get(item.key, 'yes') == 'yes' else '已关闭' }}</span>
+                      </label>
+                      <input type="hidden" name="{{ item.key }}" value="no">
+                    {% else %}
+                      <input id="{{ item.key }}" name="{{ item.key }}" type="{{ item.type }}" value="{{ push_config.get(item.key, '') }}" autocomplete="off" readonly data-push-lock="1">
+                    {% endif %}
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+            <div class="push-action-row">
+              <button type="button" id="push-edit-btn" class="primary-btn action-btn" data-mode="edit" onclick="togglePushEdit(this)">修改</button>
+              <button type="submit" class="primary-btn action-btn" form="push-test-form">发送测试推送</button>
+            </div>
+          </form>
+          <form method="post" action="{{ url_for('push_page') }}" id="push-test-form" class="push-test-inline">
+            <input type="hidden" name="action" value="test_push">
+          </form>
+        </div>
+      </section>
+
+      <section class="card page-card push-log-card">
+        <div class="section-header between">
+          <div>
+            <h2>推送日志</h2>
+            <p class="section-note">显示 {{ push_log_path }} 最新 10 条。</p>
+          </div>
+          <label class="panel-toggle" title="显示或隐藏推送日志">
+            <span class="panel-toggle-text">显示日志</span>
+            <input type="checkbox" id="push-log-toggle" checked aria-label="显示或隐藏推送日志">
+            <span class="panel-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="push-log-panel">
+          {% if push_logs %}
+            <div class="push-log-list">
+              {% for line in push_logs %}
+                <div class="push-log-item">{{ line }}</div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="push-log-empty">暂无推送日志。</div>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+
+  </main>
+  <div id="symbol-delete-modal" class="simple-modal hidden" onclick="if(event.target===this){closeSymbolDeleteDialog();}">
+    <div class="simple-modal-card">
+      <div class="simple-modal-title">删除确认</div>
+      <div class="simple-modal-text" id="symbol-delete-text">确认删除当前标的？</div>
+      <div class="simple-modal-actions">
+        <button type="button" class="simple-modal-cancel" onclick="closeSymbolDeleteDialog()">取消</button>
+        <button type="button" class="simple-modal-ok" onclick="confirmSymbolDelete()">确定</button>
+      </div>
+    </div>
+  </div>
+
+
+  <script>
+    function toggleHelp(btn){
+      const box = btn.closest('.field-block').querySelector('.help-popover');
+      if(box){ box.classList.toggle('hidden'); }
+    }
+    function toggleParamsEdit(btn){
+      const form = document.getElementById('params-form');
+      const mode = btn.dataset.mode || 'edit';
+      if(mode === 'edit'){
+        form.querySelectorAll('[data-lock="1"]').forEach(function(el){ el.removeAttribute('readonly'); el.removeAttribute('disabled'); });
+        form.classList.add('editing');
+        btn.dataset.mode = 'save';
+        btn.textContent = '保存';
+      }else{
+        form.submit();
+      }
+    }
+    function toggleBacktestHelp(){
+      const panel = document.getElementById('backtest-help');
+      if(panel){ panel.classList.toggle('hidden'); }
+    }
+    function toggleReturnCalcHelp(){
+      const panel = document.getElementById('return-calc-help');
+      if(panel){ panel.classList.toggle('hidden'); }
+    }
+
+    function togglePushEdit(btn){
+      const form = document.getElementById('push-config-form');
+      if(!form || !btn){ return; }
+      const mode = btn.dataset.mode || 'edit';
+      if(mode === 'edit'){
+        form.querySelectorAll('[data-push-lock="1"]').forEach(function(el){ el.removeAttribute('readonly'); el.removeAttribute('disabled'); });
+        form.classList.add('editing');
+        btn.dataset.mode = 'save';
+        btn.textContent = '保存';
+      }else{
+        form.submit();
+      }
+    }
+    function submitPushEnabledToggle(el){
+      const form = document.getElementById('push-config-form');
+      const label = el ? el.closest('.panel-toggle') : null;
+      const text = label ? label.querySelector('.panel-toggle-text') : null;
+      if(text){ text.textContent = el && el.checked ? '已启用' : '已关闭'; }
+      if(form){ form.submit(); }
+    }
+    function refreshPushChannelFields(){
+      const selector = document.getElementById('PUSH_CHANNEL');
+      const channel = selector ? (selector.value || 'gotify') : 'gotify';
+      const visible = {
+        base: true,
+        telegram: channel === 'telegram',
+        gotify: channel === 'gotify',
+        ntfy: channel === 'ntfy',
+        pushplus: channel === 'pushplus'
+      };
+      document.querySelectorAll('[data-push-channel]').forEach(function(row){
+        const key = row.getAttribute('data-push-channel') || 'base';
+        row.classList.toggle('channel-hidden', !visible[key]);
+      });
+    }
+
+    function bindPanelToggle(toggleId, panelId, storageKey){
+      const toggle = document.getElementById(toggleId);
+      const panel = document.getElementById(panelId);
+      if(!toggle || !panel){ return; }
+      const saved = localStorage.getItem(storageKey);
+      if(saved === 'hidden'){ toggle.checked = false; panel.classList.add('hidden'); }
+      if(saved === 'shown'){ toggle.checked = true; panel.classList.remove('hidden'); }
+      toggle.addEventListener('change', function(){
+        panel.classList.toggle('hidden', !toggle.checked);
+        localStorage.setItem(storageKey, toggle.checked ? 'shown' : 'hidden');
+      });
+    }
+  
+function markSymbolSelectionChanged(el){
+  if(!el){ return; }
+  const selected = (el.getAttribute('data-selected') || '').trim();
+  const current = (el.value || '').trim();
+  el.classList.remove('selected-symbol-pending','selected-symbol-select');
+  if(current && current === selected){
+    el.classList.add('selected-symbol-select');
+  }else{
+    el.classList.add('selected-symbol-pending');
+  }
+}
+function openSymbolDeleteDialog(label, code){
+  const modal = document.getElementById('symbol-delete-modal');
+  const text = document.getElementById('symbol-delete-text');
+  if(!modal || !text){ return; }
+  const suffix = code ? ` (${code})` : '';
+  text.textContent = `确认删除当前选定标的：${label}${suffix} ？`;
+  modal.classList.remove('hidden');
+  modal.classList.add('show');
+}
+function closeSymbolDeleteDialog(){
+  const modal = document.getElementById('symbol-delete-modal');
+  if(!modal){ return; }
+  modal.classList.remove('show');
+  modal.classList.add('hidden');
+}
+function confirmSymbolDelete(){
+  const form = document.getElementById('symbol-switcher-form');
+  const action = document.getElementById('symbol-form-action');
+  if(!form || !action){ return; }
+  action.value = 'delete_symbol';
+  form.submit();
+}
+
+
+function applyTheme(theme){
+  const dark = theme !== 'light';
+  document.body.classList.toggle('theme-x3-dark', dark);
+  document.body.classList.toggle('theme-x3-light', !dark);
+  const toggle = document.getElementById('theme-toggle');
+  if(toggle){ toggle.checked = dark; }
+}
+function initThemeToggle(){
+  const saved = localStorage.getItem('dcf_dashboard_theme') || 'dark';
+  applyTheme(saved);
+  const toggle = document.getElementById('theme-toggle');
+  if(toggle){
+    toggle.addEventListener('change', function(){
+      const theme = toggle.checked ? 'dark' : 'light';
+      localStorage.setItem('dcf_dashboard_theme', theme);
+      applyTheme(theme);
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  initThemeToggle();
+  const symbolSelect = document.getElementById('symbol-key-select');
+  if(symbolSelect){ markSymbolSelectionChanged(symbolSelect); }
+  refreshPushChannelFields();
+  bindPanelToggle('push-config-toggle', 'push-config-panel', 'dcf_push_config_panel');
+  bindPanelToggle('push-log-toggle', 'push-log-panel', 'dcf_push_log_panel');
+});
+
+</script>
+</body>
+</html>
