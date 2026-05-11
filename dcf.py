@@ -108,6 +108,16 @@ def get_target_units(cfg):
 def get_double_target(cfg):
     return get_target_units(cfg) * _safe_float(cfg.get("double_target_factor", 2.0), 2.0)
 
+def normalize_strategy_run_value(value, default="on"):
+    """运行开关只允许 on/off；无效或缺失值按 default 处理，默认 on。"""
+    s = str(value if value is not None else "").strip().lower()
+    if s in {"on", "off"}:
+        return s
+    return default
+
+def is_strategy_on(cfg):
+    return normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on") == "on"
+
 def get_trend_multiple(cfg):
     return _safe_float(cfg.get("trend_multiple", 1.2), 1.2)
 
@@ -179,7 +189,7 @@ def build_default_symbol_state(cfg):
         "last_status_msg": None,
         "pyramid_step": 0,
         "clear_step": 0,
-        "strategy_run": str(cfg.get("strategy_run", "yes")),
+        "strategy_run": normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on"),
         "position_mode": get_position_mode(cfg),
         "last_add_price": None,
         "pyramid_active": False,
@@ -201,7 +211,7 @@ def normalize_symbol_state(name, cfg, entry):
     if "avg_cost" not in entry:
         entry["avg_cost"] = 0.0
     if "strategy_run" not in entry:
-        entry["strategy_run"] = str(cfg.get("strategy_run", "yes"))
+        entry["strategy_run"] = normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on")
     if "pyramid_step" not in entry:
         entry["pyramid_step"] = 0
     if "clear_step" not in entry:
@@ -490,17 +500,17 @@ def build_daily_snapshot(state: dict) -> str:
         dcf_state = state.get(name, {})
         status = dcf_state.get("last_status_msg")
         cfg = ETF_CONFIG.get(name, {})
-        strategy_run = str(cfg.get("strategy_run", "yes")).lower()
+        strategy_run = normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on")
         if status:
             old_time_match = re.search(r'🕒时间:\s*(\d{4}\.\d{2}\.\d{2}\.\d{2}:\d{2})', status)
             if old_time_match:
                 status = status.replace(old_time_match.group(1), current_time)
-            if strategy_run == "no":
+            if strategy_run == "off":
                 lines.append(f"[仅监控] {status}")
             else:
                 lines.append(status)
         else:
-            if strategy_run == "no":
+            if strategy_run == "off":
                 lines.append(f"[仅监控] {name}: 暂无状态记录")
             else:
                 lines.append(f"{name}: 暂无状态记录")
@@ -523,24 +533,26 @@ def get_price_from_api(symbol, price_scale=1.0, last_known_price=None):
     else:
         return get_a_price(symbol, price_scale)
 
+def _eastmoney_secid(symbol):
+    raw = symbol.upper().strip()
+    if raw.startswith("SH"):
+        return "1." + raw[2:]
+    if raw.startswith("SZ"):
+        return "0." + raw[2:]
+    if raw.isdigit() and len(raw) == 6:
+        return ("1." if raw.startswith("6") else "0.") + raw
+    raise ValueError(f"不支持的A股代码格式: {symbol}")
+
 def get_a_price(symbol, price_scale=1.0):
-    if symbol.startswith("SH"):
-        market = "1"
-        code = symbol[2:]
-    else:
-        market = "0"
-        code = symbol[2:]
-    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={market}.{code}&fields=f43"
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=5)
-        data = resp.json()
-        price_raw = data["data"]["f43"]
-        price = price_raw / 100.0 * float(price_scale)
-        return round(price, 4)
-    except Exception as e:
-        logging.error(f"获取A股价格失败 {symbol}: {e}")
-        raise
+    """Fetch A-share/ETF current price from the same Eastmoney kline endpoint used for MA.
+
+    Using the latest daily kline close avoids mixing Eastmoney quote f43 with another
+    historical API, which previously caused 10x scale differences on some ETFs.
+    """
+    closes = get_a_history_close(symbol, 2, price_scale=price_scale)
+    if not closes:
+        raise RuntimeError(f"东方财富K线未返回价格: {symbol}")
+    return round(float(closes[-1]), 4)
 
 def get_hk_price_tencent(symbol, price_scale):
     hk_code = symbol[2:]
@@ -611,16 +623,16 @@ def validate_hk_price(symbol, current_price, last_known_price, prev_close):
 # ===========================
 # 历史 K 线 - 支持A股和港股
 # ===========================
-def get_history_close(symbol, days=400):
+def get_history_close(symbol, days=400, price_scale=1.0):
     raw_symbol = symbol.upper()
     if raw_symbol.startswith("HK"):
         logging.debug(f"获取港股 {symbol} {days}天历史K线")
-        return get_hk_history_close_tencent(symbol[2:], days)
+        return get_hk_history_close_tencent(symbol[2:], days, price_scale=price_scale)
     else:
         logging.debug(f"获取A股 {symbol} {days}天历史K线")
-        return get_a_history_close(symbol, days)
+        return get_a_history_close(symbol, days, price_scale=price_scale)
 
-def get_hk_history_close_tencent(hk_code, days):
+def get_hk_history_close_tencent(hk_code, days, price_scale=1.0):
     url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{hk_code},day,,,{days},qfq"
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
     try:
@@ -631,7 +643,7 @@ def get_hk_history_close_tencent(hk_code, days):
         closes = []
         for k in klines:
             try:
-                closes.append(float(k[4]))
+                closes.append(round(float(k[4]) * float(price_scale), 4))
             except (IndexError, ValueError, TypeError):
                 continue
         if len(closes) >= 2:
@@ -650,21 +662,38 @@ def get_hk_history_close_tencent(hk_code, days):
             logging.error(f"获取港股当前价以构造伪历史失败 hk{hk_code}: {e2}")
             raise
 
-def get_a_history_close(symbol, days):
-    if symbol.startswith("SH"):
-        s = "sh" + symbol[2:]
-    elif symbol.startswith("SZ"):
-        s = "sz" + symbol[2:]
-    else:
-        s = symbol.lower()
-    url = f"https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData?symbol={s}&scale=240&ma=no&datalen={days}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(url, headers=headers, timeout=10)
-    data = resp.json()
-    part = data["result"]["data"]
-    klines = part.get("data") if isinstance(part, dict) else part
-    closes = [float(k["close"]) for k in klines if k.get("close")]
-    return closes
+def get_a_history_close(symbol, days, price_scale=1.0):
+    secid = _eastmoney_secid(symbol)
+    # fqt=1 前复权；klt=101 日线；fields2 中 f53 是收盘价。
+    url = (
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        f"?secid={secid}"
+        "&fields1=f1,f2,f3,f4,f5,f6"
+        "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+        "&klt=101&fqt=1&end=20500101"
+        f"&lmt={int(days)}"
+    )
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        klines = (((data or {}).get("data") or {}).get("klines") or [])
+        closes = []
+        for row in klines:
+            parts = str(row).split(",")
+            if len(parts) < 3:
+                continue
+            try:
+                closes.append(round(float(parts[2]) * float(price_scale), 4))
+            except Exception:
+                continue
+        if closes:
+            return closes[-int(days):]
+        raise RuntimeError(f"东方财富K线为空: {symbol}, response={str(data)[:200]}")
+    except Exception as e:
+        logging.error(f"获取A股历史K线失败 {symbol}: {e}")
+        raise
 
 # ===========================
 # 计算简单移动平均线 MA（带数据不足处理）
@@ -1161,9 +1190,7 @@ def strategy_for_dcf(name, cfg, state):
     base_units = get_base_units(cfg)
     target_units = get_target_units(cfg)
     double_target = get_double_target(cfg)
-    strategy_run = str(cfg.get("strategy_run", "yes")).lower()
-    if strategy_run not in ["yes", "no"]:
-        strategy_run = "yes"
+    strategy_run = normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on")
     dcf_state = state.setdefault(name, build_default_symbol_state(cfg))
     dcf_state = normalize_symbol_state(name, cfg, dcf_state)
     tick = dcf_state.get("tick", 0) + 1
@@ -1205,7 +1232,7 @@ def strategy_for_dcf(name, cfg, state):
         cfg.get("price_scale", 1.0),
         last_known_price=dcf_state.get("last_price")
     )
-    closes = get_history_close(symbol, STRATEGY.get("fetch_history_days", 400))
+    closes = get_history_close(symbol, STRATEGY.get("fetch_history_days", 400), cfg.get("price_scale", 1.0))
     ma_short_len = STRATEGY.get("ma_period_short", 150)
     ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
     if ma150_raw is None:
@@ -1306,7 +1333,7 @@ def strategy_for_dcf(name, cfg, state):
     )
     logging.info(status_msg)
     dcf_state["last_status_msg"] = status_msg
-    if strategy_run == "no":
+    if strategy_run == "off":
         return []
     messages = []
     raw_price = current_price
@@ -1538,8 +1565,8 @@ def main_loop():
         if not isinstance(cfg, dict):
             logging.error(f"配置项 {name} 不是字典，类型为 {type(cfg)}，已跳过。请检查 dcf.yaml 格式。")
             continue
-        strategy_run = str(cfg.get("strategy_run", "yes")).lower()
-        status_icon = "🟢" if strategy_run == "yes" else "🔴"
+        strategy_run = normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on")
+        status_icon = "🟢" if strategy_run == "on" else "🔴"
         logging.info(f" {status_icon} {name}: {strategy_run.upper()}")
     logging.info("=" * 60)
     state = load_state()

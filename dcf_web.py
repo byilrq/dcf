@@ -236,7 +236,7 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
 ]
 
 SELECT_FIELD_OPTIONS = {
-    "strategy_run": [("yes", "yes"), ("no", "no")],
+    "strategy_run": [("on", "on"), ("off", "off")],
     "box_grid_enabled": [("no", "no"), ("yes", "yes")],
     "pyramid_add_enabled": [("auto", "auto"), ("yes", "yes")],
 }
@@ -349,6 +349,12 @@ def inject_responsive_nav_style(response):
         return response
     return response
 
+def normalize_strategy_run_value(value: Any, default: str = "on") -> str:
+    """运行开关只允许 on/off；无效或缺失值按 default 处理，默认 on。"""
+    s = str(value if value is not None else "").strip().lower()
+    if s in {"on", "off"}:
+        return s
+    return default
 def normalize_config(data: Dict[str, Any]) -> bool:
     changed = False
     common = data.get("COMMON_BACKTEST_CONFIG")
@@ -360,8 +366,9 @@ def normalize_config(data: Dict[str, Any]) -> bool:
             if k in common:
                 common.pop(k, None)
                 changed = True
-        if common.get("strategy_run") not in {"yes", "no"}:
-            common["strategy_run"] = "no"
+        new_run = normalize_strategy_run_value(common.get("strategy_run", "on"), "on")
+        if common.get("strategy_run") != new_run:
+            common["strategy_run"] = new_run
             changed = True
         if common.get("box_grid_enabled") not in {"yes", "no"}:
             common["box_grid_enabled"] = "no"
@@ -392,8 +399,9 @@ def normalize_config(data: Dict[str, Any]) -> bool:
                 if k in section:
                     section.pop(k, None)
                     changed = True
-            if section.get("strategy_run") not in {"yes", "no"}:
-                section["strategy_run"] = "no"
+            new_run = normalize_strategy_run_value(section.get("strategy_run", "on"), "on")
+            if section.get("strategy_run") != new_run:
+                section["strategy_run"] = new_run
                 changed = True
             if section.get("box_grid_enabled") not in {"yes", "no"}:
                 section["box_grid_enabled"] = "no"
@@ -836,7 +844,7 @@ def build_new_symbol_section(config: Dict[str, Any], symbol: str) -> Dict[str, A
     common = deepcopy(config.get("COMMON_BACKTEST_CONFIG", {}) or {})
     normalize_config({"COMMON_BACKTEST_CONFIG": common})
     common["symbol"] = symbol
-    common["strategy_run"] = "no"
+    common["strategy_run"] = "on"
     common["box_grid_enabled"] = "no"
     common["pyramid_add_enabled"] = "auto"
     common.setdefault("current_units", common.get("base_units", ""))
@@ -1242,8 +1250,7 @@ def _save_all_params(config: Dict[str, Any], selected: str) -> None:
     section.pop("ma300_min_coef", None)
     if section.get("box_grid_enabled") not in {"yes", "no"}:
         section["box_grid_enabled"] = "no"
-    if section.get("strategy_run") not in {"yes", "no"}:
-        section["strategy_run"] = "no"
+    section["strategy_run"] = normalize_strategy_run_value(section.get("strategy_run", "on"), "on")
     if section.get("pyramid_add_enabled") not in {"yes", "auto"}:
         section["pyramid_add_enabled"] = "auto"
     set_section(config, selected, section)
