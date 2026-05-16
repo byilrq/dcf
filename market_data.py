@@ -232,9 +232,12 @@ def _fetch_a_snapshot(symbol: str, days: int, price_scale: float) -> MarketSnaps
         return _fetch_sina_a_snapshot(symbol, days, price_scale)
     except Exception as e:
         errors.append(f"sina_a={e}")
-        logging.warning(f"新浪A股日K不可用，尝试东方财富备用 {symbol}: {e}")
     try:
-        return _fetch_eastmoney_kline_snapshot(_eastmoney_secid(symbol), symbol.upper(), days, price_scale, EASTMONEY_A_ENDPOINTS, "eastmoney_a")
+        snap = _fetch_eastmoney_kline_snapshot(_eastmoney_secid(symbol), symbol.upper(), days, price_scale, EASTMONEY_A_ENDPOINTS, "eastmoney_a")
+        if errors:
+            failed = "/".join(x.split("=", 1)[0] for x in errors)
+            logging.info(f"A股/ETF {symbol.upper()} 已使用行情源 {snap.source}；备用原因: {failed} 不可用。")
+        return snap
     except Exception as e:
         errors.append(f"eastmoney_a={e}")
     return _read_cache(symbol.upper(), days, price_scale, "A股/ETF日K全部数据源失败: " + "; ".join(errors))
@@ -252,10 +255,22 @@ def _fetch_eastmoney_hk_snapshot(symbol_or_code: str, days: int, price_scale: fl
     return _fetch_eastmoney_kline_snapshot(_eastmoney_hk_secid(code), "HK" + code, days, price_scale, EASTMONEY_HK_ENDPOINTS, "eastmoney_hk")
 
 
+def _yfinance_hk_symbol(symbol_or_code: str) -> str:
+    """Convert HK code to Yahoo Finance format.
+
+    Yahoo Finance keeps Hong Kong stock tickers as 4 digits plus .HK, e.g.
+    HK00728 -> 0728.HK, HK00700 -> 0700.HK, HK01919 -> 1919.HK.
+    Do not use int(code), otherwise leading zeros are lost and 00728 becomes
+    the invalid 728.HK.
+    """
+    code5 = _hk_code(symbol_or_code)
+    return f"{code5[-4:].zfill(4)}.HK"
+
+
 def _fetch_yfinance_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
     """港股备用：Yahoo/yfinance。使用未复权 Close，适合实际交易价口径。"""
     code = _hk_code(symbol_or_code)
-    yf_symbol = f"{int(code)}.HK"
+    yf_symbol = _yfinance_hk_symbol(symbol_or_code)
     # 400交易日约等于2年自然日；多取一些。
     years = max(2, int(int(days) / 220) + 2)
     start = (datetime.now() - timedelta(days=years * 370)).strftime("%Y-%m-%d")
@@ -351,9 +366,11 @@ def _fetch_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> Ma
         ("tencent_hk", _fetch_tencent_hk_snapshot),
     ]:
         try:
+            snap = fn(code, days, price_scale)
             if errors:
-                logging.warning(f"港股 HK{code} 尝试备用行情源 {label}；前序错误: {' | '.join(errors[-2:])}")
-            return fn(code, days, price_scale)
+                failed = "/".join(x.split("=", 1)[0] for x in errors)
+                logging.info(f"港股 HK{code} 已使用行情源 {snap.source}；备用原因: {failed} 不可用。")
+            return snap
         except Exception as e:
             errors.append(f"{label}={e}")
             continue
