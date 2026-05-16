@@ -106,6 +106,196 @@ ensure_dcf_dir() {
     fi
 }
 
+
+# ============================================
+# Let's Encrypt 证书处理（Web 管理端）
+# ============================================
+get_public_ipv4() {
+    local ip=""
+    ip="$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
+    if [ -z "$ip" ] && command -v curl >/dev/null 2>&1; then
+        ip="$(curl -4fsS --max-time 5 https://ipv4.icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
+    fi
+    echo "$ip"
+}
+
+find_cert_name_by_domain() {
+    local cert_domain="$1"
+    local d=""
+    if [ -f "/etc/letsencrypt/live/${cert_domain}/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/${cert_domain}/privkey.pem" ]; then
+        echo "$cert_domain"
+        return 0
+    fi
+    for d in /etc/letsencrypt/live/"${cert_domain}"*; do
+        [ -d "$d" ] || continue
+        if [ -f "$d/fullchain.pem" ] && [ -f "$d/privkey.pem" ]; then
+            basename "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_cert_paths() {
+    local cert_domain="$1"
+    local cert_name=""
+    cert_name="$(find_cert_name_by_domain "$cert_domain" 2>/dev/null || true)"
+    [ -n "$cert_name" ] || return 1
+    [ -f "/etc/letsencrypt/live/${cert_name}/fullchain.pem" ] || return 1
+    [ -f "/etc/letsencrypt/live/${cert_name}/privkey.pem" ] || return 1
+    echo "${cert_name}|/etc/letsencrypt/live/${cert_name}/fullchain.pem|/etc/letsencrypt/live/${cert_name}/privkey.pem"
+}
+
+cert_files_exist() {
+    get_cert_paths "$1" >/dev/null 2>&1
+}
+
+cert_is_valid() {
+    local cert_domain="$1"
+    local cert_info="" cert_file=""
+    cert_info="$(get_cert_paths "$cert_domain" 2>/dev/null || true)"
+    [ -n "$cert_info" ] || return 1
+    cert_file="$(echo "$cert_info" | cut -d'|' -f2)"
+    [ -f "$cert_file" ] || return 1
+    openssl x509 -checkend 0 -noout -in "$cert_file" >/dev/null 2>&1 || return 1
+    if openssl x509 -in "$cert_file" -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | grep -qw "DNS:${cert_domain}"; then
+        return 0
+    fi
+    openssl x509 -in "$cert_file" -noout -subject 2>/dev/null | grep -Eq "CN[[:space:]]*=[[:space:]]*${cert_domain}([,/]|$)"
+}
+
+cert_key_matches() {
+    local cert_domain="$1"
+    local cert_info="" cert_file="" key_file="" cert_pub="" key_pub=""
+    cert_info="$(get_cert_paths "$cert_domain" 2>/dev/null || true)"
+    [ -n "$cert_info" ] || return 1
+    cert_file="$(echo "$cert_info" | cut -d'|' -f2)"
+    key_file="$(echo "$cert_info" | cut -d'|' -f3)"
+    [ -f "$cert_file" ] && [ -f "$key_file" ] || return 1
+    cert_pub="$(openssl x509 -in "$cert_file" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform pem 2>/dev/null || true)"
+    key_pub="$(openssl pkey -in "$key_file" -pubout -outform pem 2>/dev/null || true)"
+    [ -n "$cert_pub" ] && [ -n "$key_pub" ] && [ "$cert_pub" = "$key_pub" ]
+}
+
+show_local_cert_info() {
+    local cert_domain="$1"
+    local cert_info="" cert_file=""
+    cert_info="$(get_cert_paths "$cert_domain" 2>/dev/null || true)"
+    cert_file="$(echo "$cert_info" | cut -d'|' -f2)"
+    if [ -f "$cert_file" ]; then
+        echo "域名: ${cert_domain}"
+        openssl x509 -noout -subject -issuer -dates -in "$cert_file" 2>/dev/null || true
+    fi
+}
+
+ensure_certbot_installed() {
+    if command -v certbot >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "未检测到 certbot，正在安装..."
+    if command -v apt-get >/dev/null 2>&1; then
+        ${SUDO} apt-get update -y
+        ${SUDO} apt-get install -y certbot
+    elif command -v yum >/dev/null 2>&1; then
+        ${SUDO} yum install -y certbot
+    else
+        echo "❌ 未检测到 apt-get/yum，无法自动安装 certbot。"
+        return 1
+    fi
+}
+
+issue_cert_webroot() {
+    local cert_domain="$1"
+    local acme_root="/var/www/acme"
+    local acme_site="/etc/nginx/sites-available/dcf-acme-${cert_domain}.conf"
+    local acme_link="/etc/nginx/sites-enabled/dcf-acme-${cert_domain}.conf"
+    ${SUDO} mkdir -p "$acme_root" /etc/nginx/sites-available /etc/nginx/sites-enabled
+    ${SUDO} tee "$acme_site" >/dev/null <<ACME_NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${cert_domain};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root ${acme_root};
+        default_type "text/plain";
+    }
+
+    location / {
+        return 404;
+    }
+}
+ACME_NGINX
+    ${SUDO} ln -sf "$acme_site" "$acme_link"
+    if ! ${SUDO} nginx -t; then
+        echo "❌ nginx ACME 临时配置检查失败。"
+        return 1
+    fi
+    ${SUDO} systemctl reload nginx 2>/dev/null || ${SUDO} systemctl restart nginx || return 1
+    ${SUDO} certbot certonly --webroot -w "$acme_root" --non-interactive --agree-tos --register-unsafely-without-email -d "$cert_domain"
+}
+
+issue_cert_standalone() {
+    local cert_domain="$1"
+    echo "webroot 方式失败，尝试 standalone 方式申请证书..."
+    ${SUDO} systemctl stop nginx 2>/dev/null || true
+    ${SUDO} systemctl stop apache2 2>/dev/null || true
+    ${SUDO} systemctl stop caddy 2>/dev/null || true
+    sleep 2
+    if ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE '(^|:)80$'; then
+        echo "❌ 80 端口仍被占用，无法使用 standalone 方式申请证书。"
+        ss -lntp 2>/dev/null | grep -E '(^|:)80 ' || true
+        ${SUDO} systemctl start nginx 2>/dev/null || true
+        return 1
+    fi
+    ${SUDO} certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email -d "$cert_domain"
+}
+
+prepare_web_cert_for_domain() {
+    local cert_domain="$1"
+    local server_ip="" resolved_ip="" cert_info=""
+    echo "检查域名证书：${cert_domain}"
+
+    if cert_files_exist "$cert_domain" && cert_is_valid "$cert_domain" && cert_key_matches "$cert_domain"; then
+        echo "检测到有效 Let's Encrypt 证书，直接复用。"
+        show_local_cert_info "$cert_domain"
+        return 0
+    fi
+
+    echo "未找到可用正式证书，将自动申请 Let's Encrypt 证书。"
+    server_ip="$(get_public_ipv4)"
+    resolved_ip="$(getent ahostsv4 "$cert_domain" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    if [ -n "$server_ip" ] && [ -n "$resolved_ip" ] && [ "$server_ip" != "$resolved_ip" ]; then
+        echo "⚠️ 域名解析 IP 与本机公网 IP 可能不一致："
+        echo "   域名解析: $resolved_ip"
+        echo "   本机公网: $server_ip"
+        echo "   证书申请可能失败，请确认 DNS 已指向本机。"
+    fi
+
+    ensure_certbot_installed || return 1
+
+    if issue_cert_webroot "$cert_domain"; then
+        :
+    else
+        issue_cert_standalone "$cert_domain" || {
+            ${SUDO} systemctl start nginx 2>/dev/null || true
+            echo "❌ Let's Encrypt 证书申请失败。请检查域名解析、80端口、防火墙/安全组。"
+            return 1
+        }
+    fi
+
+    ${SUDO} systemctl start nginx 2>/dev/null || true
+
+    if cert_files_exist "$cert_domain" && cert_is_valid "$cert_domain" && cert_key_matches "$cert_domain"; then
+        echo "✅ Let's Encrypt 证书已就绪。"
+        show_local_cert_info "$cert_domain"
+        return 0
+    fi
+
+    echo "❌ 证书文件存在性/有效性/私钥匹配校验未通过。"
+    return 1
+}
+
 backup_path_if_exists() {
     local target="$1"
     local ts
@@ -545,14 +735,11 @@ configure_web_portal() {
     local admin_user="admin"
     local admin_pass=""
     local admin_pass2=""
-    local cert_dir="$DCF_DIR/certs"
-    local cert_file="$cert_dir/dcf-web.crt"
-    local key_file="$cert_dir/dcf-web.key"
-    local le_dir="/etc/letsencrypt/live/$domain"
-    local le_fullchain="$le_dir/fullchain.pem"
-    local le_privkey="$le_dir/privkey.pem"
+    local cert_file=""
+    local key_file=""
+    local cert_info=""
+    local cert_name=""
 
-    mkdir -p "$cert_dir"
 
     echo
     echo "${C_CYAN}${C_BOLD}Web 管理端配置${C_RESET}"
@@ -610,20 +797,14 @@ Path(os.environ["WEB_CONF_FILE"]).write_text(json.dumps(cfg, ensure_ascii=False,
 PY
 
 
-    if [ -f "$le_fullchain" ] && [ -f "$le_privkey" ]; then
-        echo "检测到 Let's Encrypt 正式证书，优先使用：$le_dir"
-        cert_file="$le_fullchain"
-        key_file="$le_privkey"
-    else
-        if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-            echo "未检测到正式证书，生成自签名证书（可后续替换为正式证书）..."
-            openssl req -x509 -nodes -newkey rsa:2048 \
-                -keyout "$key_file" \
-                -out "$cert_file" \
-                -days 3650 \
-                -subj "/CN=$domain" >/dev/null 2>&1
-        fi
+    if ! prepare_web_cert_for_domain "$domain"; then
+        echo "❌ Web 管理端证书准备失败，已停止配置。"
+        return 1
     fi
+    cert_info="$(get_cert_paths "$domain")" || return 1
+    cert_name="$(echo "$cert_info" | cut -d'|' -f1)"
+    cert_file="$(echo "$cert_info" | cut -d'|' -f2)"
+    key_file="$(echo "$cert_info" | cut -d'|' -f3)"
 
     echo "检查 Web 程序与模板目录..."
     if [ ! -d "$DCF_DIR/web_templates" ] || [ ! -d "$DCF_DIR/web_static" ]; then
@@ -705,11 +886,7 @@ NGINX
     echo
     echo "✅ Web 管理端已配置完成"
     echo "访问地址: https://$domain:$WEB_PUBLIC_PORT/login"
-    if [ "$cert_file" = "$le_fullchain" ]; then
-        echo "证书来源: Let's Encrypt ($le_dir)"
-    else
-        echo "证书来源: 自签名证书 ($cert_file)"
-    fi
+    echo "证书来源: Let's Encrypt (/etc/letsencrypt/live/${cert_name})"
 }
 
 
