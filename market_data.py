@@ -472,10 +472,10 @@ def _fetch_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> Ma
     code = _hk_code(symbol_or_code)
     errors = []
     for label, fn in [
+        ("tencent_hk", _fetch_tencent_hk_snapshot),
         ("eastmoney_hk", _fetch_eastmoney_hk_snapshot),
         ("yahoo_csv_hk", _fetch_yahoo_csv_hk_snapshot),
         ("yfinance_hk", _fetch_yfinance_hk_snapshot),
-        ("tencent_hk", _fetch_tencent_hk_snapshot),
     ]:
         try:
             snap = fn(code, days, price_scale)

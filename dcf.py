@@ -1396,7 +1396,7 @@ def strategy_for_dcf(name, cfg, state):
 
     extra_info_full = _build_zone_extra_info()
     market_line = f"📡行情源: {snapshot.source}，数据状态: OK。"
-    extra_info_full = (extra_info_full + "\n\n" if extra_info_full else "") + market_line
+    extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line
     status_suffix = f"\n🚦策略运行状态: {strategy_run.upper()}"
     status_msg = build_status_message(
         name=name, symbol=symbol, now_str=now_str, zone=zone,
@@ -1407,7 +1407,7 @@ def strategy_for_dcf(name, cfg, state):
         sell_price=sell_price, clear_price=clear_price,
         position_mode=position_mode, extra_info=extra_info_full
     )
-    logging.info(status_msg)
+    logging.info(status_msg + "\n")
     dcf_state["last_status_msg"] = status_msg
     if strategy_run == "off":
         return []
