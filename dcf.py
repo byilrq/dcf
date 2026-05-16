@@ -590,11 +590,17 @@ def _is_price_jump_suspicious(current_price, reference_price, max_ratio=0.25):
     return False, ratio
 
 
-def _build_market_data_error_message(name, symbol, reason, current_price=None, last_known_price=None, closes_count=None, source=None, last_bar_date=None):
+def _format_market_message_lines(name, symbol, level, reason, current_price=None, last_known_price=None, closes_count=None, source=None, last_bar_date=None):
+    if level == "warn":
+        head = f"🟡[WARN]【{name}】 ({symbol})"
+        status = "⚠️行情源观察中，本轮只监控不交易。"
+    else:
+        head = f"🎯[ERROR]【{name}】 ({symbol})"
+        status = "❌行情数据异常，已跳过本轮策略，不会触发交易。"
     lines = [
-        f"🎯[ERROR]【{name}】 ({symbol})",
+        head,
         f"🕒时间: {strategy_now().strftime('%Y.%m.%d.%H:%M')}",
-        "❌行情数据异常，已跳过本轮策略，不会触发交易。",
+        status,
         f"原因: {reason}",
     ]
     if source:
@@ -613,22 +619,45 @@ def _build_market_data_error_message(name, symbol, reason, current_price=None, l
             lines.append(f"上次有效价: {last_known_price}")
     if closes_count is not None:
         lines.append(f"历史数据条数: {closes_count}")
-    return "\n".join(lines)
+    return lines
+
+
+def _build_market_data_error_message(name, symbol, reason, current_price=None, last_known_price=None, closes_count=None, source=None, last_bar_date=None):
+    return chr(10).join(_format_market_message_lines(name, symbol, "error", reason, current_price, last_known_price, closes_count, source, last_bar_date))
+
+
+def _build_market_data_warn_message(name, symbol, reason, current_price=None, last_known_price=None, closes_count=None, source=None, last_bar_date=None):
+    return chr(10).join(_format_market_message_lines(name, symbol, "warn", reason, current_price, last_known_price, closes_count, source, last_bar_date))
+
+
+def _is_all_sources_failed_reason(reason):
+    text = str(reason or "")
+    return ("全部数据源失败" in text) or ("全部行情源失败" in text) or ("全部数据源" in text and "失败" in text)
 
 
 def _maybe_market_alert(dcf_state, msg, reason_key):
-    """行情异常即时推送，但按小时和原因去重，避免每分钟刷屏。"""
-    hour_key = strategy_now().strftime("%Y%m%d%H")
-    alert_key = f"{hour_key}|{reason_key[:160]}"
-    if dcf_state.get("last_market_alert_key") == alert_key:
+    """只有全部行情源失败才推送，并按标的/自然日去重。"""
+    if not _is_all_sources_failed_reason(reason_key):
         return []
-    dcf_state["last_market_alert_key"] = alert_key
+    day_key = strategy_now().strftime("%Y%m%d")
+    alert_key = f"{day_key}|all_sources_failed"
+    if dcf_state.get("last_market_all_sources_alert_key") == alert_key:
+        return []
+    dcf_state["last_market_all_sources_alert_key"] = alert_key
     return [msg]
 
 
 def _mark_market_error(dcf_state, msg, reason, source=""):
     dcf_state["last_status_msg"] = msg
     dcf_state["market_status"] = "error"
+    dcf_state["market_error"] = str(reason)[:500]
+    if source:
+        dcf_state["market_source"] = source
+
+
+def _mark_market_warn(dcf_state, msg, reason, source=""):
+    dcf_state["last_status_msg"] = msg
+    dcf_state["market_status"] = "warn"
     dcf_state["market_error"] = str(reason)[:500]
     if source:
         dcf_state["market_source"] = source
@@ -1236,15 +1265,15 @@ def strategy_for_dcf(name, cfg, state):
 
     source_ok, source_reason = _check_market_source_switch(dcf_state, snapshot, cfg)
     if not source_ok:
-        msg = _build_market_data_error_message(
+        msg = _build_market_data_warn_message(
             name, symbol, source_reason, current_price=current_price,
             last_known_price=last_valid_price, closes_count=len(closes),
             source=snapshot.source, last_bar_date=snapshot.last_bar_date
         )
         logging.warning(msg)
-        _mark_market_error(dcf_state, msg, source_reason, snapshot.source)
-        # 行情源切换首轮只监控不交易，也不更新 last_price / last_trade_price / last_add_price。
-        return _maybe_market_alert(dcf_state, msg, source_reason)
+        _mark_market_warn(dcf_state, msg, source_reason, snapshot.source)
+        # 行情源切换首轮只监控不交易，也不更新 last_price / last_trade_price / last_add_price；WARN 不推送。
+        return []
     elif source_reason:
         logging.warning(f"{name} {symbol}: {source_reason}，本轮继续执行行情质量检查。")
 
@@ -1319,7 +1348,7 @@ def strategy_for_dcf(name, cfg, state):
         return format_percent_ratio(value, digits=2)
 
     def _build_zone_extra_info():
-        dynamic_info = f"⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
+        dynamic_info = f"⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
         lines = []
         pyramid_steps_cfg = int(_safe_float(cfg.get("pyramid_steps", 0), 0))
         pyramid_weights = cfg.get("pyramid_weights", []) or []
@@ -1366,10 +1395,8 @@ def strategy_for_dcf(name, cfg, state):
         return "\n".join(lines)
 
     extra_info_full = _build_zone_extra_info()
-    market_line = f"📡行情源: {snapshot.source}，数据状态: OK"
-    if snapshot.last_bar_date:
-        market_line += f"，K线日期: {snapshot.last_bar_date}"
-    extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line
+    market_line = f"📡行情源: {snapshot.source}，数据状态: OK。"
+    extra_info_full = (extra_info_full + "\n\n" if extra_info_full else "") + market_line
     status_suffix = f"\n🚦策略运行状态: {strategy_run.upper()}"
     status_msg = build_status_message(
         name=name, symbol=symbol, now_str=now_str, zone=zone,
@@ -1447,7 +1474,7 @@ def strategy_for_dcf(name, cfg, state):
         dcf_state["target_reached_once"] = add_state.get("target_reached_once", target_reached_once)
         dcf_state["pyramid_active"] = add_state.get("pyramid_active", pyramid_active)
         persist_runtime_position_to_config(name, current_units, current_avg_cost)
-        extra_info = f"🏛{add_reason}: {format_units_for_display(add_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
+        extra_info = f"🏛{add_reason}: {format_units_for_display(add_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
         trade_msg = build_trade_message(
             name=name, symbol=symbol, now_str=now_str, zone=zone,
             trade_action="买入", trade_price=current_price, trade_qty=add_qty,
@@ -1489,7 +1516,7 @@ def strategy_for_dcf(name, cfg, state):
             dcf_state["last_trade_side"] = "sell"
             last_trade_price = new_state.get("last_trade_price", last_trade_price)
             persist_runtime_position_to_config(name, current_units, current_avg_cost)
-            extra_info = f"🎯趋势区卖出机动仓: {format_units_for_display(sell_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
+            extra_info = f"🎯趋势区卖出机动仓: {format_units_for_display(sell_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
             trade_msg = build_trade_message(
                 name=name, symbol=symbol, now_str=now_str, zone="TREND_ZONE",
                 trade_action="卖出", trade_price=current_price, trade_qty=sell_qty,
@@ -1533,7 +1560,7 @@ def strategy_for_dcf(name, cfg, state):
                 clear_step = step
                 dcf_state["clear_step"] = clear_step
                 persist_runtime_position_to_config(name, current_units, current_avg_cost)
-                extra_info = f"🧹离场区倒金字塔卖出: 第{step}步 ({step_info['weight_percent']:.1f}%)\n{format_units_for_display(sell_units, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
+                extra_info = f"🧹离场区倒金字塔卖出: 第{step}步 ({step_info['weight_percent']:.1f}%)\n{format_units_for_display(sell_units, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
                 trade_msg = build_trade_message(
                     name=name, symbol=symbol, now_str=now_str, zone="SELL_ZONE",
                     trade_action="卖出", trade_price=current_price, trade_qty=sell_units,
@@ -1667,20 +1694,27 @@ def main_loop():
             continue
         # 策略执行
         all_trade_msgs = []
+        all_market_error_msgs = []
         for name, cfg in ETF_CONFIG.items():
             if not isinstance(cfg, dict):
                 logging.error(f"配置项 {name} 不是字典，类型为 {type(cfg)}，已跳过。")
                 continue
             try:
                 msgs = strategy_for_dcf(name, cfg, state)
-                if msgs:
-                    all_trade_msgs.extend(msgs)
+                for msg in msgs or []:
+                    text = str(msg)
+                    if "🎯[TRADE]" in text:
+                        all_trade_msgs.append(text)
+                    elif "🎯[ERROR]" in text:
+                        all_market_error_msgs.append(text)
+                    else:
+                        logging.info(f"非交易消息未推送: {text[:160]}")
             except Exception as e:
                 logging.exception(f"{name} 策略执行出错: {e}")
         save_state(state)
-        # 推送交易信号
+        # 推送交易信号：只有真正 TRADE 才进入买卖推送
         if all_trade_msgs:
-            body = "\n\n".join(all_trade_msgs)
+            body = (chr(10) * 2).join(all_trade_msgs)
             logging.info("=" * 60)
             logging.info("📨 推送买卖信号:")
             logging.info("=" * 60)
@@ -1690,6 +1724,19 @@ def main_loop():
                 logging.info("✅ 买卖信号推送成功")
             except Exception:
                 logging.exception("❌ 推送买卖信号失败")
+            logging.info("=" * 60)
+        # 推送行情错误：仅全部数据源失败且已按当天去重后的 ERROR 会到这里
+        if all_market_error_msgs:
+            body = (chr(10) * 2).join(all_market_error_msgs)
+            logging.info("=" * 60)
+            logging.info("📨 推送行情错误:")
+            logging.info("=" * 60)
+            logging.info(body)
+            try:
+                send_notification(body)
+                logging.info("✅ 行情错误推送成功")
+            except Exception:
+                logging.exception("❌ 推送行情错误失败")
             logging.info("=" * 60)
         time_module.sleep(STRATEGY.get("loop_interval", 60))
 
