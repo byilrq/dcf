@@ -10,7 +10,7 @@ DCF market data adapter layer.
 1. 返回统一 MarketSnapshot；当前价 = closes[-1]，MA 也用同一组 closes。
 2. 不伪造历史 K 线；缓存只用于展示/观察，默认不允许交易。
 3. 成功获取真实行情时写入本地缓存；全部接口失败时可返回缓存快照，但 trade_allowed=False。
-4. 港股优先东方财富，其次 yfinance，腾讯 proxy 仅作为最后备用。避免旧 web.ifzq.gtimg.cn。
+4. 港股优先东方财富，其次 Yahoo 直连/yfinance，腾讯 proxy 作为最后真实备用。避免旧 web.ifzq.gtimg.cn。
 """
 
 from __future__ import annotations
@@ -226,22 +226,79 @@ def _fetch_sina_a_snapshot(symbol: str, days: int, price_scale: float) -> Market
     raise RuntimeError(f"新浪A股K线数据不足: {symbol}, count={len(closes)}, response={str(data)[:220]}")
 
 
+
+def _tencent_a_symbol(symbol: str) -> str:
+    raw = str(symbol or "").upper().strip()
+    if raw.startswith("SH"):
+        return "sh" + raw[2:]
+    if raw.startswith("SZ"):
+        return "sz" + raw[2:]
+    if raw.isdigit() and len(raw) == 6:
+        return ("sh" if raw.startswith("6") else "sz") + raw
+    raise ValueError(f"不支持的A股代码格式: {symbol}")
+
+
+def _fetch_tencent_a_snapshot(symbol: str, days: int, price_scale: float) -> MarketSnapshot:
+    """A股/ETF备用：腾讯 proxy newfqkline，不复权。"""
+    t_symbol = _tencent_a_symbol(symbol)
+    lmt = max(int(days), 2)
+    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+    candidates = [
+        f"{t_symbol},day,,,{min(max(lmt, 2), 800)},day",
+        f"{t_symbol},day,,,{min(max(lmt, 2), 800)},",
+    ]
+    now = datetime.now()
+    years_back = max(3, int(lmt / 220) + 2)
+    candidates.append(f"{t_symbol},day,{now.year-years_back}-01-01,{now.year+1}-12-31,800,day")
+    rows, last_err = [], None
+    for param in candidates:
+        try:
+            resp = requests.get(url, params={"param": param, "r": str(random.random())}, headers=_headers("https://gu.qq.com/"), timeout=12)
+            resp.raise_for_status()
+            data = _decode_tencent_json(resp.text)
+            node = (((data or {}).get("data") or {}).get(t_symbol) or {})
+            part = node.get("day") or node.get("qfqday") or node.get("hfqday") or []
+            if part:
+                rows.extend(part)
+                break
+            last_err = f"bad_or_empty response={str(data)[:220]}"
+        except Exception as e:
+            last_err = e
+            continue
+    dedup = {}
+    for k in rows:
+        try:
+            date = str(k[0])
+            close_price = float(k[2]) * float(price_scale)
+            if close_price > 0:
+                dedup[date] = round(close_price, 4)
+        except Exception:
+            continue
+    dates = sorted(dedup.keys())
+    closes = [dedup[d] for d in dates]
+    if len(closes) >= 2:
+        snap = MarketSnapshot(symbol.upper(), "tencent_a_unadjusted", closes[-lmt:], price_scale, dates[-1] if dates else None)
+        _write_cache(snap)
+        return snap
+    raise RuntimeError(f"腾讯A股/ETF K线数据不足: {symbol}, count={len(closes)}, last_error={last_err}")
+
 def _fetch_a_snapshot(symbol: str, days: int, price_scale: float) -> MarketSnapshot:
     errors = []
-    try:
-        return _fetch_sina_a_snapshot(symbol, days, price_scale)
-    except Exception as e:
-        errors.append(f"sina_a={e}")
-    try:
-        snap = _fetch_eastmoney_kline_snapshot(_eastmoney_secid(symbol), symbol.upper(), days, price_scale, EASTMONEY_A_ENDPOINTS, "eastmoney_a")
-        if errors:
-            failed = "/".join(x.split("=", 1)[0] for x in errors)
-            logging.info(f"A股/ETF {symbol.upper()} 已使用行情源 {snap.source}；备用原因: {failed} 不可用。")
-        return snap
-    except Exception as e:
-        errors.append(f"eastmoney_a={e}")
+    for label, fn in [
+        ("sina_a", _fetch_sina_a_snapshot),
+        ("eastmoney_a", lambda sym, d, ps: _fetch_eastmoney_kline_snapshot(_eastmoney_secid(sym), sym.upper(), d, ps, EASTMONEY_A_ENDPOINTS, "eastmoney_a")),
+        ("tencent_a", _fetch_tencent_a_snapshot),
+    ]:
+        try:
+            snap = fn(symbol, days, price_scale)
+            if errors:
+                failed = "/".join(x.split("=", 1)[0] for x in errors)
+                logging.info(f"A股/ETF {symbol.upper()} 已使用行情源 {snap.source}；备用原因: {failed} 不可用。")
+            return snap
+        except Exception as e:
+            errors.append(f"{label}={e}")
+            continue
     return _read_cache(symbol.upper(), days, price_scale, "A股/ETF日K全部数据源失败: " + "; ".join(errors))
-
 
 def _hk_code(symbol_or_code: str) -> str:
     raw = str(symbol_or_code or "").upper().strip()
@@ -265,6 +322,60 @@ def _yfinance_hk_symbol(symbol_or_code: str) -> str:
     """
     code5 = _hk_code(symbol_or_code)
     return f"{code5[-4:].zfill(4)}.HK"
+
+
+def _fetch_yahoo_csv_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
+    """港股备用：Yahoo Finance 直连接口。
+
+    实际使用 Yahoo chart JSON 端点读取未复权 Close，避免 yfinance 包装层偶发
+    timezone/quoteSummary 失败。source 保持为 yahoo_csv_hk，便于和配置/日志顺序对应。
+    """
+    code = _hk_code(symbol_or_code)
+    yf_symbol = _yfinance_hk_symbol(symbol_or_code)
+    lmt = max(int(days), 2)
+    years = max(2, int(lmt / 220) + 2)
+    period1 = int((datetime.now() - timedelta(days=years * 370)).timestamp())
+    period2 = int((datetime.now() + timedelta(days=2)).timestamp())
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}"
+    params = {
+        "period1": str(period1),
+        "period2": str(period2),
+        "interval": "1d",
+        "events": "history",
+        "includeAdjustedClose": "true",
+    }
+    try:
+        resp = requests.get(url, params=params, headers=_headers("https://finance.yahoo.com/"), timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise RuntimeError(f"Yahoo直连下载失败 {yf_symbol}: {e}")
+    chart = ((data or {}).get("chart") or {})
+    if chart.get("error"):
+        raise RuntimeError(f"Yahoo返回错误 {yf_symbol}: {chart.get('error')}")
+    result = (chart.get("result") or [])
+    if not result:
+        raise RuntimeError(f"Yahoo无港股K线: {yf_symbol}")
+    node = result[0] or {}
+    timestamps = node.get("timestamp") or []
+    quote = (((node.get("indicators") or {}).get("quote") or [{}])[0] or {})
+    close_values = quote.get("close") or []
+    closes, dates = [], []
+    for ts, val in zip(timestamps, close_values):
+        try:
+            if val is None:
+                continue
+            close_price = float(val) * float(price_scale)
+            if close_price > 0:
+                dates.append(datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d"))
+                closes.append(round(close_price, 4))
+        except Exception:
+            continue
+    if len(closes) >= 2:
+        snap = MarketSnapshot("HK" + code, "yahoo_csv_hk", closes[-lmt:], price_scale, dates[-1] if dates else None)
+        _write_cache(snap)
+        return snap
+    raise RuntimeError(f"Yahoo港股K线数据不足: {yf_symbol}, count={len(closes)}")
 
 
 def _fetch_yfinance_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
@@ -362,6 +473,7 @@ def _fetch_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> Ma
     errors = []
     for label, fn in [
         ("eastmoney_hk", _fetch_eastmoney_hk_snapshot),
+        ("yahoo_csv_hk", _fetch_yahoo_csv_hk_snapshot),
         ("yfinance_hk", _fetch_yfinance_hk_snapshot),
         ("tencent_hk", _fetch_tencent_hk_snapshot),
     ]:
