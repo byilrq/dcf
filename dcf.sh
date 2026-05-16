@@ -380,6 +380,7 @@ update_project_files() {
 
     # 代码/模板文件：更新时覆盖，但会自动备份旧版本
     copy_project_file_overwrite "$srcdir/dcf.py" "$DCF_DIR/dcf.py"
+    copy_project_file_overwrite "$srcdir/market_data.py" "$DCF_DIR/market_data.py"
     copy_project_file_overwrite "$srcdir/strategy.py" "$DCF_DIR/strategy.py"
     copy_project_file_overwrite "$srcdir/dcf_web.py" "$DCF_DIR/dcf_web.py"
     copy_project_file_overwrite "$srcdir/backtest_dcf.py" "$DCF_DIR/backtest_dcf.py"
@@ -405,7 +406,7 @@ self_check_project_files() {
     ensure_dcf_dir
     local ok=1
     echo "=============== DCF 项目文件检查 ==============="
-    for f in dcf.py strategy.py dcf_web.py backtest_dcf.py dcf.yaml; do
+    for f in dcf.py market_data.py strategy.py dcf_web.py backtest_dcf.py dcf.yaml; do
         if [ -f "$DCF_DIR/$f" ]; then
             echo "✅ $f"
         else

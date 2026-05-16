@@ -16,6 +16,7 @@ import re
 import random
 from datetime import datetime
 from email.header import Header
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # 导入策略模块
 from strategy import (
@@ -266,7 +267,7 @@ def normalize_symbol_state(name, cfg, entry):
 # ===========================
 def rotate_and_backup_logs(now: datetime = None):
     if now is None:
-        now = datetime.now()
+        now = strategy_now()
     log_file = BASE_DIR / "dcf.log"
     backup_date = (now.date() - timedelta(days=1))
     backup_file = LOG_DIR / f"dcf.{backup_date.strftime('%Y%m%d')}.log"
@@ -361,15 +362,54 @@ STRATEGY = {
     "session_start": "09:30",
     "session_end": "16:00",
     "daily_push_time": "09:00",
-    "log_rotate_time": "09:00"
+    "log_rotate_time": "09:00",
+    # 所有策略时间参数均按该时区解释；不依赖服务器系统时区。
+    # 可选示例：Asia/Shanghai、Asia/Tokyo、Asia/Singapore、America/Los_Angeles。
+    "timezone": "Asia/Shanghai",
 }
+
+TIMEZONE_ALIASES = {
+    "shanghai": "Asia/Shanghai",
+    "上海": "Asia/Shanghai",
+    "china": "Asia/Shanghai",
+    "cn": "Asia/Shanghai",
+    "tokyo": "Asia/Tokyo",
+    "东京": "Asia/Tokyo",
+    "japan": "Asia/Tokyo",
+    "jp": "Asia/Tokyo",
+    "singapore": "Asia/Singapore",
+    "新加坡": "Asia/Singapore",
+    "sg": "Asia/Singapore",
+    "los_angeles": "America/Los_Angeles",
+    "los angeles": "America/Los_Angeles",
+    "la": "America/Los_Angeles",
+    "洛杉矶": "America/Los_Angeles",
+}
+
+def get_strategy_timezone_name() -> str:
+    raw = str(STRATEGY.get("timezone", "Asia/Shanghai") or "Asia/Shanghai").strip()
+    if not raw:
+        return "Asia/Shanghai"
+    return TIMEZONE_ALIASES.get(raw.lower(), raw)
+
+def resolve_strategy_timezone():
+    name = get_strategy_timezone_name()
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        logging.warning(f"⚠️ 策略时区配置无效: {name}，已回退到 Asia/Shanghai")
+        return ZoneInfo("Asia/Shanghai")
+
+def strategy_now() -> datetime:
+    """Return current time in configured strategy timezone, independent of server timezone."""
+    return datetime.now(resolve_strategy_timezone())
 
 # ===========================
 # 时间控制函数
 # ===========================
 def in_trade_session(now: datetime = None) -> bool:
     if now is None:
-        now = datetime.now()
+        now = strategy_now()
     start_str = STRATEGY.get("session_start", "09:30")
     end_str = STRATEGY.get("session_end", "16:00")
     sh, sm = _parse_hm(start_str)
@@ -381,7 +421,7 @@ def in_trade_session(now: datetime = None) -> bool:
 
 def should_rotate_logs(state: dict, now: datetime = None) -> bool:
     if now is None:
-        now = datetime.now()
+        now = strategy_now()
     rotate_str = STRATEGY.get("log_rotate_time", "09:00")
     rh, rm = _parse_hm(rotate_str)
     rotate_t = time(rh, rm)
@@ -394,7 +434,7 @@ def should_rotate_logs(state: dict, now: datetime = None) -> bool:
 
 def should_do_daily_push(state: dict, now: datetime = None) -> bool:
     if now is None:
-        now = datetime.now()
+        now = strategy_now()
     push_str = STRATEGY.get("daily_push_time", "09:00")
     ph, pm = _parse_hm(push_str)
     push_t = time(ph, pm)
@@ -496,7 +536,7 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
 # ===========================
 def build_daily_snapshot(state: dict) -> str:
     lines = []
-    current_time = datetime.now().strftime("%Y.%m.%d.%H:%M")
+    current_time = strategy_now().strftime("%Y.%m.%d.%H:%M")
     for name in ETF_CONFIG.keys():
         dcf_state = state.get(name, {})
         status = dcf_state.get("last_status_msg")
@@ -515,296 +555,125 @@ def build_daily_snapshot(state: dict) -> str:
                 lines.append(f"[仅监控] {name}: 暂无状态记录")
             else:
                 lines.append(f"{name}: 暂无状态记录")
-    snapshot_header = f"🎯 每日快照 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    snapshot_header = f"🎯 每日快照 - {strategy_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     return snapshot_header + "\n\n".join(lines)
 
 # ===========================
-# 行情数据获取 - 支持A股和港股
+# 行情数据获取 - 独立接口层
 # ===========================
-def get_price_from_api(symbol, price_scale=1.0, last_known_price=None):
-    raw_symbol = symbol.upper().strip()
-    if raw_symbol.startswith("HK"):
-        return get_hk_price(symbol, price_scale)
-    return get_a_price(symbol, price_scale)
-
-
-def _eastmoney_secid(symbol):
-    raw = symbol.upper().strip()
-    if raw.startswith("SH"):
-        return "1." + raw[2:]
-    if raw.startswith("SZ"):
-        return "0." + raw[2:]
-    if raw.isdigit() and len(raw) == 6:
-        return ("1." if raw.startswith("6") else "0.") + raw
-    raise ValueError(f"不支持的A股代码格式: {symbol}")
-
-
-def _eastmoney_hk_secid(symbol_or_code):
-    raw = str(symbol_or_code or "").upper().strip()
-    if raw.startswith("HK"):
-        raw = raw[2:]
-    code = raw.zfill(5)
-    return "116." + code
-
-
-EASTMONEY_KLINE_ENDPOINTS = [
-    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-]
-
-EASTMONEY_HK_KLINE_ENDPOINTS = [
-    "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
-    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-]
-
-EASTMONEY_FQT_OPTIONS = ["1", "0", "2"]  # 1=前复权, 0=不复权, 2=后复权
-
-MARKET_DATA_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-]
-
-# 兼容旧变量名，避免后续引用报错
-EASTMONEY_USER_AGENTS = MARKET_DATA_USER_AGENTS
-
-
-def _parse_eastmoney_klines(data, price_scale):
-    klines = (((data or {}).get("data") or {}).get("klines") or [])
-    closes = []
-    for row in klines:
-        parts = str(row).split(",")
-        if len(parts) < 3:
-            continue
-        try:
-            close_price = float(parts[2]) * float(price_scale)
-            if close_price > 0:
-                closes.append(round(close_price, 4))
-        except Exception:
-            continue
-    return closes
-
-
-def _fetch_eastmoney_kline_closes(secid, symbol_label, days, price_scale=1.0, endpoints=None, max_retries_per_endpoint=1):
-    lmt = max(int(days), 2)
-    endpoints = list(endpoints or EASTMONEY_KLINE_ENDPOINTS)
-    last_err = None
-    for endpoint in endpoints:
-        for fqt in EASTMONEY_FQT_OPTIONS:
-            for attempt in range(max_retries_per_endpoint):
-                if attempt > 0:
-                    time_module.sleep(0.3 + random.random() * 0.5)
-                headers = {
-                    "User-Agent": random.choice(MARKET_DATA_USER_AGENTS),
-                    "Referer": "https://quote.eastmoney.com/",
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache",
-                }
-                params = {
-                    "secid": secid,
-                    "fields1": "f1,f2,f3,f4,f5,f6",
-                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                    "klt": "101",
-                    "fqt": fqt,
-                    "end": "20500101",
-                    "lmt": str(lmt),
-                }
-                try:
-                    resp = requests.get(endpoint, params=params, headers=headers, timeout=12)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    closes = _parse_eastmoney_klines(data, price_scale)
-                    if closes:
-                        if fqt != "1":
-                            logging.warning(f"东方财富 {symbol_label} fqt=1 无数据，已改用 fqt={fqt} 的同源日K数据。")
-                        return closes[-lmt:]
-                    raise RuntimeError(f"东方财富K线为空: {symbol_label}, secid={secid}, fqt={fqt}, response={str(data)[:220]}")
-                except Exception as e:
-                    last_err = e
-                    logging.debug(f"东方财富K线端点失败 {symbol_label}: endpoint={endpoint}, fqt={fqt}, attempt={attempt + 1}, error={e}")
-                    continue
-    raise RuntimeError(f"东方财富全部K线端点均失败: {symbol_label}, last_error={last_err}")
-
-
-def _fetch_eastmoney_daily_closes(symbol, days, price_scale=1.0, max_retries_per_endpoint=1):
-    secid = _eastmoney_secid(symbol)
-    return _fetch_eastmoney_kline_closes(
-        secid=secid,
-        symbol_label=symbol,
-        days=days,
-        price_scale=price_scale,
-        endpoints=EASTMONEY_KLINE_ENDPOINTS,
-        max_retries_per_endpoint=max_retries_per_endpoint,
+try:
+    from market_data import (
+        MarketSnapshot,
+        get_market_snapshot,
+        get_price_from_api,
+        get_history_close,
+        get_hk_history_close,
+        get_a_history_close,
+        get_a_price,
+        get_hk_price,
     )
+except Exception as _market_import_error:
+    raise RuntimeError(f"无法导入行情接口文件 market_data.py: {_market_import_error}")
 
 
-def _sina_symbol(symbol):
-    raw = symbol.upper().strip()
-    if raw.startswith("SH"):
-        return "sh" + raw[2:]
-    if raw.startswith("SZ"):
-        return "sz" + raw[2:]
-    if raw.isdigit() and len(raw) == 6:
-        return ("sh" if raw.startswith("6") else "sz") + raw
-    raise ValueError(f"不支持的A股代码格式: {symbol}")
+def _is_price_jump_suspicious(current_price, reference_price, max_ratio=0.25):
+    try:
+        cur = float(current_price)
+        ref = float(reference_price)
+    except Exception:
+        return False, 1.0
+    if cur <= 0 or ref <= 0:
+        return False, 1.0
+    ratio = cur / ref
+    if ratio > (1.0 + max_ratio) or ratio < (1.0 - max_ratio):
+        return True, ratio
+    return False, ratio
 
 
-def _fetch_sina_daily_closes(symbol, days, price_scale=1.0):
-    """A股/ETF优先数据源：新浪日K。当前价也取本函数最后一根 close，保持同源。"""
-    sina_symbol = _sina_symbol(symbol)
-    lmt = max(int(days), 2)
-    url = "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
-    params = {"symbol": sina_symbol, "scale": "240", "ma": "no", "datalen": str(lmt)}
-    headers = {"User-Agent": random.choice(MARKET_DATA_USER_AGENTS), "Referer": "https://finance.sina.com.cn/"}
-    resp = requests.get(url, params=params, headers=headers, timeout=12)
-    resp.raise_for_status()
-    data = resp.json()
-    part = (((data or {}).get("result") or {}).get("data"))
-    klines = part.get("data") if isinstance(part, dict) else part
-    closes = []
-    for k in klines or []:
+def _build_market_data_error_message(name, symbol, reason, current_price=None, last_known_price=None, closes_count=None, source=None, last_bar_date=None):
+    lines = [
+        f"🎯[ERROR]【{name}】 ({symbol})",
+        f"🕒时间: {strategy_now().strftime('%Y.%m.%d.%H:%M')}",
+        "❌行情数据异常，已跳过本轮策略，不会触发交易。",
+        f"原因: {reason}",
+    ]
+    if source:
+        lines.append(f"📡行情源: {source}")
+    if last_bar_date:
+        lines.append(f"🧾最新K线日期: {last_bar_date}")
+    if current_price is not None:
         try:
-            close_price = float(k.get("close")) * float(price_scale)
-            if close_price > 0:
-                closes.append(round(close_price, 4))
+            lines.append(f"当前价: {float(current_price):.3f}")
         except Exception:
-            continue
-    if len(closes) >= 2:
-        return closes[-lmt:]
-    raise RuntimeError(f"新浪K线数据不足: {symbol}, count={len(closes)}, response={str(data)[:220]}")
-
-
-def _fetch_a_daily_closes(symbol, days, price_scale=1.0):
-    """A股/ETF统一入口：优先新浪日K；失败后再尝试东方财富日K。
-
-    当前价和MA都取同一入口同一组日K最新 close，避免“当前价一个接口、MA另一个接口”的比例不一致。
-    注意：不会构造伪历史数据。所有源都失败时直接抛错，本轮策略跳过。
-    """
-    try:
-        return _fetch_sina_daily_closes(symbol, days, price_scale=price_scale)
-    except Exception as sina_err:
-        logging.warning(f"新浪日K不可用，尝试东方财富日K备用 {symbol}: {sina_err}")
-    try:
-        closes = _fetch_eastmoney_daily_closes(symbol, days, price_scale=price_scale, max_retries_per_endpoint=1)
-        logging.warning(f"{symbol} 已使用东方财富日K备用数据源；当前价和MA均来自同一东方财富日K口径。")
-        return closes
-    except Exception as em_err:
-        raise RuntimeError(f"A股/ETF日K全部数据源失败: {symbol}, eastmoney_error={em_err}")
-
-
-def get_a_price(symbol, price_scale=1.0):
-    """A股/ETF当前价取统一日K入口最新 close，与MA计算同源。"""
-    closes = _fetch_a_daily_closes(symbol, 2, price_scale=price_scale)
-    return round(float(closes[-1]), 4)
-
-
-def _fetch_hk_eastmoney_daily_closes(symbol_or_code, days, price_scale=1.0):
-    """港股优先数据源：东方财富港股日K。
-
-    AkShare 的港股历史K线同样使用东方财富 push2his，港股 secid 为 116.xxxxx。
-    这里当前价和MA都取这组日K close，替代旧的 web.ifzq.gtimg.cn 域名。
-    """
-    raw = str(symbol_or_code or "").upper().strip()
-    code = raw[2:] if raw.startswith("HK") else raw
-    code = code.zfill(5)
-    secid = _eastmoney_hk_secid(code)
-    return _fetch_eastmoney_kline_closes(
-        secid=secid,
-        symbol_label="HK" + code,
-        days=days,
-        price_scale=price_scale,
-        endpoints=EASTMONEY_HK_KLINE_ENDPOINTS,
-        max_retries_per_endpoint=1,
-    )
-
-
-def _fetch_hk_tencent_proxy_daily_closes(symbol_or_code, days, price_scale=1.0):
-    """港股备用数据源：腾讯新版 proxy.finance.qq.com newfqkline。
-
-    避开旧域名 web.ifzq.gtimg.cn 的 DNS 解析失败问题。
-    """
-    raw = str(symbol_or_code or "").upper().strip()
-    code = raw[2:] if raw.startswith("HK") else raw
-    code = code.zfill(5)
-    lmt = max(int(days), 2)
-    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-    params = {"param": f"hk{code},day,,,{lmt},qfq"}
-    headers = {"User-Agent": random.choice(MARKET_DATA_USER_AGENTS), "Referer": "https://gu.qq.com/"}
-    resp = requests.get(url, params=params, headers=headers, timeout=12)
-    resp.raise_for_status()
-    data = resp.json()
-    node = (((data or {}).get("data") or {}).get("hk" + code) or {})
-    klines = node.get("qfqday") or node.get("day") or []
-    closes = []
-    for k in klines:
+            lines.append(f"当前价: {current_price}")
+    if last_known_price is not None:
         try:
-            # 腾讯K线通常为 [date, open, close, high, low, volume, ...]
-            close_price = float(k[2]) * float(price_scale)
-            if close_price > 0:
-                closes.append(round(close_price, 4))
+            lines.append(f"上次有效价: {float(last_known_price):.3f}")
         except Exception:
-            continue
-    if len(closes) >= 2:
-        return closes[-lmt:]
-    raise RuntimeError(f"腾讯新版港股K线数据不足: HK{code}, count={len(closes)}, response={str(data)[:220]}")
+            lines.append(f"上次有效价: {last_known_price}")
+    if closes_count is not None:
+        lines.append(f"历史数据条数: {closes_count}")
+    return "\n".join(lines)
 
 
-def _fetch_hk_daily_closes(symbol_or_code, days, price_scale=1.0):
-    """港股统一入口：东方财富港股日K优先；腾讯新版 proxy 备用。
+def _maybe_market_alert(dcf_state, msg, reason_key):
+    """行情异常即时推送，但按小时和原因去重，避免每分钟刷屏。"""
+    hour_key = strategy_now().strftime("%Y%m%d%H")
+    alert_key = f"{hour_key}|{reason_key[:160]}"
+    if dcf_state.get("last_market_alert_key") == alert_key:
+        return []
+    dcf_state["last_market_alert_key"] = alert_key
+    return [msg]
 
-    当前价和历史MA都来自同一入口返回的日K close；不会构造伪历史数据。
-    """
-    raw = str(symbol_or_code or "").upper().strip()
-    code = raw[2:] if raw.startswith("HK") else raw
-    code = code.zfill(5)
+
+def _mark_market_error(dcf_state, msg, reason, source=""):
+    dcf_state["last_status_msg"] = msg
+    dcf_state["market_status"] = "error"
+    dcf_state["market_error"] = str(reason)[:500]
+    if source:
+        dcf_state["market_source"] = source
+
+
+def _check_market_source_switch(dcf_state, snapshot, cfg):
+    """行情源切换首轮禁止交易，连续确认后才允许新源进入策略。"""
+    new_source = snapshot.source
+    last_source = dcf_state.get("last_valid_market_source") or dcf_state.get("market_source")
+    if not last_source or last_source == new_source:
+        dcf_state["pending_market_source"] = ""
+        dcf_state["pending_market_source_count"] = 0
+        return True, ""
+
     try:
-        return _fetch_hk_eastmoney_daily_closes(code, days, price_scale=price_scale)
-    except Exception as em_err:
-        logging.warning(f"东方财富港股日K不可用，尝试腾讯新版日K备用 HK{code}: {em_err}")
-    try:
-        closes = _fetch_hk_tencent_proxy_daily_closes(code, days, price_scale=price_scale)
-        logging.warning(f"HK{code} 已使用腾讯新版港股日K备用数据源；当前价和MA均来自同一腾讯日K口径。")
-        return closes
-    except Exception as tx_err:
-        raise RuntimeError(f"港股日K全部数据源失败: HK{code}, tencent_error={tx_err}")
+        required = int(_safe_float(cfg.get("market_source_switch_confirmations", STRATEGY.get("market_source_switch_confirmations", 2)), 2))
+    except Exception:
+        required = 2
+    required = max(2, required)
+
+    pending_source = dcf_state.get("pending_market_source")
+    pending_count = int(_safe_float(dcf_state.get("pending_market_source_count", 0), 0))
+    if pending_source == new_source:
+        pending_count += 1
+    else:
+        pending_source = new_source
+        pending_count = 1
+    dcf_state["pending_market_source"] = pending_source
+    dcf_state["pending_market_source_count"] = pending_count
+
+    if pending_count < required:
+        return False, f"行情源从 {last_source} 切换到 {new_source}，等待连续确认 {pending_count}/{required}；本轮只监控不交易"
+
+    return True, f"行情源从 {last_source} 切换到 {new_source}，已连续确认 {pending_count}/{required}"
 
 
-def get_hk_price(symbol, price_scale=1.0):
-    """港股当前价取统一港股日K入口最新 close，与MA计算同源。"""
-    closes = _fetch_hk_daily_closes(symbol, 2, price_scale=price_scale)
-    return round(float(closes[-1]), 4)
-
-
-def validate_hk_price(symbol, current_price, last_known_price, prev_close):
-    if current_price <= 0:
-        logging.warning(f"港股{symbol}价格无效，尝试使用上次价格或昨收价")
-        if last_known_price and last_known_price > 0:
-            return last_known_price
-        if prev_close and prev_close > 0:
-            return prev_close
-        raise ValueError(f"无法获取港股{symbol}的有效价格")
-    return current_price
-
-# ===========================
-# 历史 K 线 - 支持A股和港股
-# ===========================
-def get_history_close(symbol, days=400, price_scale=1.0):
-    raw_symbol = symbol.upper()
-    if raw_symbol.startswith("HK"):
-        logging.debug(f"获取港股 {symbol} {days}天历史K线")
-        return get_hk_history_close(symbol, days, price_scale=price_scale)
-    logging.debug(f"获取A股 {symbol} {days}天历史K线")
-    return get_a_history_close(symbol, days, price_scale=price_scale)
-
-
-def get_hk_history_close(symbol_or_code, days, price_scale=1.0):
-    return _fetch_hk_daily_closes(symbol_or_code, days, price_scale=price_scale)
-
-
-def get_a_history_close(symbol, days, price_scale=1.0):
-    return _fetch_a_daily_closes(symbol, days, price_scale=price_scale)
+def _mark_market_ok(dcf_state, snapshot):
+    dcf_state["market_status"] = "ok"
+    dcf_state["market_error"] = ""
+    dcf_state["market_source"] = snapshot.source
+    dcf_state["last_valid_market_source"] = snapshot.source
+    dcf_state["last_valid_price"] = snapshot.current_price
+    dcf_state["last_valid_bar_date"] = snapshot.last_bar_date
+    dcf_state["pending_market_source"] = ""
+    dcf_state["pending_market_source_count"] = 0
 
 # ===========================
 # 计算简单移动平均线 MA（带数据不足处理）
@@ -949,7 +818,7 @@ def load_push_config():
 def append_push_log(channel, success, detail):
     try:
         PUSH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {channel} | {'成功' if success else '失败'} | {str(detail).replace(chr(10), ' ')[:500]}\n"
+        line = f"{strategy_now().strftime('%Y-%m-%d %H:%M:%S')} | {channel} | {'成功' if success else '失败'} | {str(detail).replace(chr(10), ' ')[:500]}\n"
         with PUSH_LOG_FILE.open('a', encoding='utf-8') as f:
             f.write(line)
     except Exception as e:
@@ -1272,7 +1141,7 @@ def log_trade(dcf_name, symbol, price, qty, side, reason, zone=None,
                 "dividend",
                 "split_ratio",
             ])
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
         writer.writerow([
             now_str,
             dcf_name,
@@ -1309,19 +1178,6 @@ def strategy_for_dcf(name, cfg, state):
     last_trade_price = dcf_state.get("last_trade_price")
     last_trade_side = dcf_state.get("last_trade_side", "buy")
     last_known_price = dcf_state.get("last_price")
-    if last_trade_price is None or last_trade_price <= 0:
-        if last_known_price is not None and last_known_price > 0:
-            current_price_for_init = last_known_price
-        else:
-            current_price_for_init = get_price_from_api(
-                symbol,
-                cfg.get("price_scale", 1.0),
-                last_known_price=last_known_price
-            )
-        last_trade_price = current_price_for_init
-        dcf_state["last_trade_price"] = current_price_for_init
-        dcf_state["last_trade_side"] = "buy"
-        dcf_state["last_price"] = current_price_for_init
     current_units = normalize_position_amount(dcf_state.get("current_units", base_units), position_mode)
     current_avg_cost = dcf_state.get("avg_cost", 0.0)
     live_units = get_live_current_units(cfg)
@@ -1338,26 +1194,103 @@ def strategy_for_dcf(name, cfg, state):
     elif live_avg_cost is not None and abs(live_avg_cost - current_avg_cost) > POSITION_EPSILON:
         current_avg_cost = live_avg_cost
         dcf_state["avg_cost"] = current_avg_cost
-    current_price = get_price_from_api(
-        symbol,
-        cfg.get("price_scale", 1.0),
-        last_known_price=dcf_state.get("last_price")
-    )
-    closes = get_history_close(symbol, STRATEGY.get("fetch_history_days", 400), cfg.get("price_scale", 1.0))
+    price_scale = cfg.get("price_scale", 1.0)
+    fetch_days = STRATEGY.get("fetch_history_days", 400)
     ma_short_len = STRATEGY.get("ma_period_short", 150)
-    ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
-    if ma150_raw is None:
-        msg = (
-            f"🎯[ERROR]【{name}】 ({symbol})\n"
-            f"🕒时间: {datetime.now().strftime('%Y.%m.%d.%H:%M')}\n"
-            f"❌历史数据严重不足，无法计算MA150\n"
-            f"数据长度: {len(closes)}\n"
-            f"当前: {current_price:.3f}"
+    last_valid_price = dcf_state.get("last_valid_price") or last_known_price
+
+    try:
+        snapshot = get_market_snapshot(symbol, fetch_days, price_scale=price_scale)
+    except Exception as e:
+        reason = f"日K获取失败: {e}"
+        msg = _build_market_data_error_message(
+            name, symbol, reason, last_known_price=last_valid_price
         )
         logging.info(msg)
-        dcf_state["last_status_msg"] = msg
-        dcf_state["last_price"] = current_price
-        return []
+        _mark_market_error(dcf_state, msg, reason)
+        return _maybe_market_alert(dcf_state, msg, reason)
+
+    if not getattr(snapshot, "trade_allowed", True):
+        reason = getattr(snapshot, "error", "行情来自缓存或观察源，本轮只监控不交易") or "行情来自缓存或观察源，本轮只监控不交易"
+        msg = _build_market_data_error_message(
+            name, symbol, reason, current_price=getattr(snapshot, "current_price", None),
+            last_known_price=last_valid_price, closes_count=len(getattr(snapshot, "closes", []) or []),
+            source=getattr(snapshot, "source", ""), last_bar_date=getattr(snapshot, "last_bar_date", None)
+        )
+        logging.warning(msg)
+        _mark_market_error(dcf_state, msg, reason, getattr(snapshot, "source", ""))
+        return _maybe_market_alert(dcf_state, msg, reason)
+
+    closes = snapshot.closes
+    current_price = snapshot.current_price
+    if current_price <= 0:
+        reason = "当前价为空或小于等于0"
+        msg = _build_market_data_error_message(
+            name, symbol, reason, current_price=current_price,
+            last_known_price=last_valid_price, closes_count=len(closes),
+            source=snapshot.source, last_bar_date=snapshot.last_bar_date
+        )
+        logging.info(msg)
+        _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        return _maybe_market_alert(dcf_state, msg, reason)
+
+    source_ok, source_reason = _check_market_source_switch(dcf_state, snapshot, cfg)
+    if not source_ok:
+        msg = _build_market_data_error_message(
+            name, symbol, source_reason, current_price=current_price,
+            last_known_price=last_valid_price, closes_count=len(closes),
+            source=snapshot.source, last_bar_date=snapshot.last_bar_date
+        )
+        logging.warning(msg)
+        _mark_market_error(dcf_state, msg, source_reason, snapshot.source)
+        # 行情源切换首轮只监控不交易，也不更新 last_price / last_trade_price / last_add_price。
+        return _maybe_market_alert(dcf_state, msg, source_reason)
+    elif source_reason:
+        logging.warning(f"{name} {symbol}: {source_reason}，本轮继续执行行情质量检查。")
+
+    max_jump = _safe_float(cfg.get("max_price_jump_ratio", STRATEGY.get("max_price_jump_ratio", 0.25)), 0.25)
+    suspicious, jump_ratio = _is_price_jump_suspicious(current_price, last_valid_price, max_jump)
+    if suspicious:
+        reason = f"当前价相对上次有效价跳变过大，ratio={jump_ratio:.3f}，阈值={max_jump:.2f}"
+        msg = _build_market_data_error_message(
+            name, symbol, reason,
+            current_price=current_price, last_known_price=last_valid_price, closes_count=len(closes),
+            source=snapshot.source, last_bar_date=snapshot.last_bar_date
+        )
+        logging.warning(msg)
+        _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        # 关键：异常行情不更新交易锚点，不触发交易。
+        return _maybe_market_alert(dcf_state, msg, reason)
+
+    if len(closes) >= 2:
+        suspicious_prev, prev_ratio = _is_price_jump_suspicious(current_price, closes[-2], max(max_jump, 0.35))
+        if suspicious_prev:
+            reason = f"当前价相对上一根日K跳变过大，ratio={prev_ratio:.3f}"
+            msg = _build_market_data_error_message(
+                name, symbol, reason,
+                current_price=current_price, last_known_price=last_valid_price, closes_count=len(closes),
+                source=snapshot.source, last_bar_date=snapshot.last_bar_date
+            )
+            logging.warning(msg)
+            _mark_market_error(dcf_state, msg, reason, snapshot.source)
+            return _maybe_market_alert(dcf_state, msg, reason)
+
+    if last_trade_price is None or last_trade_price <= 0:
+        last_trade_price = current_price
+        dcf_state["last_trade_price"] = current_price
+        dcf_state["last_trade_side"] = "buy"
+
+    ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
+    if ma150_raw is None:
+        reason = "历史数据严重不足，无法计算MA150"
+        msg = _build_market_data_error_message(
+            name, symbol, reason,
+            current_price=current_price, last_known_price=last_valid_price, closes_count=len(closes),
+            source=snapshot.source, last_bar_date=snapshot.last_bar_date
+        )
+        logging.info(msg)
+        _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        return _maybe_market_alert(dcf_state, msg, reason)
     sideways_score = float(compute_sideways_index(closes, cfg))
     base_k150 = float(cfg.get("k150", 1.0))
     min_k150 = float(cfg.get("sideways_min_k150", 0.85))
@@ -1370,6 +1303,7 @@ def strategy_for_dcf(name, cfg, state):
     dcf_state["dynamic_k150"] = dynamic_k150
     dcf_state["sideways_score"] = sideways_score
     dcf_state["last_price"] = current_price
+    _mark_market_ok(dcf_state, snapshot)
     dcf_state["current_units"] = current_units
     dcf_state["avg_cost"] = current_avg_cost
     dcf_state["ma_short_source"] = ma150_source
@@ -1378,14 +1312,14 @@ def strategy_for_dcf(name, cfg, state):
         current_avg_cost = current_price
         dcf_state["avg_cost"] = current_avg_cost
     zone = get_zone(current_price, ma150, cfg)
-    now_str = datetime.now().strftime("%Y.%m.%d.%H:%M")
+    now_str = strategy_now().strftime("%Y.%m.%d.%H:%M")
     sell_price = ma150 * get_trend_multiple(cfg)
     clear_price = ma150 * get_sell_multiple(cfg)
     def _pct_text(value):
         return format_percent_ratio(value, digits=2)
 
     def _build_zone_extra_info():
-        dynamic_info = f"⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
+        dynamic_info = f"⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
         lines = []
         pyramid_steps_cfg = int(_safe_float(cfg.get("pyramid_steps", 0), 0))
         pyramid_weights = cfg.get("pyramid_weights", []) or []
@@ -1432,6 +1366,10 @@ def strategy_for_dcf(name, cfg, state):
         return "\n".join(lines)
 
     extra_info_full = _build_zone_extra_info()
+    market_line = f"📡行情源: {snapshot.source}，数据状态: OK"
+    if snapshot.last_bar_date:
+        market_line += f"，K线日期: {snapshot.last_bar_date}"
+    extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line
     status_suffix = f"\n🚦策略运行状态: {strategy_run.upper()}"
     status_msg = build_status_message(
         name=name, symbol=symbol, now_str=now_str, zone=zone,
@@ -1509,7 +1447,7 @@ def strategy_for_dcf(name, cfg, state):
         dcf_state["target_reached_once"] = add_state.get("target_reached_once", target_reached_once)
         dcf_state["pyramid_active"] = add_state.get("pyramid_active", pyramid_active)
         persist_runtime_position_to_config(name, current_units, current_avg_cost)
-        extra_info = f"🏛{add_reason}: {format_units_for_display(add_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
+        extra_info = f"🏛{add_reason}: {format_units_for_display(add_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
         trade_msg = build_trade_message(
             name=name, symbol=symbol, now_str=now_str, zone=zone,
             trade_action="买入", trade_price=current_price, trade_qty=add_qty,
@@ -1551,7 +1489,7 @@ def strategy_for_dcf(name, cfg, state):
             dcf_state["last_trade_side"] = "sell"
             last_trade_price = new_state.get("last_trade_price", last_trade_price)
             persist_runtime_position_to_config(name, current_units, current_avg_cost)
-            extra_info = f"🎯趋势区卖出机动仓: {format_units_for_display(sell_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
+            extra_info = f"🎯趋势区卖出机动仓: {format_units_for_display(sell_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
             trade_msg = build_trade_message(
                 name=name, symbol=symbol, now_str=now_str, zone="TREND_ZONE",
                 trade_action="卖出", trade_price=current_price, trade_qty=sell_qty,
@@ -1595,7 +1533,7 @@ def strategy_for_dcf(name, cfg, state):
                 clear_step = step
                 dcf_state["clear_step"] = clear_step
                 persist_runtime_position_to_config(name, current_units, current_avg_cost)
-                extra_info = f"🧹离场区倒金字塔卖出: 第{step}步 ({step_info['weight_percent']:.1f}%)\n{format_units_for_display(sell_units, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
+                extra_info = f"🧹离场区倒金字塔卖出: 第{step}步 ({step_info['weight_percent']:.1f}%)\n{format_units_for_display(sell_units, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}\n📡行情源: {snapshot.source}"
                 trade_msg = build_trade_message(
                     name=name, symbol=symbol, now_str=now_str, zone="SELL_ZONE",
                     trade_action="卖出", trade_price=current_price, trade_qty=sell_units,
@@ -1665,12 +1603,13 @@ def clean_old_dcf_logs(log_dir: str, keep: int = 7, filename_pattern: str = r"^d
 def main_loop():
     logging.info("=" * 60)
     logging.info("DCF策略启动完成")
-    logging.info(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logging.info(f"当前时间: {strategy_now().strftime('%Y-%m-%d %H:%M:%S')}")
     logging.info("=" * 60)
     config_path = os.path.join(BASE_DIR, "dcf.yaml")
     global ETF_CONFIG, STRATEGY, FULL_CONFIG
     ETF_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
     STRATEGY.update(STRATEGY_from_conf)
+    logging.info(f"策略时区: {get_strategy_timezone_name()}，服务器时区不影响 session_start/session_end/daily_push_time/log_rotate_time")
     logging.info("📌 各标的策略运行状态:")
     for name, cfg in ETF_CONFIG.items():
         if not isinstance(cfg, dict):
@@ -1691,7 +1630,7 @@ def main_loop():
         ETF_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
         STRATEGY.update(STRATEGY_from_conf)
         last_config_reload_seq = apply_runtime_config_reload_if_needed(state, last_config_reload_seq)
-        now = datetime.now()
+        now = strategy_now()
         # 日志轮转
         if should_rotate_logs(state, now):
             logging.info("=" * 60)
