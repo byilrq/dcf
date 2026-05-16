@@ -1,0 +1,32 @@
+2026-05-08 12:18:40 | gotify | 成功 | 测试推送：Gotify：成功 {"id":28,"appid":1,"message":"**DCF 推送测试**\n\n闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 12:18:40","title":"DCF 推送测试","priority":10,"extras":{"client::display":{"contentType":"text/markdown"}},"date":"2026-05-08T12:18:40.950909682+08:00"}
+2026-05-08 12:27:12 | gotify | 成功 | 测试推送：Gotify：成功 {"id":29,"appid":1,"message":"**DCF 推送测试**\n\n闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 12:27:12","title":"DCF 推送测试","priority":10,"extras":{"client::display":{"contentType":"text/markdown"}},"date":"2026-05-08T12:27:12.677660526+08:00"}
+2026-05-08 13:15:30 | ntfy | 失败 | 测试推送：ntfy：失败 'latin-1' codec can't encode characters in position 4-7: ordinal not in range(256)
+2026-05-08 13:18:27 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"cq3N7bELGwGJ","time":1778217507,"expires":1778260707,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 13:18:27","priority":4,"tags":["dcf"],"content_type":"text/markdown"} 
+2026-05-08 13:22:01 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"vC2Yycxw2DZU","time":1778217721,"expires":1778260921,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 13:22:01","priority":4,"tags":["dcf"],"content_type":"text/markdown"} 
+2026-05-08 15:40:06 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"JtdmbWJ72RGI","time":1778226006,"expires":1778269206,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 15:40:06","priority":4,"content_type":"text/markdown"} 
+2026-05-08 15:49:00 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"NACij03AZB2j","time":1778226540,"expires":1778269740,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 15:49:00","priority":4,"content_type":"text/markdown"} 
+2026-05-08 18:19:50 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"V1IWeF6KkZ8k","time":1778235590,"expires":1778278790,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-08 18:19:50","priority":4,"content_type":"text/markdown"} 
+2026-05-09 08:00:20 | ntfy | 失败 | ntfy:失败
+2026-05-09 14:09:54 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"wNAvH2rCtLya","time":1778306994,"expires":1778350194,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-09 14:09:54","priority":4,"content_type":"text/markdown"} 
+2026-05-09 15:28:39 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"mHrwmwiqFLJK","time":1778311719,"expires":1778354919,"event":"message","topic":"Arena","title":"DCF 推送测试","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-09 15:28:39","priority":4,"content_type":"text/markdown"} 
+2026-05-09 15:35:12 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"0sE5UN3CkNDW","time":1778312112,"expires":1778355312,"event":"message","topic":"Arena","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-09 15:35:12","priority":4,"content_type":"text/markdown"} 
+2026-05-09 15:35:33 | ntfy | 成功 | 测试推送：ntfy：成功 {"id":"KQekwAixWh3j","time":1778312133,"expires":1778355333,"event":"message","topic":"Arena","message":"闲云量化 Web 推送配置测试成功。\n时间：2026-05-09 15:35:33","priority":4,"content_type":"text/markdown"} 
+2026-05-10 08:00:20 | ntfy | 成功 | ntfy:成功
+2026-05-11 08:00:05 | ntfy | 成功 | ntfy:成功
+2026-05-11 10:37:27 | ntfy | 成功 | ntfy:成功
+2026-05-11 10:47:12 | ntfy | 成功 | ntfy:成功
+2026-05-12 08:00:19 | ntfy | 成功 | ntfy:成功
+2026-05-12 18:45:53 | ntfy | 成功 | ntfy:成功
+2026-05-13 08:00:19 | ntfy | 成功 | ntfy:成功
+2026-05-14 08:00:21 | ntfy | 成功 | ntfy:成功
+2026-05-15 08:00:21 | ntfy | 成功 | ntfy:成功
+2026-05-16 08:00:20 | ntfy | 成功 | ntfy:成功
+2026-05-16 11:26:03 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:23:21 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:46:44 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:50:03 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:54:07 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:56:01 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:57:27 | ntfy | 成功 | ntfy:成功
+2026-05-16 12:59:09 | ntfy | 成功 | ntfy:成功
+2026-05-16 13:00:45 | ntfy | 成功 | ntfy:成功
