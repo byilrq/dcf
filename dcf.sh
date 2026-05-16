@@ -28,6 +28,21 @@ PUSHPLUS_CONF="$DCF_DIR/push.conf"
 # venv 目录（依赖安装优先走 venv）
 VENV_DIR="$DCF_DIR/.venv"
 
+# GitHub 项目地址（安装脚本只下载 dcf.sh，本脚本会再拉取完整项目文件）
+REPO_OWNER="byilrq"
+REPO_NAME="dcf"
+REPO_BRANCH="main"
+REPO_TARBALL_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+
+# sudo 兼容：root 环境可能没有 sudo；非 root 则优先用 sudo
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+elif command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+else
+    SUDO=""
+fi
+
 
 # ========= 终端颜色（支持时启用） =========
 if [ -t 1 ]; then
@@ -91,6 +106,135 @@ ensure_dcf_dir() {
     fi
 }
 
+backup_path_if_exists() {
+    local target="$1"
+    local ts
+    ts="$(date '+%Y%m%d_%H%M%S')"
+    if [ -e "$target" ]; then
+        cp -a "$target" "${target}.bak.${ts}"
+    fi
+}
+
+copy_project_file_overwrite() {
+    local src="$1"
+    local dst="$2"
+    if [ -f "$src" ]; then
+        backup_path_if_exists "$dst"
+        cp -a "$src" "$dst"
+        echo "✅ 已更新: $(basename "$dst")"
+    fi
+}
+
+copy_project_file_if_missing() {
+    local src="$1"
+    local dst="$2"
+    if [ -f "$src" ] && [ ! -f "$dst" ]; then
+        cp -a "$src" "$dst"
+        echo "✅ 已初始化: $(basename "$dst")"
+    elif [ -f "$src" ]; then
+        echo "ℹ️  保留已有配置: $(basename "$dst")"
+    fi
+}
+
+copy_project_dir_overwrite() {
+    local src="$1"
+    local dst="$2"
+    local ts
+    ts="$(date '+%Y%m%d_%H%M%S')"
+    if [ -d "$src" ]; then
+        if [ -e "$dst" ]; then
+            mv "$dst" "${dst}.bak.${ts}"
+        fi
+        cp -a "$src" "$dst"
+        echo "✅ 已更新目录: $(basename "$dst")"
+    fi
+}
+
+update_project_files() {
+    ensure_dcf_dir
+    echo "================================="
+    echo "开始下载/更新 DCF 项目文件..."
+    echo "来源: $REPO_TARBALL_URL"
+    echo "目标: $DCF_DIR"
+    echo "================================="
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "❌ 未检测到 curl，请先安装 curl。"
+        return 1
+    fi
+    if ! command -v tar >/dev/null 2>&1; then
+        echo "❌ 未检测到 tar，请先安装 tar。"
+        return 1
+    fi
+
+    local tmpdir srcdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    if ! curl -fsSL "$REPO_TARBALL_URL" -o "$tmpdir/dcf.tar.gz"; then
+        echo "❌ 下载项目压缩包失败，请检查 GitHub 网络访问。"
+        return 1
+    fi
+    if ! tar -xzf "$tmpdir/dcf.tar.gz" -C "$tmpdir"; then
+        echo "❌ 解压项目压缩包失败。"
+        return 1
+    fi
+
+    srcdir="$tmpdir/${REPO_NAME}-${REPO_BRANCH}"
+    if [ ! -d "$srcdir" ]; then
+        echo "❌ 未找到解压后的项目目录: $srcdir"
+        return 1
+    fi
+
+    # 代码/模板文件：更新时覆盖，但会自动备份旧版本
+    copy_project_file_overwrite "$srcdir/dcf.py" "$DCF_DIR/dcf.py"
+    copy_project_file_overwrite "$srcdir/strategy.py" "$DCF_DIR/strategy.py"
+    copy_project_file_overwrite "$srcdir/dcf_web.py" "$DCF_DIR/dcf_web.py"
+    copy_project_file_overwrite "$srcdir/backtest_dcf.py" "$DCF_DIR/backtest_dcf.py"
+    copy_project_file_overwrite "$srcdir/requirements.txt" "$DCF_DIR/requirements.txt"
+    copy_project_dir_overwrite "$srcdir/web_templates" "$DCF_DIR/web_templates"
+    copy_project_dir_overwrite "$srcdir/web_static" "$DCF_DIR/web_static"
+
+    # 用户配置/运行状态：只在缺失时初始化，避免覆盖实盘参数和推送密钥
+    copy_project_file_if_missing "$srcdir/dcf.yaml" "$DCF_DIR/dcf.yaml"
+    copy_project_file_if_missing "$srcdir/push.conf" "$DCF_DIR/push.conf"
+
+    [ -f "$DCF_DIR/push.conf" ] && chmod 600 "$DCF_DIR/push.conf" || true
+
+    echo "================================="
+    echo "项目文件更新完成 ✅"
+    echo "注意：dcf.yaml / push.conf 如已存在不会被覆盖。"
+    echo "================================="
+}
+
+self_check_project_files() {
+    ensure_dcf_dir
+    local ok=1
+    echo "=============== DCF 项目文件检查 ==============="
+    for f in dcf.py strategy.py dcf_web.py backtest_dcf.py dcf.yaml; do
+        if [ -f "$DCF_DIR/$f" ]; then
+            echo "✅ $f"
+        else
+            echo "❌ 缺少 $f"
+            ok=0
+        fi
+    done
+    for d in web_templates web_static; do
+        if [ -d "$DCF_DIR/$d" ]; then
+            echo "✅ $d/"
+        else
+            echo "❌ 缺少 $d/"
+            ok=0
+        fi
+    done
+    if [ "$ok" -eq 1 ]; then
+        echo "项目文件检查通过。"
+    else
+        echo "项目文件不完整，请执行菜单 1 下载/更新项目与依赖。"
+        return 1
+    fi
+}
+
 # ============================================
 # 依赖安装/更新（系统依赖 + Python依赖）
 # 通过 update_rely() 实现
@@ -104,29 +248,36 @@ update_rely() {
     echo "================================="
 
     # ---------- 基本检查 ----------
-    if ! command -v sudo >/dev/null 2>&1; then
-        echo "❌ 未检测到 sudo，无法安装系统依赖。请用 root 运行或手动安装 python3-venv/python3-pip。"
+    if [ "$(id -u)" -ne 0 ] && [ -z "$SUDO" ]; then
+        echo "❌ 当前不是 root，且未检测到 sudo，无法安装系统依赖。"
         return 1
     fi
 
     # ---------- 1) 系统依赖 ----------
     echo "[1/4] 安装系统依赖（python3-venv / python3-pip 等）"
-    if ! sudo apt-get update -y; then
+    if ! ${SUDO} apt-get update -y; then
         echo "❌ apt-get update 失败。可能是网络/源/锁占用问题。"
-        echo "   你可以先执行：sudo lsof /var/lib/dpkg/lock-frontend 或等待系统自动更新完成。"
+        echo "   你可以先执行：${SUDO} lsof /var/lib/dpkg/lock-frontend 或等待系统自动更新完成。"
         return 1
     fi
 
-    if ! sudo apt-get install -y \
+    if ! ${SUDO} apt-get install -y \
         python3 python3-venv python3-pip \
-        ca-certificates curl wget nginx openssl \
+        ca-certificates curl wget tar nginx openssl cron \
         build-essential; then
         echo "❌ apt-get install 失败。"
         return 1
     fi
 
-    # ---------- 2) 创建/更新虚拟环境 ----------
-    echo "[2/4] 准备虚拟环境: $VENV_DIR"
+    # ---------- 2) 下载/更新项目文件 ----------
+    echo "[2/5] 下载/更新项目文件"
+    if ! update_project_files; then
+        echo "❌ 项目文件更新失败。"
+        return 1
+    fi
+
+    # ---------- 3) 创建/更新虚拟环境 ----------
+    echo "[3/5] 准备虚拟环境: $VENV_DIR"
 
     if [ -d "$VENV_DIR" ] && [ ! -x "$VENV_DIR/bin/python" ]; then
         echo "⚠️ 检测到虚拟环境可能损坏（缺少 $VENV_DIR/bin/python），将重建..."
@@ -152,7 +303,7 @@ update_rely() {
     echo "   使用 Python: $($VPY -V 2>/dev/null)"
     echo "   使用 pip:    $($VPIP -V 2>/dev/null)"
 
-    echo "[3/4] 升级 pip/setuptools/wheel"
+    echo "[4/5] 升级 pip/setuptools/wheel"
     if ! $VPY -m pip install -U pip setuptools wheel; then
         echo "❌ pip 基础组件升级失败。"
         deactivate || true
@@ -160,7 +311,7 @@ update_rely() {
     fi
 
     # ---------- 3) 安装 Python 依赖 ----------
-    echo "[4/4] 安装 Python 依赖"
+    echo "[5/5] 安装 Python 依赖"
 
     if [ -f "$DCF_DIR/requirements.txt" ]; then
         echo "   检测到 requirements.txt，按其安装/更新依赖..."
@@ -240,6 +391,20 @@ ensure_push_conf_file() {
             echo "# 自动生成的 Push 配置"
             echo "# 创建时间: $(date '+%Y-%m-%d %H:%M:%S')"
             echo ""
+            echo 'export PUSH_ENABLED="yes"'
+            echo 'export PUSH_CHANNEL="pushplus"'
+            echo 'export PUSHPLUS_TOKEN=""'
+            echo 'export TELEGRAM_BOT_TOKEN=""'
+            echo 'export TELEGRAM_CHAT_ID=""'
+            echo 'export GOTIFY_URL="https://sharq.eu.org:2084"'
+            echo 'export GOTIFY_TOKEN=""'
+            echo 'export GOTIFY_PRIORITY="10"'
+            echo 'export NTFY_URL="http://127.0.0.1:8083"'
+            echo 'export NTFY_TOPIC="let-rss"'
+            echo 'export NTFY_USERNAME=""'
+            echo 'export NTFY_PASSWORD=""'
+            echo 'export NTFY_PRIORITY="4"'
+            echo 'export NTFY_TAGS="dcf,chart_with_upwards_trend"'
         } > "$PUSHPLUS_CONF"
         chmod 600 "$PUSHPLUS_CONF"
     fi
@@ -305,7 +470,7 @@ start_dcf() {
     ensure_dcf_dir
 
     if [ ! -f "$PY_SCRIPT" ]; then
-        echo "找不到 $PY_SCRIPT，请先用菜单 3 安装依赖，并用菜单下载/更新 dcf.py。"
+        echo "找不到 $PY_SCRIPT，请先执行菜单 1 下载/更新项目与依赖。"
         return
     fi
 
@@ -632,7 +797,7 @@ show_status() {
 
 # =================设置时区 =============
 change_tz(){
-    sudo timedatectl set-timezone Asia/Shanghai
+    ${SUDO} timedatectl set-timezone Asia/Shanghai
     echo "系统时区已经改为Asia/Shanghai"
     timedatectl
 }
@@ -719,7 +884,7 @@ import os
 from pathlib import Path
 
 cfg = {
-    "app_name": "资产管理系统",
+    "app_name": "闲云量化",
     "admin_username": os.environ["ADMIN_USER"],
     "password_hash": os.environ["PASSWORD_HASH"],
     "secret_key": os.environ["SECRET_KEY"],
@@ -756,7 +921,7 @@ PY
         return 1
     fi
 
-    sudo tee "$WEB_SERVICE_FILE" >/dev/null <<SERVICE
+    ${SUDO} tee "$WEB_SERVICE_FILE" >/dev/null <<SERVICE
 [Unit]
 Description=DCF Web Portal
 After=network.target
@@ -774,7 +939,7 @@ RestartSec=3
 WantedBy=multi-user.target
 SERVICE
 
-    sudo tee "$WEB_NGINX_SITE" >/dev/null <<NGINX
+    ${SUDO} tee "$WEB_NGINX_SITE" >/dev/null <<NGINX
 server {
     listen $WEB_PUBLIC_PORT ssl;
     listen [::]:$WEB_PUBLIC_PORT ssl;
@@ -800,28 +965,28 @@ server {
 }
 NGINX
 
-    sudo ln -sf "$WEB_NGINX_SITE" "$WEB_NGINX_LINK"
-    sudo nginx -t || return 1
-    sudo systemctl daemon-reload
-    sudo systemctl enable dcf-web >/dev/null 2>&1 || true
-    sudo systemctl restart dcf-web
+    ${SUDO} ln -sf "$WEB_NGINX_SITE" "$WEB_NGINX_LINK"
+    ${SUDO} nginx -t || return 1
+    ${SUDO} systemctl daemon-reload
+    ${SUDO} systemctl enable dcf-web >/dev/null 2>&1 || true
+    ${SUDO} systemctl restart dcf-web
 
     sleep 2
-    if ! sudo systemctl is-active --quiet dcf-web; then
+    if ! ${SUDO} systemctl is-active --quiet dcf-web; then
         echo "❌ dcf-web 服务启动失败，最近日志如下："
-        sudo systemctl --no-pager --full status dcf-web || true
+        ${SUDO} systemctl --no-pager --full status dcf-web || true
         echo "----------------------------------------"
-        sudo journalctl -u dcf-web -n 50 --no-pager || true
+        ${SUDO} journalctl -u dcf-web -n 50 --no-pager || true
         return 1
     fi
 
     if ! curl -ksS "http://127.0.0.1:$WEB_INTERNAL_PORT/login" >/dev/null 2>&1; then
         echo "❌ 后端服务未正常响应 http://127.0.0.1:$WEB_INTERNAL_PORT/login"
-        sudo journalctl -u dcf-web -n 50 --no-pager || true
+        ${SUDO} journalctl -u dcf-web -n 50 --no-pager || true
         return 1
     fi
 
-    sudo systemctl reload nginx
+    ${SUDO} systemctl reload nginx
 
     echo
     echo "✅ Web 管理端已配置完成"
@@ -847,25 +1012,25 @@ restart_web_portal() {
     fi
 
     echo "检查 nginx 配置..."
-    if ! sudo nginx -t; then
+    if ! ${SUDO} nginx -t; then
         echo "❌ nginx 配置检查失败，已取消重启网页端。"
         return 1
     fi
 
     echo "重启 dcf-web 服务..."
-    sudo systemctl restart dcf-web
+    ${SUDO} systemctl restart dcf-web
     sleep 1
 
-    if ! sudo systemctl is-active --quiet dcf-web; then
+    if ! ${SUDO} systemctl is-active --quiet dcf-web; then
         echo "❌ dcf-web 服务启动失败，最近日志如下："
-        sudo systemctl --no-pager --full status dcf-web || true
+        ${SUDO} systemctl --no-pager --full status dcf-web || true
         echo "--------------------------------------------"
-        sudo journalctl -u dcf-web -n 80 --no-pager || true
+        ${SUDO} journalctl -u dcf-web -n 80 --no-pager || true
         return 1
     fi
 
     echo "重新加载 nginx..."
-    sudo systemctl reload nginx || sudo systemctl restart nginx
+    ${SUDO} systemctl reload nginx || ${SUDO} systemctl restart nginx
     echo "✅ Web 管理端已重启。"
     echo "--------------------------------------------"
     web_portal_status
@@ -879,9 +1044,9 @@ web_portal_status() {
         echo "web_portal.json 未配置"
     fi
     echo "--------------------------------------------"
-    sudo systemctl status dcf-web --no-pager -n 5 2>/dev/null || echo "dcf-web 服务未安装"
+    ${SUDO} systemctl status dcf-web --no-pager -n 5 2>/dev/null || echo "dcf-web 服务未安装"
     echo "--------------------------------------------"
-    sudo nginx -t 2>/dev/null || true
+    ${SUDO} nginx -t 2>/dev/null || true
 }
 
 
@@ -893,7 +1058,7 @@ show_menu() {
     echo -e "${C_DIM} （管理脚本目录：$SCRIPT_DIR）${C_RESET}"
     echo -e "${C_DIM} （运行文件目录：$DCF_DIR）${C_RESET}"
     echo -e "${C_CYAN}===============================${C_RESET}"
-    echo -e "${C_YELLOW}1)${C_RESET} 安装/更新依赖"	
+    echo -e "${C_YELLOW}1)${C_RESET} 下载/更新项目与依赖"	
     echo -e "${C_GREEN}2)${C_RESET} 启动脚本"
     echo -e "${C_RED}3)${C_RESET} 停止脚本"
     echo -e "${C_BLUE}4)${C_RESET} Push设置"
@@ -901,6 +1066,7 @@ show_menu() {
     echo -e "${C_YELLOW}6)${C_RESET} 设置上海时区"
     echo -e "${C_YELLOW}7)${C_RESET} 重启网页端"
     echo -e "${C_CYAN}8)${C_RESET} 查看网页端状态"
+    echo -e "${C_CYAN}9)${C_RESET} 检查项目文件"
     echo -e "${C_RED}0)${C_RESET} 退出"
     echo -e "${C_CYAN}===============================${C_RESET}"
 }
@@ -919,6 +1085,7 @@ while true; do
         6) change_tz ;;
         7) restart_web_portal ;;
         8) web_portal_status ;;
+        9) self_check_project_files ;;
         0)
             echo "退出管理脚本。"
             exit 0
