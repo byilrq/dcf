@@ -38,7 +38,44 @@ config_path = os.path.join(BASE_DIR, "dcf.yaml")
 STATE_FILE = BASE_DIR / "dcf_monitor_state.json"
 LOG_DIR = BASE_DIR / "log"
 TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
+SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
+STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
+STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
 LOG_DIR.mkdir(exist_ok=True)
+
+# ===========================
+# 数据保留策略
+# ===========================
+SNAPSHOT_RETENTION_DAYS = 30
+PUSH_LOG_KEEP_LINES = 30
+
+def prune_snapshot_files(keep_days: int = SNAPSHOT_RETENTION_DAYS):
+    """保留最近 keep_days 天策略快照，删除更早的 YYYY-MM-DD.jsonl。"""
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        today = strategy_now().date() if "strategy_now" in globals() else datetime.now().date()
+        cutoff = today - timedelta(days=max(1, int(keep_days or SNAPSHOT_RETENTION_DAYS)) - 1)
+        for path in SNAPSHOT_DIR.glob("*.jsonl"):
+            try:
+                snap_date = datetime.strptime(path.stem, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if snap_date < cutoff:
+                path.unlink()
+    except Exception as e:
+        logging.debug(f"清理过期策略快照失败: {e}")
+
+def prune_push_log_lines(keep_lines: int = PUSH_LOG_KEEP_LINES):
+    """只保留 push.log 最近 keep_lines 条。"""
+    try:
+        if not PUSH_LOG_FILE.exists():
+            return
+        keep_lines = max(1, int(keep_lines or PUSH_LOG_KEEP_LINES))
+        lines = PUSH_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if len(lines) > keep_lines:
+            PUSH_LOG_FILE.write_text("\n".join(lines[-keep_lines:]) + "\n", encoding="utf-8")
+    except Exception as e:
+        logging.debug(f"清理推送日志失败: {e}")
 
 # ===========================
 # 辅助函数
@@ -519,6 +556,21 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
     if not target_names:
         logging.info(f"🔁 收到参数刷新请求 seq={seq}，但未匹配到标的，已忽略。")
         return seq
+    if disk_meta.get("state_restore_kind") == "trade_backup":
+        restore_name = str(disk_meta.get("state_restore_symbol_key", "")).strip()
+        restore_entry = disk_meta.get("state_restore_entry")
+        restore_backup_id = disk_meta.get("state_restore_backup_id", "")
+        if restore_name in ETF_CONFIG and isinstance(restore_entry, dict):
+            restored = normalize_symbol_state(restore_name, ETF_CONFIG[restore_name], dict(restore_entry))
+            restored["last_status_msg"] = f"已恢复到交易前状态回滚点：{restore_backup_id}"
+            state[restore_name] = restored
+            for _k in ["state_restore_kind", "state_restore_symbol_key", "state_restore_backup_id", "state_restore_entry"]:
+                state.get("_meta", {}).pop(_k, None)
+            logging.info(f"↩️ 已恢复交易前状态: {restore_name}，回滚点={restore_backup_id}")
+            save_state(state)
+            return seq
+        logging.warning(f"⚠️ 收到状态回滚请求，但内容无效: {restore_name}, backup={restore_backup_id}")
+        return seq
     for name in target_names:
         old_entry = state.get(name, {}) if isinstance(state.get(name, {}), dict) else {}
         preserved_last_price = old_entry.get("last_price")
@@ -645,6 +697,175 @@ def _maybe_market_alert(dcf_state, msg, reason_key):
         return []
     dcf_state["last_market_all_sources_alert_key"] = alert_key
     return [msg]
+
+def _json_safe_value(value):
+    """Convert strategy snapshot values to JSON-safe primitives."""
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(x) for x in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    try:
+        return float(value)
+    except Exception:
+        return str(value)
+
+
+def _strategy_snapshot_path(day_text=None):
+    day_text = day_text or strategy_now().strftime("%Y-%m-%d")
+    return SNAPSHOT_DIR / f"{day_text}.jsonl"
+
+
+def write_strategy_snapshot(record):
+    """Append one JSONL strategy snapshot; never interrupt strategy execution."""
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        rec = {str(k): _json_safe_value(v) for k, v in (record or {}).items()}
+        if "time" not in rec:
+            rec["time"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+        if "date" not in rec:
+            rec["date"] = str(rec["time"])[:10]
+        path = _strategy_snapshot_path(rec["date"])
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+        today_key = strategy_now().strftime("%Y-%m-%d")
+        if getattr(write_strategy_snapshot, "_last_prune_date", None) != today_key:
+            prune_snapshot_files(SNAPSHOT_RETENTION_DAYS)
+            write_strategy_snapshot._last_prune_date = today_key
+    except Exception as e:
+        logging.debug(f"写入策略快照失败: {e}")
+
+
+
+
+def _sanitize_filename_part(value):
+    text = str(value or "").strip()
+    text = re.sub(r"[^A-Za-z0-9_\-\.]+", "_", text)
+    return text[:80] or "unknown"
+
+
+def _read_state_backup_index():
+    try:
+        if STATE_BACKUP_INDEX.exists():
+            data = json.loads(STATE_BACKUP_INDEX.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        logging.debug(f"读取交易前状态索引失败: {e}")
+    return []
+
+
+def _write_state_backup_index(items):
+    try:
+        STATE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_BACKUP_INDEX.write_text(json.dumps(items or [], ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.debug(f"写入交易前状态索引失败: {e}")
+
+
+def _prune_state_backups(index_items, name, symbol, keep=10):
+    """Keep latest N backup points per symbol/name and remove old backup files."""
+    keep = max(1, int(keep or 10))
+    key_name = str(name or "")
+    key_symbol = str(symbol or "").upper()
+    matched = [x for x in index_items if x.get("name") == key_name or str(x.get("symbol", "")).upper() == key_symbol]
+    matched.sort(key=lambda x: str(x.get("time", "")), reverse=True)
+    keep_ids = {x.get("id") for x in matched[:keep]}
+    pruned = []
+    for item in index_items:
+        is_same = item.get("name") == key_name or str(item.get("symbol", "")).upper() == key_symbol
+        if is_same and item.get("id") not in keep_ids:
+            rel = str(item.get("file", ""))
+            try:
+                path = (BASE_DIR / rel).resolve() if rel else None
+                if path and str(path).startswith(str(STATE_BACKUP_DIR.resolve())) and path.exists():
+                    path.unlink()
+            except Exception as e:
+                logging.debug(f"删除旧交易前状态备份失败: {rel} | {e}")
+            continue
+        pruned.append(item)
+    return pruned
+
+
+def record_trade_state_backup(name, symbol, dcf_state, cfg, trade_info):
+    """Record state before a real TRADE so Web can roll back if a false signal occurs."""
+    try:
+        now = strategy_now()
+        day = now.strftime("%Y-%m-%d")
+        ts_file = now.strftime("%H%M%S_%f")
+        backup_id = f"{day}_{ts_file}_{_sanitize_filename_part(symbol)}"
+        day_dir = STATE_BACKUP_DIR / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{_sanitize_filename_part(symbol)}_{ts_file}_before_trade.json"
+        path = day_dir / filename
+        state_before = _json_safe_value(dict(dcf_state or {}))
+        cfg_before = _json_safe_value(dict(cfg or {}))
+        record = {
+            "id": backup_id,
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "date": day,
+            "name": name,
+            "symbol": symbol,
+            "position_mode": get_position_mode(cfg or {}),
+            "trade": _json_safe_value(trade_info or {}),
+            "state_before": state_before,
+            "config_before": cfg_before,
+            "note": "before_trade",
+        }
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        index_item = {
+            "id": backup_id,
+            "time": record["time"],
+            "name": name,
+            "symbol": symbol,
+            "side": str((trade_info or {}).get("side", "")),
+            "reason": str((trade_info or {}).get("reason", "")),
+            "zone": str((trade_info or {}).get("zone", "")),
+            "price": _json_safe_value((trade_info or {}).get("price")),
+            "qty": _json_safe_value((trade_info or {}).get("qty")),
+            "pos_before": _json_safe_value((trade_info or {}).get("pos_before")),
+            "pos_after": _json_safe_value((trade_info or {}).get("pos_after")),
+            "avg_cost_before": _json_safe_value((trade_info or {}).get("avg_cost_before")),
+            "avg_cost_after": _json_safe_value((trade_info or {}).get("avg_cost_after")),
+            "file": str(path.relative_to(BASE_DIR)),
+        }
+        index_items = _read_state_backup_index()
+        index_items.append(index_item)
+        index_items = _prune_state_backups(index_items, name, symbol, keep=10)
+        _write_state_backup_index(index_items)
+        logging.info(f"🧷 已记录交易前状态回滚点: {name} ({symbol}) {index_item['side']} {index_item['qty']} @ {index_item['price']}")
+    except Exception as e:
+        logging.warning(f"⚠️ 记录交易前状态回滚点失败: {name} ({symbol}) | {e}")
+
+def write_market_skip_snapshot(name, symbol, dcf_state, reason, level="ERROR", source="", current_price=None,
+                               last_known_price=None, closes_count=None, last_bar_date=None, trade_allowed=False):
+    write_strategy_snapshot({
+        "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name": name,
+        "symbol": symbol,
+        "level": level,
+        "action": "SKIP_TRADE",
+        "decision": "SKIP_TRADE",
+        "reason": str(reason),
+        "market_status": "error" if str(level).upper() == "ERROR" else "warn",
+        "market_source": source or dcf_state.get("market_source", ""),
+        "current_price": current_price,
+        "last_valid_price": last_known_price if last_known_price is not None else dcf_state.get("last_valid_price"),
+        "last_price": dcf_state.get("last_price"),
+        "last_bar_date": last_bar_date,
+        "history_count": closes_count,
+        "trade_allowed": bool(trade_allowed),
+        "current_units": dcf_state.get("current_units"),
+        "avg_cost": dcf_state.get("avg_cost"),
+        "last_trade_price": dcf_state.get("last_trade_price"),
+        "last_add_price": dcf_state.get("last_add_price"),
+        "pyramid_step": dcf_state.get("pyramid_step"),
+        "clear_step": dcf_state.get("clear_step"),
+    })
 
 
 def _mark_market_error(dcf_state, msg, reason, source=""):
@@ -850,6 +1071,7 @@ def append_push_log(channel, success, detail):
         line = f"{strategy_now().strftime('%Y-%m-%d %H:%M:%S')} | {channel} | {'成功' if success else '失败'} | {str(detail).replace(chr(10), ' ')[:500]}\n"
         with PUSH_LOG_FILE.open('a', encoding='utf-8') as f:
             f.write(line)
+        prune_push_log_lines(PUSH_LOG_KEEP_LINES)
     except Exception as e:
         logging.error(f"写入推送日志失败: {e}")
 
@@ -1237,6 +1459,7 @@ def strategy_for_dcf(name, cfg, state):
         )
         logging.info(msg)
         _mark_market_error(dcf_state, msg, reason)
+        write_market_skip_snapshot(name, symbol, dcf_state, reason, level="ERROR", last_known_price=last_valid_price)
         return _maybe_market_alert(dcf_state, msg, reason)
 
     if not getattr(snapshot, "trade_allowed", True):
@@ -1248,6 +1471,15 @@ def strategy_for_dcf(name, cfg, state):
         )
         logging.warning(msg)
         _mark_market_error(dcf_state, msg, reason, getattr(snapshot, "source", ""))
+        write_market_skip_snapshot(
+            name, symbol, dcf_state, reason, level="ERROR",
+            current_price=getattr(snapshot, "current_price", None),
+            last_known_price=last_valid_price,
+            closes_count=len(getattr(snapshot, "closes", []) or []),
+            source=getattr(snapshot, "source", ""),
+            last_bar_date=getattr(snapshot, "last_bar_date", None),
+            trade_allowed=False,
+        )
         return _maybe_market_alert(dcf_state, msg, reason)
 
     closes = snapshot.closes
@@ -1261,6 +1493,12 @@ def strategy_for_dcf(name, cfg, state):
         )
         logging.info(msg)
         _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        write_market_skip_snapshot(
+            name, symbol, dcf_state, reason, level="ERROR",
+            current_price=current_price, last_known_price=last_valid_price,
+            closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+            trade_allowed=False,
+        )
         return _maybe_market_alert(dcf_state, msg, reason)
 
     source_ok, source_reason = _check_market_source_switch(dcf_state, snapshot, cfg)
@@ -1272,6 +1510,12 @@ def strategy_for_dcf(name, cfg, state):
         )
         logging.warning(msg)
         _mark_market_warn(dcf_state, msg, source_reason, snapshot.source)
+        write_market_skip_snapshot(
+            name, symbol, dcf_state, source_reason, level="WARN",
+            current_price=current_price, last_known_price=last_valid_price,
+            closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+            trade_allowed=False,
+        )
         # 行情源切换首轮只监控不交易，也不更新 last_price / last_trade_price / last_add_price；WARN 不推送。
         return []
     elif source_reason:
@@ -1288,6 +1532,12 @@ def strategy_for_dcf(name, cfg, state):
         )
         logging.warning(msg)
         _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        write_market_skip_snapshot(
+            name, symbol, dcf_state, reason, level="ERROR",
+            current_price=current_price, last_known_price=last_valid_price,
+            closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+            trade_allowed=False,
+        )
         # 关键：异常行情不更新交易锚点，不触发交易。
         return _maybe_market_alert(dcf_state, msg, reason)
 
@@ -1302,6 +1552,12 @@ def strategy_for_dcf(name, cfg, state):
             )
             logging.warning(msg)
             _mark_market_error(dcf_state, msg, reason, snapshot.source)
+            write_market_skip_snapshot(
+                name, symbol, dcf_state, reason, level="ERROR",
+                current_price=current_price, last_known_price=last_valid_price,
+                closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+                trade_allowed=False,
+            )
             return _maybe_market_alert(dcf_state, msg, reason)
 
     if last_trade_price is None or last_trade_price <= 0:
@@ -1319,6 +1575,12 @@ def strategy_for_dcf(name, cfg, state):
         )
         logging.info(msg)
         _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        write_market_skip_snapshot(
+            name, symbol, dcf_state, reason, level="ERROR",
+            current_price=current_price, last_known_price=last_valid_price,
+            closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+            trade_allowed=False,
+        )
         return _maybe_market_alert(dcf_state, msg, reason)
     sideways_score = float(compute_sideways_index(closes, cfg))
     base_k150 = float(cfg.get("k150", 1.0))
@@ -1409,7 +1671,27 @@ def strategy_for_dcf(name, cfg, state):
     )
     logging.info(status_msg + "\n")
     dcf_state["last_status_msg"] = status_msg
+    units_before_decision = current_units
+    avg_cost_before_decision = current_avg_cost
     if strategy_run == "off":
+        write_strategy_snapshot({
+            "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": name, "symbol": symbol, "level": "INFO",
+            "action": "MONITOR_ONLY", "decision": "MONITOR_ONLY",
+            "reason": "strategy_run=off", "market_status": "ok",
+            "market_source": snapshot.source, "last_bar_date": snapshot.last_bar_date,
+            "history_count": len(closes), "current_price": current_price,
+            "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
+            "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
+            "zone": zone, "sell_price": sell_price, "clear_price": clear_price,
+            "current_units_before": units_before_decision, "current_units_after": current_units,
+            "avg_cost_before": avg_cost_before_decision, "avg_cost_after": current_avg_cost,
+            "target_units": target_units, "double_target": double_target,
+            "last_trade_price": last_trade_price, "last_trade_side": last_trade_side,
+            "last_add_price": dcf_state.get("last_add_price"),
+            "pyramid_step": dcf_state.get("pyramid_step"), "clear_step": dcf_state.get("clear_step"),
+            "trade_allowed": False,
+        })
         return []
     messages = []
     raw_price = current_price
@@ -1452,6 +1734,15 @@ def strategy_for_dcf(name, cfg, state):
     if add_qty > 0:
         new_avg_cost = calculate_new_avg_cost(current_units, current_avg_cost, add_qty, current_price)
         after_units = normalize_position_amount(current_units + add_qty, position_mode)
+        record_trade_state_backup(name, symbol, dcf_state, cfg, {
+            "side": "BUY", "reason": add_reason, "zone": zone,
+            "price": current_price, "qty": add_qty,
+            "pos_before": current_units, "pos_after": after_units,
+            "avg_cost_before": current_avg_cost, "avg_cost_after": new_avg_cost,
+            "last_trade_price_before": last_trade_price,
+            "last_trade_side_before": last_trade_side,
+            "last_add_price_before": last_add_price,
+        })
         log_trade(
             dcf_name=name, symbol=symbol, price=current_price, qty=add_qty, side="BUY",
             reason=add_reason, zone=zone,
@@ -1499,6 +1790,15 @@ def strategy_for_dcf(name, cfg, state):
         )
         if sell_qty > 0:
             after_units = normalize_position_amount(current_units - sell_qty, position_mode)
+            record_trade_state_backup(name, symbol, dcf_state, cfg, {
+                "side": "SELL", "reason": "TREND_ZONE_SELL", "zone": "TREND_ZONE",
+                "price": current_price, "qty": sell_qty,
+                "pos_before": current_units, "pos_after": after_units,
+                "avg_cost_before": current_avg_cost, "avg_cost_after": current_avg_cost,
+                "last_trade_price_before": last_trade_price,
+                "last_trade_side_before": last_trade_side,
+                "last_add_price_before": last_add_price,
+            })
             log_trade(
                 dcf_name=name, symbol=symbol, price=current_price, qty=sell_qty, side="SELL",
                 reason="TREND_ZONE_SELL", zone="TREND_ZONE",
@@ -1542,6 +1842,17 @@ def strategy_for_dcf(name, cfg, state):
                     clear_step = step
                     continue
                 after_units = normalize_position_amount(current_units - sell_units, position_mode)
+                record_trade_state_backup(name, symbol, dcf_state, cfg, {
+                    "side": "SELL", "reason": f"SELL_ZONE_PYRAMID_STEP_{step}", "zone": "SELL_ZONE",
+                    "price": current_price, "qty": sell_units,
+                    "pos_before": current_units, "pos_after": after_units,
+                    "avg_cost_before": current_avg_cost, "avg_cost_after": current_avg_cost,
+                    "last_trade_price_before": last_trade_price,
+                    "last_trade_side_before": last_trade_side,
+                    "last_add_price_before": last_add_price,
+                    "clear_step_before": clear_step,
+                    "clear_step_after": step,
+                })
                 log_trade(
                     dcf_name=name, symbol=symbol, price=current_price, qty=sell_units, side="SELL",
                     reason=f"SELL_ZONE_PYRAMID_STEP_{step}", zone="SELL_ZONE",
@@ -1582,6 +1893,31 @@ def strategy_for_dcf(name, cfg, state):
     dcf_state["pyramid_active"] = pyramid_active
     dcf_state["target_reached_once"] = target_reached_once
     dcf_state["clear_step"] = clear_step
+    action = "TRADE" if messages else "NO_TRADE"
+    reason = "; ".join([line.split("🗞交易:", 1)[-1].strip() for line in messages if "🗞交易:" in line]) if messages else "未触发交易条件"
+    write_strategy_snapshot({
+        "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name": name, "symbol": symbol, "level": "INFO",
+        "action": action, "decision": action, "reason": reason,
+        "trade_count": len(messages),
+        "market_status": "ok", "market_source": snapshot.source,
+        "last_bar_date": snapshot.last_bar_date, "history_count": len(closes),
+        "current_price": current_price, "ma150": ma150, "ma150_raw": ma150_raw,
+        "ma150_source": ma150_source, "dynamic_k150": dynamic_k150,
+        "sideways_score": sideways_score, "zone": zone,
+        "sell_price": sell_price, "clear_price": clear_price,
+        "current_units_before": units_before_decision, "current_units_after": current_units,
+        "avg_cost_before": avg_cost_before_decision, "avg_cost_after": current_avg_cost,
+        "target_units": target_units, "double_target": double_target,
+        "last_trade_price": dcf_state.get("last_trade_price"),
+        "last_trade_side": dcf_state.get("last_trade_side"),
+        "last_add_price": dcf_state.get("last_add_price"),
+        "pyramid_step": dcf_state.get("pyramid_step"),
+        "pyramid_active": dcf_state.get("pyramid_active"),
+        "target_reached_once": dcf_state.get("target_reached_once"),
+        "clear_step": dcf_state.get("clear_step"),
+        "trade_allowed": True,
+    })
     return messages
 
 # ===========================

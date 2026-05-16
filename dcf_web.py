@@ -45,6 +45,10 @@ TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
 BACKTEST_OUT_DIR = BASE_DIR / "backtest_out"
 PUSH_CONFIG_FILE = Path("/root/dcf/push.conf")
 PUSH_LOG_FILE = Path("/root/dcf/push.log")
+PUSH_LOG_KEEP_LINES = 30
+SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
+STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
+STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
 
 yaml = YAML()
 yaml.preserve_quotes = True
@@ -448,6 +452,226 @@ def read_state() -> Dict[str, Any]:
     except Exception:
         return {}
 
+def snapshot_dates(limit: int = 30) -> List[str]:
+    if not SNAPSHOT_DIR.exists():
+        return []
+    dates = []
+    for p in SNAPSHOT_DIR.glob("*.jsonl"):
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", p.stem):
+            dates.append(p.stem)
+    return sorted(dates, reverse=True)[:limit]
+
+
+def read_snapshot_records(day: str = "", limit: int = 2000) -> List[Dict[str, Any]]:
+    day = (day or datetime.now().strftime("%Y-%m-%d")).strip()
+    path = SNAPSHOT_DIR / f"{day}.jsonl"
+    if not path.exists():
+        return []
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+        if limit and len(lines) > limit:
+            lines = lines[-limit:]
+        out = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    out.append(item)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _snapshot_matches(record: Dict[str, Any], selected: str, symbol_code: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if selected == "COMMON_BACKTEST_CONFIG":
+        return True
+    name = str(record.get("name", "")).strip()
+    symbol = str(record.get("symbol", "")).strip().upper()
+    return name == selected or (symbol_code and symbol == symbol_code.upper())
+
+
+def get_strategy_snapshots(selected: str, symbol_code: str, day: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    records = [r for r in read_snapshot_records(day, limit=5000) if _snapshot_matches(r, selected, symbol_code)]
+    recent = list(reversed(records[-10:]))
+    latest = recent[0] if recent else {}
+    return latest, recent
+
+
+def build_market_source_stats(selected: str, symbol_code: str, day: str) -> List[Dict[str, Any]]:
+    records = [r for r in read_snapshot_records(day, limit=100000) if _snapshot_matches(r, selected, symbol_code)]
+    stats: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        source = str(r.get("market_source") or r.get("source") or "unknown").strip() or "unknown"
+        row = stats.setdefault(source, {"source": source, "total": 0, "ok": 0, "warn": 0, "error": 0, "skip": 0})
+        row["total"] += 1
+        status = str(r.get("market_status") or "").strip().lower()
+        level = str(r.get("level") or "").strip().upper()
+        action = str(r.get("action") or r.get("decision") or "").strip().upper()
+        if status == "ok" or level == "INFO":
+            row["ok"] += 1
+        elif status == "warn" or level == "WARN":
+            row["warn"] += 1
+        elif status == "error" or level == "ERROR":
+            row["error"] += 1
+        if action in {"SKIP_TRADE", "MONITOR_ONLY"}:
+            row["skip"] += 1
+    result = []
+    for row in stats.values():
+        total = row["total"] or 1
+        row = dict(row)
+        row["success_rate"] = f"{row['ok'] / total * 100:.1f}%"
+        result.append(row)
+    return sorted(result, key=lambda x: (-x["total"], x["source"]))
+
+
+
+
+def read_trade_state_backup_index() -> List[Dict[str, Any]]:
+    if not STATE_BACKUP_INDEX.exists():
+        return []
+    try:
+        data = json.loads(STATE_BACKUP_INDEX.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def get_trade_state_backups(selected: str, symbol_code: str, limit: int = 10) -> List[Dict[str, Any]]:
+    if selected == "COMMON_BACKTEST_CONFIG":
+        return []
+    symbol_code = (symbol_code or "").strip().upper()
+    rows = []
+    for item in read_trade_state_backup_index():
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).strip().upper()
+        name = str(item.get("name", "")).strip()
+        if name != selected and (not symbol_code or symbol != symbol_code):
+            continue
+        rel = str(item.get("file", "")).strip()
+        if rel:
+            try:
+                path = (BASE_DIR / rel).resolve()
+                if not str(path).startswith(str(STATE_BACKUP_DIR.resolve())) or not path.exists():
+                    continue
+            except Exception:
+                continue
+        rows.append(item)
+    rows.sort(key=lambda x: str(x.get("time", "")), reverse=True)
+    return rows[:limit]
+
+
+def _load_trade_state_backup(backup_id: str, selected: str, symbol_code: str) -> Dict[str, Any]:
+    backup_id = (backup_id or "").strip()
+    symbol_code = (symbol_code or "").strip().upper()
+    if not backup_id:
+        raise ValueError("缺少回滚点 ID")
+    for item in read_trade_state_backup_index():
+        if str(item.get("id", "")) != backup_id:
+            continue
+        name = str(item.get("name", "")).strip()
+        symbol = str(item.get("symbol", "")).strip().upper()
+        if name != selected and (not symbol_code or symbol != symbol_code):
+            raise ValueError("回滚点不属于当前标的")
+        rel = str(item.get("file", "")).strip()
+        path = (BASE_DIR / rel).resolve()
+        if not str(path).startswith(str(STATE_BACKUP_DIR.resolve())):
+            raise ValueError("回滚点路径非法")
+        if not path.exists():
+            raise ValueError("回滚点文件不存在")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("state_before"), dict):
+            raise ValueError("回滚点内容无效")
+        return data
+    raise ValueError("未找到回滚点")
+
+
+def _format_units_for_config(value: Any, mode: str) -> Any:
+    val = safe_float(value, 0.0)
+    if mode == "percent":
+        pct = val * 100.0
+        text = f"{pct:.6f}".rstrip("0").rstrip(".")
+        return f"{text or '0'}%"
+    try:
+        return int(round(val))
+    except Exception:
+        return val
+
+
+def request_runtime_state_restore(selected: str, backup_id: str, state_entry: Dict[str, Any]) -> None:
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    meta = state.setdefault("_meta", {})
+    try:
+        seq = int(meta.get("config_reload_seq", 0) or 0) + 1
+    except Exception:
+        seq = 1
+    meta["config_reload_seq"] = seq
+    meta["config_reload_requested_at"] = current_time_text()
+    for _k in ["state_restore_kind", "state_restore_symbol_key", "state_restore_backup_id", "state_restore_entry"]:
+        meta.pop(_k, None)
+    meta["config_reload_symbol_key"] = selected
+    meta["config_reload_symbols"] = [selected]
+    meta["state_restore_kind"] = "trade_backup"
+    meta["state_restore_symbol_key"] = selected
+    meta["state_restore_backup_id"] = backup_id
+    meta["state_restore_entry"] = state_entry
+    state[selected] = state_entry
+    write_state(state)
+
+
+def restore_trade_state_backup(backup_id: str, selected: str) -> str:
+    if selected == "COMMON_BACKTEST_CONFIG":
+        raise ValueError("通用回测参数没有交易状态可回滚")
+    config = read_yaml()
+    section = get_section(config, selected)
+    if not section:
+        raise ValueError("未找到当前标的配置")
+    symbol_code = str(section.get("symbol", "")).strip().upper()
+    backup = _load_trade_state_backup(backup_id, selected, symbol_code)
+    state_entry = deepcopy(backup.get("state_before") or {})
+    mode = str(backup.get("position_mode") or get_position_mode_from_section(section)).strip() or get_position_mode_from_section(section)
+    restored_units = state_entry.get("current_units")
+    restored_avg_cost = state_entry.get("avg_cost")
+    if restored_units is not None:
+        section["current_units"] = _format_units_for_config(restored_units, mode)
+    if restored_avg_cost is not None:
+        section["current_avg_cost"] = round(safe_float(restored_avg_cost, 0.0), 6)
+    set_section(config, selected, section)
+    write_yaml(config)
+    state_entry["last_status_msg"] = f"已恢复到交易前状态回滚点：{backup_id}"
+    request_runtime_state_restore(selected, backup_id, state_entry)
+    trade = backup.get("trade") or {}
+    return f"已恢复到 {backup.get('time', '')} 的交易前状态：{trade.get('side', '')} {trade.get('qty', '')} @ {trade.get('price', '')}"
+
+
+def get_position_mode_from_section(section: Dict[str, Any]) -> str:
+    base = section.get("base_units", 0)
+    target = section.get("target_units", 0)
+    if isinstance(base, str) and base.strip().endswith("%"):
+        return "percent"
+    if isinstance(target, str) and target.strip().endswith("%"):
+        return "percent"
+    try:
+        if 0 <= float(base) <= 1 and 0 <= float(target) <= 1:
+            return "percent"
+    except Exception:
+        pass
+    return "absolute"
+
+def fmt_snapshot_value(value: Any, digits: int = 3) -> str:
+    if value is None or value == "":
+        return "-"
+    try:
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return str(value)
+
 def write_state(data: Dict[str, Any]) -> None:
     try:
         STATE_FILE.write_text(json.dumps(data or {}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -470,6 +694,8 @@ def request_runtime_config_reload(selected: str, section: Dict[str, Any]) -> Non
         reload_symbols = [selected]
     meta["config_reload_seq"] = seq
     meta["config_reload_requested_at"] = current_time_text()
+    for _k in ["state_restore_kind", "state_restore_symbol_key", "state_restore_backup_id", "state_restore_entry"]:
+        meta.pop(_k, None)
     meta["config_reload_symbol_key"] = selected
     meta["config_reload_symbol_code"] = str((section or {}).get("symbol", "")).strip().upper()
     meta["config_reload_symbols"] = reload_symbols
@@ -554,16 +780,28 @@ def write_push_config(cfg: Dict[str, str]) -> None:
     PUSH_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     PUSH_CONFIG_FILE.write_text(build_push_config_text(cfg), encoding="utf-8")
 
+def prune_push_log_lines(keep_lines: int = PUSH_LOG_KEEP_LINES) -> None:
+    try:
+        if not PUSH_LOG_FILE.exists():
+            return
+        keep_lines = max(1, int(keep_lines or PUSH_LOG_KEEP_LINES))
+        lines = PUSH_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if len(lines) > keep_lines:
+            PUSH_LOG_FILE.write_text("\n".join(lines[-keep_lines:]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
 def append_push_log(channel: str, success: bool, message: str) -> None:
     try:
         PUSH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         line = f"{current_time_text()} | {channel} | {'成功' if success else '失败'} | {str(message).replace(chr(10), ' ')[:500]}\n"
         with PUSH_LOG_FILE.open("a", encoding="utf-8") as f:
             f.write(line)
+        prune_push_log_lines(PUSH_LOG_KEEP_LINES)
     except Exception:
         pass
 
-def read_push_logs(limit: int = 10) -> List[str]:
+def read_push_logs(limit: int = PUSH_LOG_KEEP_LINES) -> List[str]:
     if not PUSH_LOG_FILE.exists():
         return []
     try:
@@ -1214,6 +1452,13 @@ def _base_context(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
     bt_base_default = str(section.get("base_units", common.get("base_units", "2.5%")))
     bt_target_default = str(section.get("target_units", common.get("target_units", "5%")))
     current_symbol = str(section.get("symbol", "")).strip()
+    available_snapshot_dates = snapshot_dates(30)
+    requested_snapshot_date = (request.args.get("snapshot_date", "") or "").strip()
+    default_snapshot_date = datetime.now().strftime("%Y-%m-%d")
+    selected_snapshot_date = requested_snapshot_date if requested_snapshot_date in available_snapshot_dates else (available_snapshot_dates[0] if available_snapshot_dates else default_snapshot_date)
+    latest_snapshot, recent_snapshots = get_strategy_snapshots(selected, current_symbol, selected_snapshot_date)
+    market_source_stats = build_market_source_stats(selected, current_symbol, selected_snapshot_date)
+    trade_state_backups = get_trade_state_backups(selected, current_symbol, 10)
     return {
         "app_name": APP_DISPLAY_NAME,
         "selected": selected,
@@ -1234,6 +1479,13 @@ def _base_context(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
         "backtest_help_text": BACKTEST_HELP_TEXT,
         "backtest_metrics_help_text": BACKTEST_METRICS_HELP_TEXT,
         "symbol_cards": build_symbol_cards(config, selected),
+        "snapshot_dates": available_snapshot_dates,
+        "selected_snapshot_date": selected_snapshot_date,
+        "latest_snapshot": latest_snapshot,
+        "recent_snapshots": recent_snapshots,
+        "market_source_stats": market_source_stats,
+        "trade_state_backups": trade_state_backups,
+        "fmt_snapshot_value": fmt_snapshot_value,
     }
 
 def _save_all_params(config: Dict[str, Any], selected: str) -> None:
@@ -1318,6 +1570,22 @@ def status_page():
     ctx.update({"page_name": "status"})
     return render_template("dashboard.html", **ctx)
 
+
+@app.route("/restore-trade-state", methods=["POST"])
+def restore_trade_state_page():
+    config = read_yaml()
+    selected = (request.form.get("symbol_key", "") or "").strip()
+    allowed = {key for key, _ in symbol_options(config)}
+    if selected not in allowed:
+        selected = _selected_key(config)
+    backup_id = (request.form.get("backup_id", "") or "").strip()
+    try:
+        detail = restore_trade_state_backup(backup_id, selected)
+        flash(detail, "success")
+    except Exception as e:
+        flash(f"回滚失败：{e}", "error")
+    return redirect(url_for("status_page", symbol_key=selected))
+
 @app.route("/params", methods=["GET", "POST"])
 def params_page():
     config = read_yaml()
@@ -1378,7 +1646,7 @@ def push_page():
         "push_config": cfg,
         "push_fields": PUSH_FIELDS,
         "push_select_options": PUSH_SELECT_OPTIONS,
-        "push_logs": read_push_logs(10),
+        "push_logs": read_push_logs(PUSH_LOG_KEEP_LINES),
     })
     return render_template("dashboard.html", **ctx)
 
