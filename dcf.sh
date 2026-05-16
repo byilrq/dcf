@@ -22,8 +22,8 @@ PYTHON_CMD="python3"
 PID_FILE="$DCF_DIR/dcf.pid"
 LOG_FILE="$DCF_DIR/dcf.log"
 
-# PushPlus/Telegram 配置文件（必须放在 dcf 目录）
-PUSHPLUS_CONF="$DCF_DIR/push.conf"
+# 推送配置由 Web 端管理；安装脚本只保留 push.conf 文件，不提供交互配置。
+PUSH_CONF="$DCF_DIR/push.conf"
 
 # venv 目录（依赖安装优先走 venv）
 VENV_DIR="$DCF_DIR/.venv"
@@ -380,69 +380,25 @@ PY
     return 0
 }
 
-# ============================================
-# 写入/更新 Push 配置文件（push.conf）
-# 统一写入到 $PUSHPLUS_CONF
-# ============================================
-ensure_push_conf_file() {
-    ensure_dcf_dir
-    if [ ! -f "$PUSHPLUS_CONF" ]; then
-        {
-            echo "# 自动生成的 Push 配置"
-            echo "# 创建时间: $(date '+%Y-%m-%d %H:%M:%S')"
-            echo ""
-            echo 'export PUSH_ENABLED="yes"'
-            echo 'export PUSH_CHANNEL="pushplus"'
-            echo 'export PUSHPLUS_TOKEN=""'
-            echo 'export TELEGRAM_BOT_TOKEN=""'
-            echo 'export TELEGRAM_CHAT_ID=""'
-            echo 'export GOTIFY_URL="https://sharq.eu.org:2084"'
-            echo 'export GOTIFY_TOKEN=""'
-            echo 'export GOTIFY_PRIORITY="10"'
-            echo 'export NTFY_URL="http://127.0.0.1:8083"'
-            echo 'export NTFY_TOPIC="let-rss"'
-            echo 'export NTFY_USERNAME=""'
-            echo 'export NTFY_PASSWORD=""'
-            echo 'export NTFY_PRIORITY="4"'
-            echo 'export NTFY_TAGS="dcf,chart_with_upwards_trend"'
-        } > "$PUSHPLUS_CONF"
-        chmod 600 "$PUSHPLUS_CONF"
-    fi
-}
 
 add_cron_watchdog() {
-    # 每5分钟检查一次 dcf.py 是否在跑
     local cron_line="*/5 * * * * bash $SCRIPT_DIR/dcf.sh --cron-check >/dev/null 2>&1"
-
-    # 先删掉旧的同类行，再追加新的，避免重复
     (crontab -l 2>/dev/null | grep -v "dcf.sh --cron-check" || true; echo "$cron_line") | crontab -
-
     echo "已在 crontab 中添加每5分钟检查任务。"
 }
 
 remove_cron_watchdog() {
-    # 删除所有包含 dcf.sh --cron-check 的行
     (crontab -l 2>/dev/null | grep -v "dcf.sh --cron-check" || true) | crontab - 2>/dev/null || true
     echo "已从 crontab 中移除检查任务（如存在）。"
 }
 
-# ============================================
-# 防止重复运行（与 pushplus.sh 一致：pidof）
-# ============================================
 cron_check() {
-    # 供 cron 调用的检查模式，不进入交互菜单
     ensure_dcf_dir
 
-    # 若有 PushPlus 配置，加载
-    if [ -f "$PUSHPLUS_CONF" ]; then
-        # shellcheck disable=SC1090
-        source "$PUSHPLUS_CONF"
-    fi
-
-    # 如果有 PID 文件且进程还在，就什么都不做
     if [ -f "$PID_FILE" ]; then
+        local PID
         PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
-        if [ -n "${PID}" ] && ps -p "$PID" > /dev/null 2>&1; then
+        if [ -n "${PID}" ] && ps -p "$PID" >/dev/null 2>&1; then
             exit 0
         else
             rm -f "$PID_FILE"
@@ -451,328 +407,88 @@ cron_check() {
 
     echo "$(date '+%Y.%m.%d.%H:%M:%S') [cron-check] 检测到 dcf.py 未运行，自动重启..." >> "$LOG_FILE"
 
-    # 如果有 venv，就用 venv 的 python，否则用系统 python3
     if [ -x "$VENV_DIR/bin/python" ]; then
         nohup "$VENV_DIR/bin/python" "$PY_SCRIPT" >> "$LOG_FILE" 2>&1 &
     else
         nohup "$PYTHON_CMD" "$PY_SCRIPT" >> "$LOG_FILE" 2>&1 &
     fi
 
-    NEW_PID=$!
+    local NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"
     echo "$(date '+%Y.%m.%d.%H:%M:%S') [cron-check] 已重新启动 dcf.py，PID=$NEW_PID" >> "$LOG_FILE"
 }
 
-# ============================================
-# 启动脚本（nohup + PID + cron 看门狗）
-# ============================================
 start_dcf() {
     ensure_dcf_dir
 
     if [ ! -f "$PY_SCRIPT" ]; then
         echo "找不到 $PY_SCRIPT，请先执行菜单 1 下载/更新项目与依赖。"
-        return
+        return 1
     fi
 
-    # 如果有 Push 配置，就加载 Token
-    if [ -f "$PUSHPLUS_CONF" ]; then
-        # shellcheck disable=SC1090
-        source "$PUSHPLUS_CONF"
-    else
-        echo "提示：未配置 push.conf，脚本只会写日志，不会推送。"
-        echo "你可以用菜单 4 配置推送。"
-    fi
-
-    # 检查是否已有运行中的进程
     if [ -f "$PID_FILE" ]; then
+        local PID
         PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
-        if [ -n "${PID}" ] && ps -p "$PID" > /dev/null 2>&1; then
+        if [ -n "${PID}" ] && ps -p "$PID" >/dev/null 2>&1; then
             echo "dcf.py 已在运行中（PID=$PID），如需重启请先选择“停止脚本”。"
-            return
+            return 0
+        else
+            rm -f "$PID_FILE"
         fi
     fi
 
     echo "启动 dcf.py ..."
     echo "日志文件：$LOG_FILE"
 
-    # 优先使用 venv python
     if [ -x "$VENV_DIR/bin/python" ]; then
         nohup "$VENV_DIR/bin/python" "$PY_SCRIPT" >> "$LOG_FILE" 2>&1 &
     else
-        echo "提示：未检测到虚拟环境 $VENV_DIR，建议先执行菜单 3 安装依赖。"
+        echo "提示：未检测到虚拟环境 $VENV_DIR，建议先执行菜单 1 下载/更新项目与依赖。"
         nohup "$PYTHON_CMD" "$PY_SCRIPT" >> "$LOG_FILE" 2>&1 &
     fi
 
-    NEW_PID=$!
+    local NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"
-
     echo "dcf.py 已启动，PID=$NEW_PID"
-
-    # 添加 cron 看门狗
     add_cron_watchdog
 }
 
-# ============================================
-# 停止脚本（kill + 清理 PID + 移除 cron）
-# ============================================
 stop_dcf() {
     ensure_dcf_dir
 
     if [ ! -f "$PID_FILE" ]; then
         echo "没有找到 PID 文件，可能 dcf.py 未在运行。"
         remove_cron_watchdog
-        return
+        return 0
     fi
 
+    local PID
     PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
-    if [ -z "${PID}" ] || ! ps -p "$PID" > /dev/null 2>&1; then
+    if [ -z "${PID}" ] || ! ps -p "$PID" >/dev/null 2>&1; then
         echo "PID 文件存在但进程未运行，清理 PID 文件。"
         rm -f "$PID_FILE"
         remove_cron_watchdog
-        return
+        return 0
     fi
 
     echo "正在停止 dcf.py (PID=$PID)..."
     kill "$PID" || true
 
     sleep 2
-    if ps -p "$PID" > /dev/null 2>&1; then
+    if ps -p "$PID" >/dev/null 2>&1; then
         echo "进程未退出，尝试强制 kill -9..."
         kill -9 "$PID" || true
     fi
 
     rm -f "$PID_FILE"
     echo "dcf.py 已停止。"
-
     remove_cron_watchdog
 }
-# ============================================
-# 推送设置入口（PushPlus & Telegram）
-# 修复：统一使用 $PUSHPLUS_CONF
-# ============================================
-config_push() {
-    ensure_dcf_dir
-    ensure_push_conf_file
-
-    echo "当前 Push 配置文件路径：$PUSHPLUS_CONF"
-    echo "----------------------------------------"
-    if grep -q "^export PUSHPLUS_TOKEN=" "$PUSHPLUS_CONF"; then
-        echo "PUSHPLUS_TOKEN: 已配置"
-    else
-        echo "PUSHPLUS_TOKEN: (未配置)"
-    fi
-    if grep -q "^export TELEGRAM_BOT_TOKEN=" "$PUSHPLUS_CONF"; then
-        echo "TELEGRAM_BOT_TOKEN: 已配置"
-    else
-        echo "TELEGRAM_BOT_TOKEN: (未配置)"
-    fi
-    if grep -q "^export TELEGRAM_CHAT_ID=" "$PUSHPLUS_CONF"; then
-        echo "TELEGRAM_CHAT_ID: 已配置"
-    else
-        echo "TELEGRAM_CHAT_ID: (未配置)"
-    fi
-    echo "----------------------------------------"
-    echo
-    echo "请选择要配置/测试的推送方式："
-    echo "1) 配置 PushPlus"
-    echo "2) 配置 Telegram"
-    echo "3) 两者都配置"
-    echo "4) 发送测试消息到 PushPlus"
-    echo "5) 发送测试消息到 Telegram"
-    echo "6) 退出"
-
-    prompt_read choice "请选择 [1-6]: "
-    echo
-
-    case "$choice" in
-        1) config_pushplus ;;
-        2) config_telegram ;;
-        3) config_pushplus; echo; config_telegram ;;
-        4) test_pushplus ;;
-        5) test_telegram ;;
-        6) echo "已取消修改。"; return ;;
-        *) echo "无效的选择，已取消。"; return ;;
-    esac
-}
 
 # ============================================
-# 配置 PushPlus
+# 推送配置说明
 # ============================================
-config_pushplus() {
-    ensure_push_conf_file
-
-    echo "=== 配置 PushPlus ==="
-    local current_token=""
-    if grep -q "^export PUSHPLUS_TOKEN=" "$PUSHPLUS_CONF"; then
-        current_token=$(grep "^export PUSHPLUS_TOKEN=" "$PUSHPLUS_CONF" | head -1 | cut -d'"' -f2)
-        echo "当前 PushPlus Token: ${current_token:0:8}****"
-    else
-        echo "当前 PushPlus Token: (未配置)"
-    fi
-
-    prompt_read ans "是否设置 PushPlus Token？(y/n): "
-    case "$ans" in
-        y|Y)
-            prompt_read token "请输入 PushPlus Token（注意不要泄露给他人）: "
-            if [ -z "$token" ]; then
-                echo "Token 为空，取消设置。"
-                return
-            fi
-
-            # 删除旧的配置行
-            sed -i '/^export PUSHPLUS_TOKEN=/d' "$PUSHPLUS_CONF"
-            echo "export PUSHPLUS_TOKEN=\"$token\"" >> "$PUSHPLUS_CONF"
-            echo "PushPlus Token 已更新。"
-            ;;
-        *)
-            echo "已跳过 PushPlus 配置。"
-            ;;
-    esac
-}
-
-# ============================================
-# 配置 Telegram
-# ============================================
-config_telegram() {
-    ensure_push_conf_file
-
-    echo "=== 配置 Telegram ==="
-    local current_bot_token=""
-    local current_chat_id=""
-
-    if grep -q "^export TELEGRAM_BOT_TOKEN=" "$PUSHPLUS_CONF"; then
-        current_bot_token=$(grep "^export TELEGRAM_BOT_TOKEN=" "$PUSHPLUS_CONF" | head -1 | cut -d'"' -f2)
-        echo "当前 Telegram Bot Token: ${current_bot_token:0:8}****"
-    else
-        echo "当前 Telegram Bot Token: (未配置)"
-    fi
-
-    if grep -q "^export TELEGRAM_CHAT_ID=" "$PUSHPLUS_CONF"; then
-        current_chat_id=$(grep "^export TELEGRAM_CHAT_ID=" "$PUSHPLUS_CONF" | head -1 | cut -d'"' -f2)
-        echo "当前 Telegram Chat ID: $current_chat_id"
-    else
-        echo "当前 Telegram Chat ID: (未配置)"
-    fi
-
-    prompt_read ans "是否设置 Telegram 配置？(y/n): "
-    case "$ans" in
-        y|Y)
-            prompt_read bot_token "请输入 Telegram Bot Token: "
-            if [ -z "$bot_token" ]; then
-                echo "Bot Token 为空，取消设置。"
-                return
-            fi
-
-            prompt_read chat_id "请输入 Telegram Chat ID: "
-            if [ -z "$chat_id" ]; then
-                echo "Chat ID 为空，取消设置。"
-                return
-            fi
-
-            sed -i '/^export TELEGRAM_BOT_TOKEN=/d' "$PUSHPLUS_CONF"
-            sed -i '/^export TELEGRAM_CHAT_ID=/d' "$PUSHPLUS_CONF"
-
-            echo "export TELEGRAM_BOT_TOKEN=\"$bot_token\"" >> "$PUSHPLUS_CONF"
-            echo "export TELEGRAM_CHAT_ID=\"$chat_id\"" >> "$PUSHPLUS_CONF"
-
-            echo "Telegram 配置已更新。"
-            echo "提示：请确保你已经给 Bot 发过消息/或把 Bot 加入群组并说过话，否则可能收不到推送。"
-            ;;
-        *)
-            echo "已跳过 Telegram 配置。"
-            ;;
-    esac
-}
-# ============================================
-# 发送测试消息到 PushPlus
-# ============================================
-test_pushplus() {
-    ensure_dcf_dir
-    ensure_push_conf_file
-
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "错误：未安装 curl，无法发送测试消息。"
-        return 1
-    fi
-
-    # shellcheck disable=SC1090
-    source "$PUSHPLUS_CONF" 2>/dev/null || true
-
-    if [[ -z "${PUSHPLUS_TOKEN:-}" ]]; then
-        echo "PUSHPLUS_TOKEN 未配置，请先在菜单中配置 PushPlus。"
-        return 1
-    fi
-
-    local title="DCF 测试 PushPlus"
-    local content="PushPlus 测试消息发送成功 ✅\n时间：$(date '+%Y-%m-%d %H:%M:%S')\n主机：$(hostname)\n"
-
-    echo "正在发送 PushPlus 测试消息..."
-    local resp
-    resp="$(curl -sS --max-time 10 \
-        -X POST "http://www.pushplus.plus/send" \
-        -d "token=${PUSHPLUS_TOKEN}" \
-        --data-urlencode "title=${title}" \
-        --data-urlencode "content=${content}" \
-        -d "template=txt" || true)"
-
-    # 不依赖 jq，用 grep 判断是否成功（兼容 code=0 或 code=200）
-    if echo "$resp" | grep -Eq '"code"[[:space:]]*:[[:space:]]*(0|200)'; then
-        echo "PushPlus 测试消息发送成功。"
-        return 0
-    fi
-
-    echo "PushPlus 测试消息可能发送失败，返回："
-    echo "$resp"
-    return 1
-}
-
-# ============================================
-# 发送测试消息到 Telegram
-# ============================================
-test_telegram() {
-    ensure_dcf_dir
-    ensure_push_conf_file
-
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "错误：未安装 curl，无法发送测试消息。"
-        return 1
-    fi
-
-    # shellcheck disable=SC1090
-    source "$PUSHPLUS_CONF" 2>/dev/null || true
-
-    if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
-        echo "Telegram 未配置完整：需要 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID"
-        return 1
-    fi
-
-    local text
-    text=$'DCF Telegram 测试消息发送成功 ✅\n'
-    text+="时间：$(date '+%Y-%m-%d %H:%M:%S')"$'\n'
-    text+="主机：$(hostname)"$'\n'
-
-    echo "正在发送 Telegram 测试消息..."
-    local url="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    local resp
-    resp="$(curl -sS --max-time 10 \
-        -X POST "$url" \
-        -d "chat_id=${TELEGRAM_CHAT_ID}" \
-        --data-urlencode "text=${text}" \
-        -d "disable_web_page_preview=true" || true)"
-
-    # 成功：{"ok":true,...}
-    if echo "$resp" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'; then
-        echo "Telegram 测试消息发送成功。"
-        return 0
-    fi
-
-    echo "Telegram 测试消息可能发送失败，返回："
-    echo "$resp"
-    return 1
-}
-
-
+# push.conf 由 Web 管理端的“推送”页面维护；脚本不再提供推送配置入口。
 
 # ============================================
 # 状态查询（含 cron）
@@ -795,12 +511,6 @@ show_status() {
 
 
 
-# =================设置时区 =============
-change_tz(){
-    ${SUDO} timedatectl set-timezone Asia/Shanghai
-    echo "系统时区已经改为Asia/Shanghai"
-    timedatectl
-}
 
 # ========= 若以 --cron-check 启动，则只做检查后退出 =========
 if [ "${1:-}" = "--cron-check" ]; then
@@ -1058,15 +768,13 @@ show_menu() {
     echo -e "${C_DIM} （管理脚本目录：$SCRIPT_DIR）${C_RESET}"
     echo -e "${C_DIM} （运行文件目录：$DCF_DIR）${C_RESET}"
     echo -e "${C_CYAN}===============================${C_RESET}"
-    echo -e "${C_YELLOW}1)${C_RESET} 下载/更新项目与依赖"	
+    echo -e "${C_YELLOW}1)${C_RESET} 下载/更新项目与依赖"
     echo -e "${C_GREEN}2)${C_RESET} 启动脚本"
     echo -e "${C_RED}3)${C_RESET} 停止脚本"
-    echo -e "${C_BLUE}4)${C_RESET} Push设置"
-    echo -e "${C_CYAN}5)${C_RESET} 查看运行状态"
-    echo -e "${C_YELLOW}6)${C_RESET} 设置上海时区"
-    echo -e "${C_YELLOW}7)${C_RESET} 重启网页端"
-    echo -e "${C_CYAN}8)${C_RESET} 查看网页端状态"
-    echo -e "${C_CYAN}9)${C_RESET} 检查项目文件"
+    echo -e "${C_CYAN}4)${C_RESET} 查看运行状态"
+    echo -e "${C_YELLOW}5)${C_RESET} 重启网页端"
+    echo -e "${C_CYAN}6)${C_RESET} 查看网页端状态"
+    echo -e "${C_CYAN}7)${C_RESET} 检查项目文件"
     echo -e "${C_RED}0)${C_RESET} 退出"
     echo -e "${C_CYAN}===============================${C_RESET}"
 }
@@ -1080,12 +788,10 @@ while true; do
 	    1) update_rely ;;
         2) start_dcf ;;
         3) stop_dcf ;;
-        4) config_push ;;
-        5) show_status ;;
-        6) change_tz ;;
-        7) restart_web_portal ;;
-        8) web_portal_status ;;
-        9) self_check_project_files ;;
+        4) show_status ;;
+        5) restart_web_portal ;;
+        6) web_portal_status ;;
+        7) self_check_project_files ;;
         0)
             echo "退出管理脚本。"
             exit 0
