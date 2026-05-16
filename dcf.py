@@ -524,14 +524,9 @@ def build_daily_snapshot(state: dict) -> str:
 def get_price_from_api(symbol, price_scale=1.0, last_known_price=None):
     raw_symbol = symbol.upper().strip()
     if raw_symbol.startswith("HK"):
-        price_info = get_hk_price_tencent(symbol, price_scale)
-        return validate_hk_price(
-            symbol,
-            price_info['price'],
-            last_known_price,
-            price_info.get('prev_close')
-        )
+        return get_hk_price(symbol, price_scale)
     return get_a_price(symbol, price_scale)
+
 
 def _eastmoney_secid(symbol):
     raw = symbol.upper().strip()
@@ -543,19 +538,36 @@ def _eastmoney_secid(symbol):
         return ("1." if raw.startswith("6") else "0.") + raw
     raise ValueError(f"不支持的A股代码格式: {symbol}")
 
+
+def _eastmoney_hk_secid(symbol_or_code):
+    raw = str(symbol_or_code or "").upper().strip()
+    if raw.startswith("HK"):
+        raw = raw[2:]
+    code = raw.zfill(5)
+    return "116." + code
+
+
 EASTMONEY_KLINE_ENDPOINTS = [
     "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-    "https://80.push2.eastmoney.com/api/qt/stock/kline/get",
 ]
 
-EASTMONEY_FQT_OPTIONS = ["1", "0", "2"]  # 1=前复权, 0=不复权, 2=后复权；部分新ETF前复权会返回空
+EASTMONEY_HK_KLINE_ENDPOINTS = [
+    "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+]
 
-EASTMONEY_USER_AGENTS = [
+EASTMONEY_FQT_OPTIONS = ["1", "0", "2"]  # 1=前复权, 0=不复权, 2=后复权
+
+MARKET_DATA_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
 ]
+
+# 兼容旧变量名，避免后续引用报错
+EASTMONEY_USER_AGENTS = MARKET_DATA_USER_AGENTS
+
 
 def _parse_eastmoney_klines(data, price_scale):
     klines = (((data or {}).get("data") or {}).get("klines") or [])
@@ -572,26 +584,18 @@ def _parse_eastmoney_klines(data, price_scale):
             continue
     return closes
 
-def _fetch_eastmoney_daily_closes(symbol, days, price_scale=1.0, max_retries_per_endpoint=2):
-    """优先使用东方财富日K获取A股/ETF收盘价。
 
-    当前价和历史MA都从日K close 获取，保证同一数据源、同一 price_scale。
-    对部分新ETF，fqt=1 可能返回空，因此依次尝试前复权、不复权、后复权。
-    只使用证书正常的东方财富端点，不再使用 46.push2.eastmoney.cn。
-    """
-    secid = _eastmoney_secid(symbol)
+def _fetch_eastmoney_kline_closes(secid, symbol_label, days, price_scale=1.0, endpoints=None, max_retries_per_endpoint=1):
     lmt = max(int(days), 2)
-    endpoints = list(EASTMONEY_KLINE_ENDPOINTS)
-    random.shuffle(endpoints)
+    endpoints = list(endpoints or EASTMONEY_KLINE_ENDPOINTS)
     last_err = None
-
     for endpoint in endpoints:
         for fqt in EASTMONEY_FQT_OPTIONS:
             for attempt in range(max_retries_per_endpoint):
                 if attempt > 0:
-                    time_module.sleep(0.4 + random.random() * 0.8)
+                    time_module.sleep(0.3 + random.random() * 0.5)
                 headers = {
-                    "User-Agent": random.choice(EASTMONEY_USER_AGENTS),
+                    "User-Agent": random.choice(MARKET_DATA_USER_AGENTS),
                     "Referer": "https://quote.eastmoney.com/",
                     "Accept": "application/json, text/plain, */*",
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -613,18 +617,28 @@ def _fetch_eastmoney_daily_closes(symbol, days, price_scale=1.0, max_retries_per
                     data = resp.json()
                     closes = _parse_eastmoney_klines(data, price_scale)
                     if closes:
-                        if len(closes) < min(lmt, 2):
-                            raise RuntimeError(f"东方财富K线数据量不足: {symbol}, fqt={fqt}, count={len(closes)}")
                         if fqt != "1":
-                            logging.warning(f"东方财富 {symbol} fqt=1 无数据，已改用 fqt={fqt} 的同源日K数据。")
+                            logging.warning(f"东方财富 {symbol_label} fqt=1 无数据，已改用 fqt={fqt} 的同源日K数据。")
                         return closes[-lmt:]
-                    raise RuntimeError(f"东方财富K线为空: {symbol}, fqt={fqt}, response={str(data)[:220]}")
+                    raise RuntimeError(f"东方财富K线为空: {symbol_label}, secid={secid}, fqt={fqt}, response={str(data)[:220]}")
                 except Exception as e:
                     last_err = e
-                    logging.debug(f"东方财富K线端点失败 {symbol}: endpoint={endpoint}, fqt={fqt}, attempt={attempt + 1}, error={e}")
+                    logging.debug(f"东方财富K线端点失败 {symbol_label}: endpoint={endpoint}, fqt={fqt}, attempt={attempt + 1}, error={e}")
                     continue
+    raise RuntimeError(f"东方财富全部K线端点均失败: {symbol_label}, last_error={last_err}")
 
-    raise RuntimeError(f"东方财富全部K线端点均失败: {symbol}, last_error={last_err}")
+
+def _fetch_eastmoney_daily_closes(symbol, days, price_scale=1.0, max_retries_per_endpoint=1):
+    secid = _eastmoney_secid(symbol)
+    return _fetch_eastmoney_kline_closes(
+        secid=secid,
+        symbol_label=symbol,
+        days=days,
+        price_scale=price_scale,
+        endpoints=EASTMONEY_KLINE_ENDPOINTS,
+        max_retries_per_endpoint=max_retries_per_endpoint,
+    )
+
 
 def _sina_symbol(symbol):
     raw = symbol.upper().strip()
@@ -636,13 +650,14 @@ def _sina_symbol(symbol):
         return ("sh" if raw.startswith("6") else "sz") + raw
     raise ValueError(f"不支持的A股代码格式: {symbol}")
 
+
 def _fetch_sina_daily_closes(symbol, days, price_scale=1.0):
-    """备用：新浪日K。当前价也会通过 get_a_price 取本函数最后一根 close，仍保持同源。"""
+    """A股/ETF优先数据源：新浪日K。当前价也取本函数最后一根 close，保持同源。"""
     sina_symbol = _sina_symbol(symbol)
     lmt = max(int(days), 2)
     url = "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
     params = {"symbol": sina_symbol, "scale": "240", "ma": "no", "datalen": str(lmt)}
-    headers = {"User-Agent": random.choice(EASTMONEY_USER_AGENTS), "Referer": "https://finance.sina.com.cn/"}
+    headers = {"User-Agent": random.choice(MARKET_DATA_USER_AGENTS), "Referer": "https://finance.sina.com.cn/"}
     resp = requests.get(url, params=params, headers=headers, timeout=12)
     resp.raise_for_status()
     data = resp.json()
@@ -660,11 +675,11 @@ def _fetch_sina_daily_closes(symbol, days, price_scale=1.0):
         return closes[-lmt:]
     raise RuntimeError(f"新浪K线数据不足: {symbol}, count={len(closes)}, response={str(data)[:220]}")
 
+
 def _fetch_a_daily_closes(symbol, days, price_scale=1.0):
     """A股/ETF统一入口：优先新浪日K；失败后再尝试东方财富日K。
 
-    这样恢复到原先更稳定的新浪K线覆盖，同时当前价也取同一组新浪日K
-    最新 close，避免“当前价一个接口、MA另一个接口”的比例不一致。
+    当前价和MA都取同一入口同一组日K最新 close，避免“当前价一个接口、MA另一个接口”的比例不一致。
     注意：不会构造伪历史数据。所有源都失败时直接抛错，本轮策略跳过。
     """
     try:
@@ -678,65 +693,89 @@ def _fetch_a_daily_closes(symbol, days, price_scale=1.0):
     except Exception as em_err:
         raise RuntimeError(f"A股/ETF日K全部数据源失败: {symbol}, eastmoney_error={em_err}")
 
+
 def get_a_price(symbol, price_scale=1.0):
     """A股/ETF当前价取统一日K入口最新 close，与MA计算同源。"""
     closes = _fetch_a_daily_closes(symbol, 2, price_scale=price_scale)
     return round(float(closes[-1]), 4)
 
-def get_hk_price_tencent(symbol, price_scale):
-    hk_code = symbol[2:]
-    hk_code = hk_code.zfill(5)
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://finance.qq.com/"
-    }
-    urls = [
-        f"https://qt.gtimg.cn/q=hk{hk_code}",
-        f"https://qt.gtimg.cn/q=r_hk{hk_code}",
-    ]
-    last_err = None
-    for url in urls:
+
+def _fetch_hk_eastmoney_daily_closes(symbol_or_code, days, price_scale=1.0):
+    """港股优先数据源：东方财富港股日K。
+
+    AkShare 的港股历史K线同样使用东方财富 push2his，港股 secid 为 116.xxxxx。
+    这里当前价和MA都取这组日K close，替代旧的 web.ifzq.gtimg.cn 域名。
+    """
+    raw = str(symbol_or_code or "").upper().strip()
+    code = raw[2:] if raw.startswith("HK") else raw
+    code = code.zfill(5)
+    secid = _eastmoney_hk_secid(code)
+    return _fetch_eastmoney_kline_closes(
+        secid=secid,
+        symbol_label="HK" + code,
+        days=days,
+        price_scale=price_scale,
+        endpoints=EASTMONEY_HK_KLINE_ENDPOINTS,
+        max_retries_per_endpoint=1,
+    )
+
+
+def _fetch_hk_tencent_proxy_daily_closes(symbol_or_code, days, price_scale=1.0):
+    """港股备用数据源：腾讯新版 proxy.finance.qq.com newfqkline。
+
+    避开旧域名 web.ifzq.gtimg.cn 的 DNS 解析失败问题。
+    """
+    raw = str(symbol_or_code or "").upper().strip()
+    code = raw[2:] if raw.startswith("HK") else raw
+    code = code.zfill(5)
+    lmt = max(int(days), 2)
+    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+    params = {"param": f"hk{code},day,,,{lmt},qfq"}
+    headers = {"User-Agent": random.choice(MARKET_DATA_USER_AGENTS), "Referer": "https://gu.qq.com/"}
+    resp = requests.get(url, params=params, headers=headers, timeout=12)
+    resp.raise_for_status()
+    data = resp.json()
+    node = (((data or {}).get("data") or {}).get("hk" + code) or {})
+    klines = node.get("qfqday") or node.get("day") or []
+    closes = []
+    for k in klines:
         try:
-            resp = requests.get(url, headers=headers, timeout=5)
-            resp.encoding = "gbk"
-            text = resp.text.strip()
-            m = re.search(r'="([^"]*)"', text)
-            if not m:
-                raise RuntimeError(f"腾讯 HK {symbol} 返回格式异常: {text[:80]!r}")
-            data_str = m.group(1)
-            fields = data_str.split("~")
-            price = prev_close = None
-            if len(fields) > 4:
-                try:
-                    price = float(fields[3])
-                except ValueError:
-                    price = None
-                try:
-                    prev_close = float(fields[4])
-                except ValueError:
-                    prev_close = None
-            if price is None:
-                for f in fields:
-                    try:
-                        val = float(f)
-                    except ValueError:
-                        continue
-                    if price is None:
-                        price = val
-                    elif prev_close is None:
-                        prev_close = val
-                        break
-            if price is None:
-                raise RuntimeError(f"腾讯 HK {symbol} 无法解析价格: {data_str!r}")
-            if prev_close is None:
-                prev_close = price
-            return {
-                "price": round(price * price_scale, 4),
-                "prev_close": round(prev_close * price_scale, 4),
-            }
-        except Exception as e:
-            last_err = e
-    raise RuntimeError(f"腾讯 HK {symbol} 获取失败: {last_err}")
+            # 腾讯K线通常为 [date, open, close, high, low, volume, ...]
+            close_price = float(k[2]) * float(price_scale)
+            if close_price > 0:
+                closes.append(round(close_price, 4))
+        except Exception:
+            continue
+    if len(closes) >= 2:
+        return closes[-lmt:]
+    raise RuntimeError(f"腾讯新版港股K线数据不足: HK{code}, count={len(closes)}, response={str(data)[:220]}")
+
+
+def _fetch_hk_daily_closes(symbol_or_code, days, price_scale=1.0):
+    """港股统一入口：东方财富港股日K优先；腾讯新版 proxy 备用。
+
+    当前价和历史MA都来自同一入口返回的日K close；不会构造伪历史数据。
+    """
+    raw = str(symbol_or_code or "").upper().strip()
+    code = raw[2:] if raw.startswith("HK") else raw
+    code = code.zfill(5)
+    try:
+        return _fetch_hk_eastmoney_daily_closes(code, days, price_scale=price_scale)
+    except Exception as em_err:
+        logging.warning(f"东方财富港股日K不可用，尝试腾讯新版日K备用 HK{code}: {em_err}")
+    try:
+        closes = _fetch_hk_tencent_proxy_daily_closes(code, days, price_scale=price_scale)
+        logging.warning(f"HK{code} 已使用腾讯新版港股日K备用数据源；当前价和MA均来自同一腾讯日K口径。")
+        return closes
+    except Exception as tx_err:
+        raise RuntimeError(f"港股日K全部数据源失败: HK{code}, tencent_error={tx_err}")
+
+
+def get_hk_price(symbol, price_scale=1.0):
+    """港股当前价取统一港股日K入口最新 close，与MA计算同源。"""
+    closes = _fetch_hk_daily_closes(symbol, 2, price_scale=price_scale)
+    return round(float(closes[-1]), 4)
+
 
 def validate_hk_price(symbol, current_price, last_known_price, prev_close):
     if current_price <= 0:
@@ -755,33 +794,14 @@ def get_history_close(symbol, days=400, price_scale=1.0):
     raw_symbol = symbol.upper()
     if raw_symbol.startswith("HK"):
         logging.debug(f"获取港股 {symbol} {days}天历史K线")
-        return get_hk_history_close_tencent(symbol[2:], days, price_scale=price_scale)
+        return get_hk_history_close(symbol, days, price_scale=price_scale)
     logging.debug(f"获取A股 {symbol} {days}天历史K线")
     return get_a_history_close(symbol, days, price_scale=price_scale)
 
-def get_hk_history_close_tencent(hk_code, days, price_scale=1.0):
-    url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{hk_code},day,,,{days},qfq"
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        stock_data = data.get("data", {}).get(f"hk{hk_code}", {})
-        klines = stock_data.get("day") or stock_data.get("qfqday") or []
-        closes = []
-        for k in klines:
-            try:
-                close_price = float(k[4]) * float(price_scale)
-                if close_price > 0:
-                    closes.append(round(close_price, 4))
-            except (IndexError, ValueError, TypeError):
-                continue
-        if len(closes) >= 2:
-            return closes[-days:]
-        raise RuntimeError(f"腾讯 HK{hk_code} 历史数据不足或无法解析: count={len(closes)}, data={str(stock_data)[:200]}")
-    except Exception as e:
-        logging.error(f"获取港股历史K线失败 hk{hk_code}: {e}")
-        raise
+
+def get_hk_history_close(symbol_or_code, days, price_scale=1.0):
+    return _fetch_hk_daily_closes(symbol_or_code, days, price_scale=price_scale)
+
 
 def get_a_history_close(symbol, days, price_scale=1.0):
     return _fetch_a_daily_closes(symbol, days, price_scale=price_scale)
