@@ -56,6 +56,26 @@
       box-sizing:border-box;
     }
     .section-note{margin:4px 0 0;color:rgba(235,245,255,.58);font-size:13px;line-height:1.5;}
+
+    .snapshot-toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:16px 0 12px;}
+    .snapshot-date-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    .snapshot-date-form label{color:rgba(235,245,255,.72);font-size:14px;}
+    .snapshot-date-form select{min-height:38px;border-radius:12px;padding:6px 10px;}
+    .snapshot-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0;}
+    .snapshot-kv{border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:14px;padding:10px 12px;}
+    .snapshot-kv .k{font-size:12px;color:rgba(235,245,255,.58);margin-bottom:4px;}
+    .snapshot-kv .v{font-size:15px;color:rgba(255,255,255,.92);word-break:break-all;}
+    .snapshot-table-wrap{overflow-x:auto;margin-top:12px;}
+    .snapshot-table{width:100%;border-collapse:collapse;min-width:720px;font-size:13px;}
+    .snapshot-table th,.snapshot-table td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.10);text-align:left;white-space:nowrap;}
+    .snapshot-table th{color:rgba(235,245,255,.62);font-weight:600;}
+    .snapshot-empty{color:rgba(235,245,255,.58);font-size:14px;margin:10px 0 0;}
+    details.snapshot-details{margin-top:14px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:rgba(255,255,255,.045);padding:10px 12px;}
+    details.snapshot-details > summary{cursor:pointer;color:rgba(255,255,255,.88);font-weight:700;}
+    .rollback-note{color:rgba(255,220,180,.82);font-size:13px;line-height:1.6;margin:8px 0 0;}
+    .rollback-btn{border:1px solid rgba(255,190,90,.36);background:rgba(255,160,40,.14);color:#ffe4b8;border-radius:10px;padding:7px 10px;cursor:pointer;white-space:nowrap;}
+    .rollback-btn:hover{background:rgba(255,160,40,.22);}
+    @media (max-width: 640px){.snapshot-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.snapshot-kv{padding:9px 10px;}}
     @media (max-width: 640px){
       .topbar{padding-bottom:18px;}
       .topbar h1{font-size:30px;line-height:1.12;}
@@ -567,7 +587,7 @@
 
   </style>
 </head>
-<body class="dash-body theme-x3-dark">
+<body class="dash-body theme-x3-dark" data-selected="{{ selected }}">
   <header class="topbar">
     <div class="topbar-brand">
       <img class="topbar-logo" src="{{ url_for('static', filename='login.png') }}" alt="">
@@ -653,6 +673,170 @@
       <section class="card page-card">
         <div class="section-header"><h2>状态</h2></div>
         <div class="status-box"><pre>{{ status_text }}</pre></div>
+      </section>
+
+      <section class="card page-card">
+        <div class="section-header between">
+          <div>
+            <h2>策略快照</h2>
+            <p class="section-note">记录每轮策略判断依据；打开开关后显示当前标的最近 1 条，可展开查看最近 10 条。</p>
+          </div>
+          <div class="snapshot-toolbar">
+            <form method="get" action="{{ url_for('status_page') }}" class="snapshot-date-form">
+              <input type="hidden" name="symbol_key" value="{{ selected }}">
+              <label>日期</label>
+              <select name="snapshot_date" onchange="this.form.submit()">
+                {% if snapshot_dates %}
+                  {% for d in snapshot_dates %}
+                    <option value="{{ d }}" {% if d == selected_snapshot_date %}selected{% endif %}>{{ d }}</option>
+                  {% endfor %}
+                {% else %}
+                  <option value="{{ selected_snapshot_date }}" selected>{{ selected_snapshot_date }}</option>
+                {% endif %}
+              </select>
+            </form>
+            <label class="panel-toggle" title="显示或隐藏策略快照">
+              <span class="panel-toggle-text">显示快照</span>
+              <input type="checkbox" id="snapshot-toggle" aria-label="显示或隐藏策略快照">
+              <span class="panel-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div id="snapshot-panel" class="hidden">
+        {% if latest_snapshot %}
+          <div class="snapshot-grid">
+            <div class="snapshot-kv"><div class="k">时间</div><div class="v">{{ latest_snapshot.get('time', '-') }}</div></div>
+            <div class="snapshot-kv"><div class="k">行情源</div><div class="v">{{ latest_snapshot.get('market_source', '-') }}</div></div>
+            <div class="snapshot-kv"><div class="k">数据状态</div><div class="v">{{ latest_snapshot.get('market_status', latest_snapshot.get('level', '-')) }}</div></div>
+            <div class="snapshot-kv"><div class="k">当前价</div><div class="v">{{ fmt_snapshot_value(latest_snapshot.get('current_price')) }}</div></div>
+            <div class="snapshot-kv"><div class="k">MA150</div><div class="v">{{ fmt_snapshot_value(latest_snapshot.get('ma150')) }}</div></div>
+            <div class="snapshot-kv"><div class="k">区间</div><div class="v">{{ latest_snapshot.get('zone', '-') }}</div></div>
+            <div class="snapshot-kv"><div class="k">动作</div><div class="v">{{ latest_snapshot.get('action', latest_snapshot.get('decision', '-')) }}</div></div>
+            <div class="snapshot-kv"><div class="k">持仓变化</div><div class="v">{{ fmt_snapshot_value(latest_snapshot.get('current_units_before'), 4) }} → {{ fmt_snapshot_value(latest_snapshot.get('current_units_after', latest_snapshot.get('current_units')), 4) }}</div></div>
+            <div class="snapshot-kv"><div class="k">原因</div><div class="v">{{ latest_snapshot.get('reason', '-') }}</div></div>
+          </div>
+
+          <details class="snapshot-details">
+            <summary>查看最近 10 条快照</summary>
+            <div class="snapshot-table-wrap">
+              <table class="snapshot-table">
+                <thead>
+                  <tr>
+                    <th>时间</th><th>源</th><th>状态</th><th>价格</th><th>MA150</th><th>区间</th><th>动作</th><th>原因</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for item in recent_snapshots %}
+                    <tr>
+                      <td>{{ item.get('time', '-') }}</td>
+                      <td>{{ item.get('market_source', '-') }}</td>
+                      <td>{{ item.get('market_status', item.get('level', '-')) }}</td>
+                      <td>{{ fmt_snapshot_value(item.get('current_price')) }}</td>
+                      <td>{{ fmt_snapshot_value(item.get('ma150')) }}</td>
+                      <td>{{ item.get('zone', '-') }}</td>
+                      <td>{{ item.get('action', item.get('decision', '-')) }}</td>
+                      <td>{{ item.get('reason', '-') }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        {% else %}
+          <p class="snapshot-empty">暂无 {{ selected_snapshot_date }} 的策略快照。主程序运行一轮后会自动生成。</p>
+        {% endif %}
+        </div>
+      </section>
+
+
+
+      <section class="card page-card">
+        <div class="section-header between">
+          <div>
+            <h2>交易前状态回滚点</h2>
+            <p class="section-note">每次真正触发 TRADE 前自动记录当前标的状态，最多保留最近 10 次。误触发后可选择恢复到任意一次交易前状态。</p>
+          </div>
+          <label class="panel-toggle" title="显示或隐藏交易前状态回滚点">
+            <span class="panel-toggle-text">显示回滚点</span>
+            <input type="checkbox" id="rollback-toggle" aria-label="显示或隐藏交易前状态回滚点">
+            <span class="panel-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="rollback-panel" class="hidden">
+        {% if trade_state_backups %}
+          <div class="snapshot-table-wrap">
+            <table class="snapshot-table">
+              <thead>
+                <tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>持仓变化</th><th>区间</th><th>原因</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                {% for item in trade_state_backups %}
+                  <tr>
+                    <td>{{ item.get('time', '-') }}</td>
+                    <td>{{ item.get('side', '-') }}</td>
+                    <td>{{ fmt_snapshot_value(item.get('price')) }}</td>
+                    <td>{{ fmt_snapshot_value(item.get('qty'), 4) }}</td>
+                    <td>{{ fmt_snapshot_value(item.get('pos_before'), 4) }} → {{ fmt_snapshot_value(item.get('pos_after'), 4) }}</td>
+                    <td>{{ item.get('zone', '-') }}</td>
+                    <td>{{ item.get('reason', '-') }}</td>
+                    <td>
+                      <form method="post" action="{{ url_for('restore_trade_state_page') }}" onsubmit="return confirm('确认恢复到该交易前状态？这会覆盖当前标的运行状态和 dcf.yaml 中的 current_units/current_avg_cost。');">
+                        <input type="hidden" name="symbol_key" value="{{ selected }}">
+                        <input type="hidden" name="backup_id" value="{{ item.get('id', '') }}">
+                        <button type="submit" class="rollback-btn">恢复到此状态</button>
+                      </form>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <p class="rollback-note">恢复会同步写入 dcf_monitor_state.json，并把 dcf.yaml 的 current_units / current_avg_cost 恢复到交易前口径；运行中的主程序会在下一轮自动加载该回滚状态。</p>
+        {% else %}
+          <p class="snapshot-empty">暂无当前标的的交易前状态回滚点。只有真实 TRADE 触发前才会自动生成。</p>
+        {% endif %}
+        </div>
+      </section>
+
+      <section class="card page-card">
+        <div class="section-header between">
+          <div>
+            <h2>行情源成功率统计</h2>
+            <p class="section-note">按 {{ selected_snapshot_date }} 的策略快照统计，成功率 = OK 次数 / 总次数。</p>
+          </div>
+          <label class="panel-toggle" title="显示或隐藏行情源成功率统计">
+            <span class="panel-toggle-text">显示统计</span>
+            <input type="checkbox" id="source-stats-toggle" aria-label="显示或隐藏行情源成功率统计">
+            <span class="panel-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="source-stats-panel" class="hidden">
+        {% if market_source_stats %}
+          <div class="snapshot-table-wrap">
+            <table class="snapshot-table">
+              <thead>
+                <tr><th>行情源</th><th>总次数</th><th>OK</th><th>WARN</th><th>ERROR</th><th>跳过</th><th>成功率</th></tr>
+              </thead>
+              <tbody>
+                {% for row in market_source_stats %}
+                  <tr>
+                    <td>{{ row.source }}</td>
+                    <td>{{ row.total }}</td>
+                    <td>{{ row.ok }}</td>
+                    <td>{{ row.warn }}</td>
+                    <td>{{ row.error }}</td>
+                    <td>{{ row.skip }}</td>
+                    <td>{{ row.success_rate }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="snapshot-empty">暂无 {{ selected_snapshot_date }} 的行情源统计。</p>
+        {% endif %}
+        </div>
       </section>
     {% endif %}
 
@@ -836,7 +1020,7 @@
         <div class="section-header between">
           <div>
             <h2>推送日志</h2>
-            <p class="section-note">显示 {{ push_log_path }} 最新 10 条。</p>
+            <p class="section-note">显示 {{ push_log_path }} 最新 30 条。</p>
           </div>
           <label class="panel-toggle" title="显示或隐藏推送日志">
             <span class="panel-toggle-text">显示日志</span>
@@ -1008,6 +1192,9 @@ document.addEventListener('DOMContentLoaded', function(){
   refreshPushChannelFields();
   bindPanelToggle('push-config-toggle', 'push-config-panel', 'dcf_push_config_panel');
   bindPanelToggle('push-log-toggle', 'push-log-panel', 'dcf_push_log_panel');
+  bindPanelToggle('snapshot-toggle', 'snapshot-panel', 'dcf_status_snapshot_panel_' + (document.body.dataset.selected || 'default'));
+  bindPanelToggle('rollback-toggle', 'rollback-panel', 'dcf_status_rollback_panel_' + (document.body.dataset.selected || 'default'));
+  bindPanelToggle('source-stats-toggle', 'source-stats-panel', 'dcf_status_source_stats_panel_' + (document.body.dataset.selected || 'default'));
 });
 
 </script>
