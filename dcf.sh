@@ -169,20 +169,22 @@ update_project_files() {
 
     local tmpdir srcdir
     tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' RETURN
 
     if ! curl -fsSL "$REPO_TARBALL_URL" -o "$tmpdir/dcf.tar.gz"; then
         echo "❌ 下载项目压缩包失败，请检查 GitHub 网络访问。"
+        rm -rf "$tmpdir"
         return 1
     fi
     if ! tar -xzf "$tmpdir/dcf.tar.gz" -C "$tmpdir"; then
         echo "❌ 解压项目压缩包失败。"
+        rm -rf "$tmpdir"
         return 1
     fi
 
     srcdir="$tmpdir/${REPO_NAME}-${REPO_BRANCH}"
     if [ ! -d "$srcdir" ]; then
         echo "❌ 未找到解压后的项目目录: $srcdir"
+        rm -rf "$tmpdir"
         return 1
     fi
 
@@ -205,6 +207,8 @@ update_project_files() {
     echo "项目文件更新完成 ✅"
     echo "注意：dcf.yaml / push.conf 如已存在不会被覆盖。"
     echo "================================="
+
+    rm -rf "$tmpdir"
 }
 
 self_check_project_files() {
@@ -254,7 +258,7 @@ update_rely() {
     fi
 
     # ---------- 1) 系统依赖 ----------
-    echo "[1/4] 安装系统依赖（python3-venv / python3-pip 等）"
+    echo "[1/5] 安装系统依赖（python3-venv / python3-pip 等）"
     if ! ${SUDO} apt-get update -y; then
         echo "❌ apt-get update 失败。可能是网络/源/锁占用问题。"
         echo "   你可以先执行：${SUDO} lsof /var/lib/dpkg/lock-frontend 或等待系统自动更新完成。"
@@ -717,13 +721,19 @@ restart_web_portal() {
     fi
     if [ ! -x "$VENV_DIR/bin/python" ]; then
         echo "❌ 未找到虚拟环境 Python：$VENV_DIR/bin/python"
-        echo "   请先执行：菜单 3) 安装/更新依赖"
+        echo "   请先执行：菜单 1) 下载/更新项目与依赖"
         return 1
     fi
 
     echo "检查 nginx 配置..."
     if ! ${SUDO} nginx -t; then
         echo "❌ nginx 配置检查失败，已取消重启网页端。"
+        return 1
+    fi
+
+    if ! ${SUDO} systemctl list-unit-files dcf-web.service >/dev/null 2>&1; then
+        echo "❌ dcf-web 服务未安装。"
+        echo "   请先执行：菜单 5) 配置/安装网页端"
         return 1
     fi
 
@@ -772,9 +782,10 @@ show_menu() {
     echo -e "${C_GREEN}2)${C_RESET} 启动脚本"
     echo -e "${C_RED}3)${C_RESET} 停止脚本"
     echo -e "${C_CYAN}4)${C_RESET} 查看运行状态"
-    echo -e "${C_YELLOW}5)${C_RESET} 重启网页端"
-    echo -e "${C_CYAN}6)${C_RESET} 查看网页端状态"
-    echo -e "${C_CYAN}7)${C_RESET} 检查项目文件"
+    echo -e "${C_YELLOW}5)${C_RESET} 配置/安装网页端"
+    echo -e "${C_YELLOW}6)${C_RESET} 重启网页端"
+    echo -e "${C_CYAN}7)${C_RESET} 查看网页端状态"
+    echo -e "${C_CYAN}8)${C_RESET} 检查项目文件"
     echo -e "${C_RED}0)${C_RESET} 退出"
     echo -e "${C_CYAN}===============================${C_RESET}"
 }
@@ -789,9 +800,10 @@ while true; do
         2) start_dcf ;;
         3) stop_dcf ;;
         4) show_status ;;
-        5) restart_web_portal ;;
-        6) web_portal_status ;;
-        7) self_check_project_files ;;
+        5) configure_web_portal ;;
+        6) restart_web_portal ;;
+        7) web_portal_status ;;
+        8) self_check_project_files ;;
         0)
             echo "退出管理脚本。"
             exit 0
