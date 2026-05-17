@@ -124,6 +124,7 @@ PUSH_FIELDS: List[Dict[str, str]] = [
     {"key": "NTFY_USERNAME", "label": "ntfy 用户名", "type": "text", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写用户名；未开启认证可留空。"},
     {"key": "NTFY_PASSWORD", "label": "ntfy 密码", "type": "password", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写密码；未开启认证可留空。"},
     {"key": "NTFY_PRIORITY", "label": "ntfy 优先级", "type": "number", "channel": "ntfy", "help": "ntfy 优先级范围 1-5，默认 4。"},
+    {"key": "NTFY_TAGS", "label": "ntfy Tags", "type": "text", "channel": "ntfy", "help": "逗号分隔，例如 dcf,chart_with_upwards_trend。"},
     {"key": "PUSHPLUS_TOKEN", "label": "PushPlus Token", "type": "password", "channel": "pushplus", "help": "PushPlus 官网获取的 token。"},
 ]
 
@@ -377,9 +378,9 @@ def normalize_config(data: Dict[str, Any]) -> bool:
         common.setdefault("pyramid_steps", 10)
         common.setdefault("pyramid_add_enabled", "auto")
 
-    etf_cfg = data.get("ETF_CONFIG")
-    if isinstance(etf_cfg, dict):
-        for _, section in etf_cfg.items():
+    symbol_cfg = data.get("SYMBOL_CONFIG")
+    if isinstance(symbol_cfg, dict):
+        for _, section in symbol_cfg.items():
             if not isinstance(section, dict):
                 continue
             for k in ["k300", "ma300_min_coef", "pyramid_enabled", "fee_rate", "slippage_bp", "stop_add_above_percent",
@@ -769,8 +770,8 @@ def normalize_symbol_input(symbol: str) -> str:
 
 def symbol_options(config: Dict[str, Any]) -> List[Tuple[str, str]]:
     result: List[Tuple[str, str]] = [("COMMON_BACKTEST_CONFIG", "通用回测参数")]
-    etf_cfg = config.get("ETF_CONFIG", {}) or {}
-    for name, item in etf_cfg.items():
+    symbol_cfg = config.get("SYMBOL_CONFIG", {}) or {}
+    for name, item in symbol_cfg.items():
         symbol = str(item.get("symbol", "")).strip()
         result.append((name, f"{name} ({symbol})" if symbol else name))
     return result
@@ -778,14 +779,14 @@ def symbol_options(config: Dict[str, Any]) -> List[Tuple[str, str]]:
 def get_section(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
     if selected == "COMMON_BACKTEST_CONFIG":
         return config.get("COMMON_BACKTEST_CONFIG", {}) or {}
-    return (config.get("ETF_CONFIG", {}) or {}).get(selected, {}) or {}
+    return (config.get("SYMBOL_CONFIG", {}) or {}).get(selected, {}) or {}
 
 def set_section(config: Dict[str, Any], selected: str, section: Dict[str, Any]) -> None:
     if selected == "COMMON_BACKTEST_CONFIG":
         config["COMMON_BACKTEST_CONFIG"] = section
     else:
-        config.setdefault("ETF_CONFIG", {})
-        config["ETF_CONFIG"][selected] = section
+        config.setdefault("SYMBOL_CONFIG", {})
+        config["SYMBOL_CONFIG"][selected] = section
 
 def latest_status_for(selected: str, state: Dict[str, Any]) -> str:
     if selected == "COMMON_BACKTEST_CONFIG":
@@ -1001,9 +1002,9 @@ def analyze_total_profit() -> str:
     import csv
     config = read_yaml()
     state = read_state()
-    etf_config = config.get("ETF_CONFIG", {}) if isinstance(config, dict) else {}
+    symbol_config = config.get("SYMBOL_CONFIG", {}) if isinstance(config, dict) else {}
     def get_mode_by_name(name: str) -> str:
-        cfg = etf_config.get(name, {}) if isinstance(etf_config, dict) else {}
+        cfg = symbol_config.get(name, {}) if isinstance(symbol_config, dict) else {}
         base = cfg.get("base_units", 0)
         target = cfg.get("target_units", 0)
         if isinstance(base, str) and base.strip().endswith("%"):
@@ -1206,9 +1207,9 @@ def _selected_key(config: Dict[str, Any]) -> str:
     return fallback
 
 def build_symbol_cards(config: Dict[str, Any], selected: str) -> List[Dict[str, str]]:
-    etf_cfg = config.get("ETF_CONFIG", {}) or {}
+    symbol_cfg = config.get("SYMBOL_CONFIG", {}) or {}
     cards = [{"key": "COMMON_BACKTEST_CONFIG", "label": "通用回测参数", "symbol": "", "active": selected == "COMMON_BACKTEST_CONFIG"}]
-    for name, item in etf_cfg.items():
+    for name, item in symbol_cfg.items():
         cards.append({"key": name, "label": name, "symbol": str(item.get("symbol", "")).strip(), "active": selected == name})
     return cards
 
@@ -1291,11 +1292,11 @@ def _handle_symbol_actions(config: Dict[str, Any], selected: str):
         if not symbol_name or not symbol_code:
             flash("请填写标的名称和代码。", "error")
         else:
-            etf_cfg = config.setdefault("ETF_CONFIG", {}) or {}
-            if symbol_name in etf_cfg:
+            symbol_cfg = config.setdefault("SYMBOL_CONFIG", {}) or {}
+            if symbol_name in symbol_cfg:
                 flash("该名称已存在，请换一个。", "error")
             else:
-                config.setdefault("ETF_CONFIG", {})[symbol_name] = build_new_symbol_section(config, symbol_code)
+                config.setdefault("SYMBOL_CONFIG", {})[symbol_name] = build_new_symbol_section(config, symbol_code)
                 write_yaml(config)
                 flash(f"已新增标的：{symbol_name} ({symbol_code})", "success")
                 return redirect(url_for("symbols_page", symbol_key=symbol_name))
@@ -1303,10 +1304,10 @@ def _handle_symbol_actions(config: Dict[str, Any], selected: str):
         if selected == "COMMON_BACKTEST_CONFIG":
             flash("通用回测参数不可删除。", "error")
         else:
-            etf_cfg = config.get("ETF_CONFIG", {}) or {}
-            if selected in etf_cfg:
-                symbol_code = str((etf_cfg.get(selected) or {}).get("symbol", "")).strip().upper()
-                del etf_cfg[selected]
+            symbol_cfg = config.get("SYMBOL_CONFIG", {}) or {}
+            if selected in symbol_cfg:
+                symbol_code = str((symbol_cfg.get(selected) or {}).get("symbol", "")).strip().upper()
+                del symbol_cfg[selected]
                 write_yaml(config)
                 delete_symbol_state(selected, symbol_code)
                 flash(f"已删除标的：{selected}", "success")

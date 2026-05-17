@@ -362,7 +362,7 @@ def load_config(path):
         with open(path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
     cfg = cfg or {}
-    dcf_cfg = cfg.get("ETF_CONFIG", {}) or {}
+    dcf_cfg = cfg.get("SYMBOL_CONFIG", {}) or {}
     strategy_cfg = cfg.get("STRATEGY", {}) or {}
     return dcf_cfg, strategy_cfg, cfg
 
@@ -377,17 +377,17 @@ def save_full_config(full_cfg, path=None):
     return True
 
 def persist_runtime_position_to_config(name, current_units, avg_cost):
-    global FULL_CONFIG, ETF_CONFIG
+    global FULL_CONFIG, SYMBOL_CONFIG
     if not isinstance(FULL_CONFIG, dict):
         return False
-    etf_cfg = FULL_CONFIG.setdefault("ETF_CONFIG", {})
-    if name not in etf_cfg or not isinstance(etf_cfg.get(name), dict):
+    symbol_cfg = FULL_CONFIG.setdefault("SYMBOL_CONFIG", {})
+    if name not in symbol_cfg or not isinstance(symbol_cfg.get(name), dict):
         return False
-    mode = get_position_mode(etf_cfg[name])
-    etf_cfg[name]["current_units"] = format_units_for_display(current_units, mode) if mode == "percent" else int(round(_safe_float(current_units, 0.0)))
-    etf_cfg[name]["current_avg_cost"] = round(_safe_float(avg_cost, 0.0), 6) if _safe_float(avg_cost, 0.0) > 0 else 0.0
-    ETF_CONFIG[name]["current_units"] = etf_cfg[name]["current_units"]
-    ETF_CONFIG[name]["current_avg_cost"] = etf_cfg[name]["current_avg_cost"]
+    mode = get_position_mode(symbol_cfg[name])
+    symbol_cfg[name]["current_units"] = format_units_for_display(current_units, mode) if mode == "percent" else int(round(_safe_float(current_units, 0.0)))
+    symbol_cfg[name]["current_avg_cost"] = round(_safe_float(avg_cost, 0.0), 6) if _safe_float(avg_cost, 0.0) > 0 else 0.0
+    SYMBOL_CONFIG[name]["current_units"] = symbol_cfg[name]["current_units"]
+    SYMBOL_CONFIG[name]["current_avg_cost"] = symbol_cfg[name]["current_avg_cost"]
     return save_full_config(FULL_CONFIG)
 
 FULL_CONFIG = {}
@@ -490,7 +490,7 @@ def load_state():
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            for name, cfg in ETF_CONFIG.items():
+            for name, cfg in SYMBOL_CONFIG.items():
                 if name not in state or not isinstance(state.get(name), dict):
                     state[name] = build_default_symbol_state(cfg)
                 else:
@@ -507,7 +507,7 @@ def load_state():
             logging.error(f"加载状态文件失败: {e}")
             return {}
     initial_state = {}
-    for name, cfg in ETF_CONFIG.items():
+    for name, cfg in SYMBOL_CONFIG.items():
         initial_state[name] = build_default_symbol_state(cfg)
     initial_state["_meta"] = {
         "last_daily_push_date": None,
@@ -550,9 +550,9 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
     if not requested:
         requested = [disk_meta.get("config_reload_symbol_key", "")]
     if "__ALL__" in requested:
-        target_names = list(ETF_CONFIG.keys())
+        target_names = list(SYMBOL_CONFIG.keys())
     else:
-        target_names = [name for name in requested if name in ETF_CONFIG]
+        target_names = [name for name in requested if name in SYMBOL_CONFIG]
     if not target_names:
         logging.info(f"🔁 收到参数刷新请求 seq={seq}，但未匹配到标的，已忽略。")
         return seq
@@ -560,8 +560,8 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
         restore_name = str(disk_meta.get("state_restore_symbol_key", "")).strip()
         restore_entry = disk_meta.get("state_restore_entry")
         restore_backup_id = disk_meta.get("state_restore_backup_id", "")
-        if restore_name in ETF_CONFIG and isinstance(restore_entry, dict):
-            restored = normalize_symbol_state(restore_name, ETF_CONFIG[restore_name], dict(restore_entry))
+        if restore_name in SYMBOL_CONFIG and isinstance(restore_entry, dict):
+            restored = normalize_symbol_state(restore_name, SYMBOL_CONFIG[restore_name], dict(restore_entry))
             restored["last_status_msg"] = f"已恢复到交易前状态回滚点：{restore_backup_id}"
             state[restore_name] = restored
             for _k in ["state_restore_kind", "state_restore_symbol_key", "state_restore_backup_id", "state_restore_entry"]:
@@ -574,10 +574,10 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
     for name in target_names:
         old_entry = state.get(name, {}) if isinstance(state.get(name, {}), dict) else {}
         preserved_last_price = old_entry.get("last_price")
-        new_entry = build_default_symbol_state(ETF_CONFIG[name])
+        new_entry = build_default_symbol_state(SYMBOL_CONFIG[name])
         if preserved_last_price is not None:
             new_entry["last_price"] = preserved_last_price
-        state[name] = normalize_symbol_state(name, ETF_CONFIG[name], new_entry)
+        state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], new_entry)
         state[name]["last_status_msg"] = None
         logging.info(f"🔁 参数已即时刷新: {name}，运行状态已按最新 dcf.yaml 重置。")
     save_state(state)
@@ -589,10 +589,10 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
 def build_daily_snapshot(state: dict) -> str:
     lines = []
     current_time = strategy_now().strftime("%Y.%m.%d.%H:%M")
-    for name in ETF_CONFIG.keys():
+    for name in SYMBOL_CONFIG.keys():
         dcf_state = state.get(name, {})
         status = dcf_state.get("last_status_msg")
-        cfg = ETF_CONFIG.get(name, {})
+        cfg = SYMBOL_CONFIG.get(name, {})
         strategy_run = normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on")
         if status:
             old_time_match = re.search(r'🕒时间:\s*(\d{4}\.\d{2}\.\d{2}\.\d{2}:\d{2})', status)
@@ -1670,12 +1670,12 @@ def main_loop():
     logging.info(f"当前时间: {strategy_now().strftime('%Y-%m-%d %H:%M:%S')}")
     logging.info("=" * 60)
     config_path = os.path.join(BASE_DIR, "dcf.yaml")
-    global ETF_CONFIG, STRATEGY, FULL_CONFIG
-    ETF_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
+    global SYMBOL_CONFIG, STRATEGY, FULL_CONFIG
+    SYMBOL_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
     STRATEGY.update(STRATEGY_from_conf)
     logging.info(f"策略时区: {get_strategy_timezone_name()}，服务器时区不影响 session_start/session_end/daily_push_time/log_rotate_time")
     logging.info("📌 各标的策略运行状态:")
-    for name, cfg in ETF_CONFIG.items():
+    for name, cfg in SYMBOL_CONFIG.items():
         if not isinstance(cfg, dict):
             logging.error(f"配置项 {name} 不是字典，类型为 {type(cfg)}，已跳过。请检查 dcf.yaml 格式。")
             continue
@@ -1691,7 +1691,7 @@ def main_loop():
         }
     last_config_reload_seq = _safe_int(state.get("_meta", {}).get("config_reload_seq", 0), 0)
     while True:
-        ETF_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
+        SYMBOL_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
         STRATEGY.update(STRATEGY_from_conf)
         last_config_reload_seq = apply_runtime_config_reload_if_needed(state, last_config_reload_seq)
         now = strategy_now()
@@ -1732,7 +1732,7 @@ def main_loop():
         # 策略执行
         all_trade_msgs = []
         all_market_error_msgs = []
-        for name, cfg in ETF_CONFIG.items():
+        for name, cfg in SYMBOL_CONFIG.items():
             if not isinstance(cfg, dict):
                 logging.error(f"配置项 {name} 不是字典，类型为 {type(cfg)}，已跳过。")
                 continue

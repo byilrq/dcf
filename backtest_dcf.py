@@ -38,7 +38,7 @@ def load_config(path: str):
         with open(path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
-    dcf_cfg = cfg.get("ETF_CONFIG", {}) or {}
+    dcf_cfg = cfg.get("SYMBOL_CONFIG", {}) or {}
     strategy_cfg = cfg.get("STRATEGY", {}) or {}
     common_cfg = cfg.get("COMMON_BACKTEST_CONFIG", {}) or {}
     return dcf_cfg, strategy_cfg, common_cfg
@@ -1066,16 +1066,16 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
 # ===========================
 # 从 dcf.yaml 中按 symbol 找配置
 # ===========================
-def find_cfg_by_symbol(etf_config: dict, symbol: str):
+def find_cfg_by_symbol(symbol_config: dict, symbol: str):
     symbol = symbol.upper().strip()
-    for name, cfg in etf_config.items():
+    for name, cfg in symbol_config.items():
         if str(cfg.get("symbol", "")).upper().strip() == symbol:
             return name, cfg
     return None, None
 
 
-def resolve_backtest_cfg(symbol: str, etf_config: dict, common_cfg: dict):
-    name, cfg = find_cfg_by_symbol(etf_config, symbol)
+def resolve_backtest_cfg(symbol: str, symbol_config: dict, common_cfg: dict):
+    name, cfg = find_cfg_by_symbol(symbol_config, symbol)
     if cfg is not None:
         resolved = dict(common_cfg or {})
         resolved.update(dict(cfg))
@@ -1117,13 +1117,13 @@ def main():
     if not config_path.is_absolute():
         config_path = base_dir / args.config
 
-    etf_cfg, strategy_cfg, common_cfg = load_config(str(config_path))
+    symbol_cfg, strategy_cfg, common_cfg = load_config(str(config_path))
     symbol = args.symbol.upper().strip()
 
-    name, cfg, used_common_cfg = resolve_backtest_cfg(symbol, etf_cfg, common_cfg)
+    name, cfg, used_common_cfg = resolve_backtest_cfg(symbol, symbol_cfg, common_cfg)
     if cfg is None:
         raise SystemExit(
-            f"❌ dcf.yaml 中既找不到 symbol={symbol} 的 ETF_CONFIG 专属配置，也没有 COMMON_BACKTEST_CONFIG 通用配置。\n"
+            f"❌ dcf.yaml 中既找不到 symbol={symbol} 的 SYMBOL_CONFIG 专属配置，也没有 COMMON_BACKTEST_CONFIG 通用配置。\n"
             f"请先在 dcf.yaml 中补充该标的配置，或添加 COMMON_BACKTEST_CONFIG。"
         )
 
@@ -1144,7 +1144,7 @@ def main():
 
     print("\n================ 回测结果 ================\n")
     if used_common_cfg:
-        print(f"提示: {symbol} 未在 ETF_CONFIG 中配置，已自动回退到 COMMON_BACKTEST_CONFIG 通用参数。")
+        print(f"提示: {symbol} 未在 SYMBOL_CONFIG 中配置，已自动回退到 COMMON_BACKTEST_CONFIG 通用参数。")
     print(f"标的: {summary['symbol']} | 名称: {summary['name']}")
     print(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}")
     print(f"K线数量: {summary['bars']}")
