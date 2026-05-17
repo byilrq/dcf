@@ -124,7 +124,6 @@ PUSH_FIELDS: List[Dict[str, str]] = [
     {"key": "NTFY_USERNAME", "label": "ntfy 用户名", "type": "text", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写用户名；未开启认证可留空。"},
     {"key": "NTFY_PASSWORD", "label": "ntfy 密码", "type": "password", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写密码；未开启认证可留空。"},
     {"key": "NTFY_PRIORITY", "label": "ntfy 优先级", "type": "number", "channel": "ntfy", "help": "ntfy 优先级范围 1-5，默认 4。"},
-    {"key": "NTFY_TAGS", "label": "ntfy Tags", "type": "text", "channel": "ntfy", "help": "逗号分隔，例如 dcf,chart_with_upwards_trend。"},
     {"key": "PUSHPLUS_TOKEN", "label": "PushPlus Token", "type": "password", "channel": "pushplus", "help": "PushPlus 官网获取的 token。"},
 ]
 

@@ -39,7 +39,6 @@ PUSH_DEFAULTS: Dict[str, str] = {
     "NTFY_USERNAME": "",
     "NTFY_PASSWORD": "",
     "NTFY_PRIORITY": "4",
-    "NTFY_TAGS": "dcf,chart_with_upwards_trend",
 }
 
 PUSH_CHANNEL_VALUES = {"telegram", "gotify", "ntfy", "pushplus", "none"}
@@ -159,7 +158,6 @@ def build_push_config_text(cfg: Dict[str, Any]) -> str:
         "NTFY_USERNAME",
         "NTFY_PASSWORD",
         "NTFY_PRIORITY",
-        "NTFY_TAGS",
     ]
     lines = [
         "# 自动生成的 Push 配置",
@@ -339,7 +337,7 @@ def _send_ntfy_detail(msg: str, cfg: Dict[str, str], title: str = "DCF 推送") 
     """Send ntfy using the old working dcf.py behavior, but return details.
 
     This intentionally keeps the old request shape from dcf_old.py:
-    Title + Priority + Markdown + optional Tags, posted with
+    Title + Priority + Markdown, posted with
     requests.post(data=utf8_bytes). No X-* variants and no explicit
     Content-Type are added here.
     """
@@ -364,9 +362,6 @@ def _send_ntfy_detail(msg: str, cfg: Dict[str, str], title: str = "DCF 推送") 
         "Priority": str(priority),
         "Markdown": "yes",
     }
-    tags = str(cfg.get("NTFY_TAGS", "")).strip()
-    if tags:
-        headers["Tags"] = _encode_http_header_value(tags)
     auth = None
     username = str(cfg.get("NTFY_USERNAME", "")).strip()
     password = str(cfg.get("NTFY_PASSWORD", ""))
