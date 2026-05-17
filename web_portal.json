@@ -1,9 +1,0 @@
-{
-  "app_name": "资产管理系统",
-  "admin_username": "admin",
-  "password_hash": "scrypt:32768:8:1$j5rIgAghyzxzsvfr$0f276524009669558d86d193c40f10e915deeab9be37b866a54f032b9f2862d4f5d220cc94a4ed922d98ecf9cca746f68331e07b3b0deed6e5b109639d63bd90",
-  "secret_key": "33f4453d84a348fb319d2e262ab44660c01f4a1a45ca85db9918341b5e730cee",
-  "domain": "sharq.eu.org",
-  "public_port": 819,
-  "internal_port": 1819
-}
