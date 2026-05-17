@@ -42,7 +42,7 @@ STRATEGY:
   session_end: '16:00'
   daily_push_time: 08:00
   log_rotate_time: 08:00
-ETF_CONFIG:
+SYMBOL_CONFIG:
   南方DCF:
     symbol: SZ159232
     price_scale: 1.0
