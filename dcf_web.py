@@ -9,12 +9,8 @@ import re
 import secrets
 import subprocess
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from copy import deepcopy
 from datetime import datetime
-from email.header import Header
 from pathlib import Path
 from io import BytesIO
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -36,6 +32,18 @@ from ruamel.yaml.constructor import DuplicateKeyError
 import yaml as pyyaml
 from werkzeug.security import check_password_hash
 
+from push import (
+    PUSH_CONFIG_FILE,
+    PUSH_LOG_FILE,
+    PUSH_LOG_KEEP_LINES,
+    PUSH_DEFAULTS,
+    PUSH_CHANNEL_VALUES,
+    load_push_config as read_push_config,
+    write_push_config,
+    read_push_logs,
+    send_push_test,
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "dcf.yaml"
 STATE_FILE = BASE_DIR / "dcf_monitor_state.json"
@@ -43,9 +51,6 @@ WEB_CONFIG_FILE = BASE_DIR / "web_portal.json"
 BACKTEST_FILE = BASE_DIR / "backtest_dcf.py"
 TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
 BACKTEST_OUT_DIR = BASE_DIR / "backtest_out"
-PUSH_CONFIG_FILE = Path("/root/dcf/push.conf")
-PUSH_LOG_FILE = Path("/root/dcf/push.log")
-PUSH_LOG_KEEP_LINES = 30
 SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
 STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
 STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
@@ -122,25 +127,6 @@ PUSH_FIELDS: List[Dict[str, str]] = [
     {"key": "NTFY_TAGS", "label": "ntfy Tags", "type": "text", "channel": "ntfy", "help": "逗号分隔，例如 dcf,chart_with_upwards_trend。"},
     {"key": "PUSHPLUS_TOKEN", "label": "PushPlus Token", "type": "password", "channel": "pushplus", "help": "PushPlus 官网获取的 token。"},
 ]
-
-PUSH_DEFAULTS: Dict[str, str] = {
-    "PUSH_ENABLED": "yes",
-    "PUSH_CHANNEL": "gotify",
-    "PUSHPLUS_TOKEN": "",
-    "TELEGRAM_BOT_TOKEN": "",
-    "TELEGRAM_CHAT_ID": "",
-    "GOTIFY_URL": "https://sharq.eu.org:2084",
-    "GOTIFY_TOKEN": "",
-    "GOTIFY_PRIORITY": "10",
-    "NTFY_URL": "http://127.0.0.1:8083",
-    "NTFY_TOPIC": "let-rss",
-    "NTFY_USERNAME": "",
-    "NTFY_PASSWORD": "",
-    "NTFY_PRIORITY": "4",
-    "NTFY_TAGS": "dcf,chart_with_upwards_trend",
-}
-
-PUSH_CHANNEL_VALUES = {"telegram", "gotify", "ntfy", "pushplus", "none"}
 
 PUSH_SELECT_OPTIONS = {
     "PUSH_CHANNEL": [
@@ -725,91 +711,6 @@ def delete_symbol_state(selected: str, symbol_code: str = "") -> None:
         write_state(state)
 
 
-def shell_quote_export(value: Any) -> str:
-    text = "" if value is None else str(value)
-    return '"' + text.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`') + '"'
-
-def parse_push_config_text(raw: str) -> Dict[str, str]:
-    cfg = dict(PUSH_DEFAULTS)
-    for line in (raw or "").splitlines():
-        m = re.match(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$', line)
-        if not m:
-            continue
-        key, value = m.group(1), m.group(2).strip()
-        if (len(value) >= 2) and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'")):
-            value = value[1:-1]
-        value = value.replace('\\"', '"').replace('\\$', '$').replace('\\`', '`').replace('\\\\', '\\')
-        cfg[key] = value
-    if str(cfg.get("PUSH_CHANNEL", "")).strip().lower() == "both":
-        cfg["PUSH_CHANNEL"] = "pushplus"
-    if str(cfg.get("PUSH_CHANNEL", "")).strip().lower() == "all":
-        cfg["PUSH_CHANNEL"] = "gotify"
-    if cfg.get("PUSH_CHANNEL") not in PUSH_CHANNEL_VALUES:
-        cfg["PUSH_CHANNEL"] = "gotify"
-    if cfg.get("PUSH_ENABLED") not in {"yes", "no"}:
-        cfg["PUSH_ENABLED"] = "yes"
-    if not str(cfg.get("GOTIFY_PRIORITY", "")).strip():
-        cfg["GOTIFY_PRIORITY"] = "10"
-    if not str(cfg.get("NTFY_PRIORITY", "")).strip():
-        cfg["NTFY_PRIORITY"] = "4"
-    return cfg
-
-def read_push_config() -> Dict[str, str]:
-    if not PUSH_CONFIG_FILE.exists():
-        return dict(PUSH_DEFAULTS)
-    try:
-        return parse_push_config_text(PUSH_CONFIG_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return dict(PUSH_DEFAULTS)
-
-def build_push_config_text(cfg: Dict[str, str]) -> str:
-    merged = dict(PUSH_DEFAULTS)
-    merged.update({k: "" if v is None else str(v).strip() for k, v in (cfg or {}).items()})
-    lines = [
-        "# 自动生成的 Push 配置",
-        f"# 更新时间: {current_time_text()}",
-        "",
-    ]
-    for item in PUSH_FIELDS:
-        key = item["key"]
-        lines.append(f"export {key}={shell_quote_export(merged.get(key, ''))}")
-    lines.append("")
-    return "\n".join(lines)
-
-def write_push_config(cfg: Dict[str, str]) -> None:
-    PUSH_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PUSH_CONFIG_FILE.write_text(build_push_config_text(cfg), encoding="utf-8")
-
-def prune_push_log_lines(keep_lines: int = PUSH_LOG_KEEP_LINES) -> None:
-    try:
-        if not PUSH_LOG_FILE.exists():
-            return
-        keep_lines = max(1, int(keep_lines or PUSH_LOG_KEEP_LINES))
-        lines = PUSH_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
-        if len(lines) > keep_lines:
-            PUSH_LOG_FILE.write_text("\n".join(lines[-keep_lines:]) + "\n", encoding="utf-8")
-    except Exception:
-        pass
-
-def append_push_log(channel: str, success: bool, message: str) -> None:
-    try:
-        PUSH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        line = f"{current_time_text()} | {channel} | {'成功' if success else '失败'} | {str(message).replace(chr(10), ' ')[:500]}\n"
-        with PUSH_LOG_FILE.open("a", encoding="utf-8") as f:
-            f.write(line)
-        prune_push_log_lines(PUSH_LOG_KEEP_LINES)
-    except Exception:
-        pass
-
-def read_push_logs(limit: int = PUSH_LOG_KEEP_LINES) -> List[str]:
-    if not PUSH_LOG_FILE.exists():
-        return []
-    try:
-        lines = [x.strip() for x in PUSH_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines() if x.strip()]
-        return lines[-limit:][::-1]
-    except Exception as e:
-        return [f"读取推送日志失败：{e}"]
-
 def save_push_config_from_form() -> Dict[str, str]:
     cfg = read_push_config()
     for item in PUSH_FIELDS:
@@ -838,136 +739,6 @@ def save_push_config_from_form() -> Dict[str, str]:
     cfg["NTFY_TOPIC"] = str(cfg.get("NTFY_TOPIC", "")).strip().strip("/") or PUSH_DEFAULTS["NTFY_TOPIC"]
     write_push_config(cfg)
     return cfg
-
-def _http_post_json(url: str, payload: Dict[str, Any], timeout: int = 12) -> Tuple[bool, str]:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read(500).decode("utf-8", errors="ignore")
-            return 200 <= resp.status < 300, body or f"HTTP {resp.status}"
-    except urllib.error.HTTPError as e:
-        body = e.read(500).decode("utf-8", errors="ignore")
-        return False, f"HTTP {e.code}: {body}"
-    except Exception as e:
-        return False, str(e)
-
-
-def _encode_http_header_value(value: Any) -> str:
-    """Encode non-ASCII HTTP header values for ntfy.
-
-    Python HTTP clients encode header values as latin-1. ntfy accepts RFC 2047
-    encoded headers, so Chinese titles like “DCF 推送测试” must be encoded.
-    """
-    text = str(value or "")
-    try:
-        text.encode("latin-1")
-        return text
-    except UnicodeEncodeError:
-        return Header(text, "utf-8").encode()
-
-def _http_post_raw(url: str, body: str, headers: Dict[str, str], auth: Any = None, timeout: int = 12) -> Tuple[bool, str]:
-    data = (body or "").encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    if auth and auth[0]:
-        token = (f"{auth[0]}:{auth[1]}").encode("utf-8")
-        import base64
-        req.add_header("Authorization", "Basic " + base64.b64encode(token).decode("ascii"))
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body_text = resp.read(500).decode("utf-8", errors="ignore")
-            return 200 <= resp.status < 300, body_text or f"HTTP {resp.status}"
-    except urllib.error.HTTPError as e:
-        body_text = e.read(500).decode("utf-8", errors="ignore")
-        return False, f"HTTP {e.code}: {body_text}"
-    except Exception as e:
-        return False, str(e)
-
-def send_push_test(cfg: Dict[str, str]) -> Tuple[bool, str]:
-    if cfg.get("PUSH_ENABLED") != "yes" or cfg.get("PUSH_CHANNEL") == "none":
-        return False, "推送已关闭，请先启用推送并选择通道。"
-    channel = cfg.get("PUSH_CHANNEL", "gotify")
-    title = "DCF 推送测试"
-    message = f"{APP_DISPLAY_NAME} Web 推送配置测试成功。\n时间：{current_time_text()}"
-    results: List[str] = []
-    ok_all = True
-    if channel == "telegram":
-        token = cfg.get("TELEGRAM_BOT_TOKEN", "").strip()
-        chat_id = cfg.get("TELEGRAM_CHAT_ID", "").strip()
-        if not token or not chat_id:
-            ok_all = False
-            results.append("Telegram：未配置完整")
-        else:
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {"chat_id": chat_id, "text": f"{title}\n\n{message}"}
-            ok, detail = _http_post_json(url, payload)
-            ok_all = ok_all and ok
-            results.append(f"Telegram：{'成功' if ok else '失败'} {detail}")
-    if channel == "gotify":
-        gotify_url = cfg.get("GOTIFY_URL", "").strip().rstrip("/")
-        gotify_token = cfg.get("GOTIFY_TOKEN", "").strip()
-        if not gotify_url or not gotify_token:
-            ok_all = False
-            results.append("Gotify：未配置完整")
-        else:
-            try:
-                priority = int(float(str(cfg.get("GOTIFY_PRIORITY", "10") or "10")))
-            except Exception:
-                priority = 10
-            url = f"{gotify_url}/message?token={urllib.parse.quote(gotify_token)}"
-            payload = {
-                "title": title,
-                "message": f"**{title}**\n\n{message}",
-                "priority": priority,
-                "extras": {"client::display": {"contentType": "text/markdown"}},
-            }
-            ok, detail = _http_post_json(url, payload)
-            ok_all = ok_all and ok
-            results.append(f"Gotify：{'成功' if ok else '失败'} {detail}")
-    if channel == "pushplus":
-        token = cfg.get("PUSHPLUS_TOKEN", "").strip()
-        if not token:
-            ok_all = False
-            results.append("PushPlus：未配置 Token")
-        else:
-            payload = {
-                "token": token,
-                "title": title,
-                "content": f"{message}",
-                "template": "txt",
-            }
-            ok, detail = _http_post_json("http://www.pushplus.plus/send", payload)
-            ok_all = ok_all and ok
-            results.append(f"PushPlus：{'成功' if ok else '失败'} {detail}")
-    if channel == "ntfy":
-        ntfy_url = cfg.get("NTFY_URL", "").strip().rstrip("/")
-        topic = cfg.get("NTFY_TOPIC", "").strip().strip("/")
-        if not ntfy_url or not topic:
-            ok_all = False
-            results.append("ntfy：未配置完整")
-        else:
-            try:
-                priority = int(float(str(cfg.get("NTFY_PRIORITY", "4") or "4")))
-            except Exception:
-                priority = 4
-            priority = max(1, min(5, priority))
-            headers = {
-                "Title": _encode_http_header_value(title),
-                "Priority": str(priority),
-                "Markdown": "yes",
-            }
-            tags = cfg.get("NTFY_TAGS", "").strip()
-            if tags:
-                headers["Tags"] = _encode_http_header_value(tags)
-            username = cfg.get("NTFY_USERNAME", "").strip()
-            password = cfg.get("NTFY_PASSWORD", "")
-            auth = (username, password) if username else None
-            ok, detail = _http_post_raw(f"{ntfy_url}/{urllib.parse.quote(topic)}", message, headers, auth=auth)
-            ok_all = ok_all and ok
-            results.append(f"ntfy：{'成功' if ok else '失败'} {detail}")
-    detail = "；".join(results)
-    append_push_log(channel, ok_all, f"测试推送：{detail}")
-    return ok_all, detail
 
 def current_time_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
