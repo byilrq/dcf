@@ -13,6 +13,8 @@ import base64
 import logging
 from email.header import Header
 import os
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -220,6 +222,72 @@ def _truncate_msg(text: Any, limit: int = 4000) -> str:
     return body
 
 
+
+
+def _is_symbol_status_block(block: str) -> bool:
+    """Return True if a paragraph looks like one symbol status/trade block."""
+    text = str(block or "").strip()
+    if not text:
+        return False
+    patterns = (
+        "🟢[INFO]【",
+        "🎯[TRADE]【",
+        "🎯[ERROR]【",
+        "🟡[WARN]【",
+        "🎯[STOP]【",
+        "[仅监控] 🟢[INFO]【",
+        "[仅监控] 🎯[ERROR]【",
+        "[仅监控] 🟡[WARN]【",
+    )
+    if text.startswith(patterns):
+        return True
+    return bool(re.match(r"^\[仅监控\]\s*[^:：\n]+[:：]\s*暂无状态记录", text)) or bool(re.match(r"^[^:：\n]+[:：]\s*暂无状态记录", text))
+
+
+def _split_ntfy_symbol_batches(text: Any, batch_size: int = 8) -> List[str]:
+    """Split long DCF snapshot messages by symbol blocks.
+
+    ntfy may display oversized bodies as attachment.txt.  Instead of truncating
+    and losing information, split daily/status snapshots into multiple ntfy
+    messages, with up to `batch_size` symbols per message.  Non-snapshot
+    messages are sent unchanged.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return [""]
+    batch_size = max(1, int(batch_size or 8))
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", body) if part.strip()]
+    if len(paragraphs) <= 1:
+        return [body]
+
+    first_idx = None
+    for idx, part in enumerate(paragraphs):
+        if _is_symbol_status_block(part):
+            first_idx = idx
+            break
+    if first_idx is None:
+        return [body]
+
+    header = "\n\n".join(paragraphs[:first_idx]).strip()
+    blocks = paragraphs[first_idx:]
+    if len(blocks) <= batch_size:
+        return [body]
+
+    chunks: List[str] = []
+    total = (len(blocks) + batch_size - 1) // batch_size
+    for part_no, start in enumerate(range(0, len(blocks), batch_size), start=1):
+        batch = blocks[start:start + batch_size]
+        prefix = header
+        if header and total > 1:
+            prefix = f"{header} ({part_no}/{total})"
+        elif total > 1:
+            prefix = f"DCF 推送 ({part_no}/{total})"
+        chunk_parts = [prefix] if prefix else []
+        chunk_parts.extend(batch)
+        chunks.append("\n\n".join(chunk_parts))
+    return chunks or [body]
+
+
 def _send_pushplus(msg: str, cfg: Dict[str, str]) -> bool:
     token = str(cfg.get("PUSHPLUS_TOKEN", "")).strip()
     if not token:
@@ -368,26 +436,41 @@ def _send_ntfy_detail(msg: str, cfg: Dict[str, str], title: str = "DCF 推送") 
     if username:
         auth = (username, password)
     safe_url = f"{ntfy_url}/{topic}"
-    try:
-        resp = requests.post(
-            safe_url,
-            data=_truncate_msg(msg, 6000).encode("utf-8"),
-            headers=headers,
-            auth=auth,
-            timeout=15,
-        )
-        body = (resp.text or "")[:500].replace("\n", " ")
-        if 200 <= resp.status_code < 300:
-            detail = f"ntfy成功 HTTP {resp.status_code}, priority={priority}, topic={topic}"
-            logging.info(f"✅ {detail}")
-            return True, detail
-        detail = f"ntfy失败 HTTP {resp.status_code}, priority={priority}, topic={topic}, response={body}"
-        logging.error(f"❌ {detail}")
-        return False, detail
-    except Exception as exc:
-        detail = f"ntfy异常 priority={priority}, topic={topic}, error={exc}"
-        logging.error(f"❌ {detail}")
-        return False, detail
+    parts = _split_ntfy_symbol_batches(msg, batch_size=8)
+    sent = 0
+    failed_details: List[str] = []
+    total_bytes = 0
+    for idx, part in enumerate(parts, start=1):
+        part_headers = dict(headers)
+        if len(parts) > 1:
+            part_headers["Title"] = _encode_http_header_value(f"{title} {idx}/{len(parts)}")
+        payload = str(part or "").encode("utf-8")
+        total_bytes += len(payload)
+        try:
+            resp = requests.post(
+                safe_url,
+                data=payload,
+                headers=part_headers,
+                auth=auth,
+                timeout=15,
+            )
+            body = (resp.text or "")[:500].replace("\n", " ")
+            if 200 <= resp.status_code < 300:
+                sent += 1
+                if len(parts) > 1 and idx < len(parts):
+                    time.sleep(1)
+                continue
+            failed_details.append(f"第{idx}/{len(parts)}条 HTTP {resp.status_code}: {body}")
+        except Exception as exc:
+            failed_details.append(f"第{idx}/{len(parts)}条异常: {exc}")
+
+    if sent == len(parts):
+        detail = f"ntfy成功 {sent}/{len(parts)}, priority={priority}, topic={topic}, bytes={total_bytes}"
+        logging.info(f"✅ {detail}")
+        return True, detail
+    detail = f"ntfy失败 {sent}/{len(parts)}, priority={priority}, topic={topic}, " + " | ".join(failed_details)
+    logging.error(f"❌ {detail}")
+    return False, detail
 
 
 def _send_ntfy(msg: str, cfg: Dict[str, str]) -> bool:
