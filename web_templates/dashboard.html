@@ -70,12 +70,28 @@
     .snapshot-table th,.snapshot-table td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.10);text-align:left;white-space:nowrap;}
     .snapshot-table th{color:rgba(235,245,255,.62);font-weight:600;}
     .snapshot-empty{color:rgba(235,245,255,.58);font-size:14px;margin:10px 0 0;}
+.status-control-row{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:0 0 16px;}
+.status-control-row .field-block{min-width:260px;flex:1 1 320px;}
+.status-control-row form{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0;}
+.reference-price-grid,.source-metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px;}
+.reference-price-card,.source-metric-card{border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(255,255,255,.055);padding:11px 12px;}
+.reference-price-card.primary{border-color:rgba(90,200,255,.42);background:rgba(90,200,255,.10);}
+.reference-price-card.error,.source-metric-card.error{border-color:rgba(255,120,120,.28);background:rgba(255,80,80,.07);}
+.reference-price-card .name,.source-metric-card .name{font-size:13px;color:rgba(235,245,255,.70);display:flex;gap:8px;align-items:center;margin-bottom:5px;}
+.mini-btn{min-height:26px;padding:4px 9px;font-size:12px;border-radius:9px;}
+.reference-price-card .price,.source-metric-card .price{font-size:20px;font-weight:800;color:rgba(255,255,255,.94);}
+.reference-price-card .meta,.source-metric-card .meta{margin-top:5px;font-size:12px;color:rgba(235,245,255,.55);word-break:break-all;}
+.source-metric-card .metric-line{margin-top:5px;font-size:13px;color:rgba(235,245,255,.78);line-height:1.45;}
+.status-action-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.status-action-row form{margin:0;}
+.status-action-row .action-btn{min-width:64px;padding-left:14px;padding-right:14px;}
+.source-chip{font-size:11px;padding:2px 6px;border-radius:999px;background:rgba(90,200,255,.18);color:#bdefff;}
     details.snapshot-details{margin-top:14px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:rgba(255,255,255,.045);padding:10px 12px;}
     details.snapshot-details > summary{cursor:pointer;color:rgba(255,255,255,.88);font-weight:700;}
     .rollback-note{color:rgba(255,220,180,.82);font-size:13px;line-height:1.6;margin:8px 0 0;}
     .rollback-btn{border:1px solid rgba(255,190,90,.36);background:rgba(255,160,40,.14);color:#ffe4b8;border-radius:10px;padding:7px 10px;cursor:pointer;white-space:nowrap;}
     .rollback-btn:hover{background:rgba(255,160,40,.22);}
-    @media (max-width: 640px){.snapshot-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.snapshot-kv{padding:9px 10px;}}
+    @media (max-width: 640px){.snapshot-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.snapshot-kv{padding:9px 10px;}.reference-price-grid,.source-metric-grid{grid-template-columns:1fr;}}
     @media (max-width: 640px){
       .topbar{padding-bottom:18px;}
       .topbar h1{font-size:30px;line-height:1.12;}
@@ -671,8 +687,80 @@
 
     {% if page_name == 'status' %}
       <section class="card page-card">
-        <div class="section-header"><h2>状态</h2></div>
+        <div class="section-header between">
+          <h2>状态</h2>
+          <div class="status-action-row">
+            <form method="post" action="{{ url_for('refresh_status_page') }}" onsubmit="return confirm('确认请求刷新当前标的行情/状态与备用源参考价？本次刷新只监控，不触发交易。');">
+              <input type="hidden" name="symbol_key" value="{{ selected }}">
+              <button type="submit" class="primary-btn action-btn">刷新</button>
+            </form>
+            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认清除当前标的的行情错误、旧价格校验和行情源观察状态，并按最新数据刷新一次？本次只监控，不触发交易。');">
+              <input type="hidden" name="symbol_key" value="{{ selected }}">
+              <button type="submit" class="secondary-btn action-btn">清除</button>
+            </form>
+          </div>
+        </div>
+        <div class="status-control-row">
+          <form method="get" action="{{ url_for('status_page') }}">
+            <div class="field-block">
+              <label for="status-symbol-select">选择标的状态</label>
+              <select id="status-symbol-select" name="symbol_key" onchange="this.form.submit()">
+                {% for card in symbol_cards %}
+                  {% if card.key != 'COMMON_BACKTEST_CONFIG' %}
+                    <option value="{{ card.key }}" {% if card.active %}selected{% endif %}>{{ card.label }}{% if card.symbol %} ({{ card.symbol }}){% endif %}</option>
+                  {% endif %}
+                {% endfor %}
+              </select>
+            </div>
+            <input type="hidden" name="snapshot_date" value="{{ selected_snapshot_date }}">
+            <button type="submit" class="secondary-btn action-btn">查看</button>
+          </form>
+        </div>
         <div class="status-box"><pre>{{ status_text }}</pre></div>
+        {% if reference_prices %}
+          <div class="reference-price-grid">
+            {% for ref in reference_prices %}
+              <div class="reference-price-card {% if ref.primary %}primary{% endif %} {% if not ref.ok %}error{% endif %}">
+                <div class="name">{{ ref.label }}{% if ref.primary %}<span class="source-chip">当前优先</span>{% endif %}</div>
+                <div class="price">{% if ref.ok %}{{ fmt_snapshot_value(ref.price) }}{% else %}-{% endif %}</div>
+                <div class="meta">{{ ref.source }}{% if ref.date %} · {{ ref.date }}{% endif %}</div>
+                {% if not ref.ok and ref.error %}<div class="meta">{{ ref.error }}</div>{% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="section-header between" style="margin-top:18px;">
+          <div>
+            <h2>回测/策略数据源指标</h2>
+            {% if source_metrics_updated_at %}<p class="section-note">更新时间：{{ source_metrics_updated_at }}</p>{% endif %}
+          </div>
+          <form method="post" action="{{ url_for('refresh_source_metrics_page') }}" style="margin:0;" onsubmit="return confirm('确认刷新当前回测/策略数据源指标？');">
+            <input type="hidden" name="symbol_key" value="{{ selected }}">
+            <button type="submit" class="secondary-btn mini-btn">刷新</button>
+          </form>
+        </div>
+        {% if source_metrics %}
+          <div class="source-metric-grid">
+            {% for m in source_metrics %}
+              <div class="source-metric-card {% if not m.ok %}error{% endif %}">
+                <div class="name">{{ m.label }}</div>
+                {% if m.ok %}
+                  <div class="price">{{ fmt_snapshot_value(m.current_price) }}</div>
+                  <div class="metric-line">🔀MA150={{ fmt_snapshot_value(m.ma150) }}({{ m.ma150_source or '-' }}), sell={{ fmt_snapshot_value(m.sell) }}, Clear={{ fmt_snapshot_value(m.clear) }}</div>
+                  <div class="metric-line">⏳动态K={{ fmt_snapshot_value(m.dynamic_k) }}，横盘评分={{ fmt_snapshot_value(m.sideways_score) }}</div>
+                  <div class="meta">{{ m.source }}{% if m.date %} · {{ m.date }}{% endif %} · K线{{ m.count }}{% if m.zone %} · {{ m.zone }}{% endif %}</div>
+                {% else %}
+                  <div class="price">-</div>
+                  <div class="meta">{{ m.source }}</div>
+                  {% if m.error %}<div class="meta">{{ m.error }}</div>{% endif %}
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="section-note">点击标题右侧“刷新”后立即计算系统页当前选定的回测/策略数据源指标。</p>
+        {% endif %}
       </section>
 
       <section class="card page-card">
@@ -965,6 +1053,82 @@
       <section class="card page-card">
         <div class="section-header between">
           <div>
+            <h2>行情源设置</h2>
+            <p class="section-note">系统配置文件：{{ system_config_path }}。选择后会作为对应市场的第一优先行情源，后续源自动作为备用。</p>
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('push_page') }}" class="push-config-form" id="system-config-form">
+          <input type="hidden" name="action" value="save_system">
+          <div class="push-config-grid">
+            <div class="push-field-row">
+              <div>
+                <label for="A_QUOTE_SOURCE">A股 / ETF 实时数据源</label>
+                <div class="push-field-help">用于盘中当前价，选中的源会优先使用；历史 K 线仍按行情层备用顺序获取。</div>
+              </div>
+              <div>
+                <select id="A_QUOTE_SOURCE" name="A_QUOTE_SOURCE" disabled data-system-lock="1">
+                  {% for opt_value, opt_label in system_select_options.get('A_QUOTE_SOURCE', []) %}
+                    <option value="{{ opt_value }}" {% if system_config.get('A_QUOTE_SOURCE', '') == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="push-field-row">
+              <div>
+                <label for="HK_MARKET_SOURCE">港股行情源</label>
+                <div class="push-field-help">用于港股日 K / 最新价口径，选中的源会优先使用。</div>
+              </div>
+              <div>
+                <select id="HK_MARKET_SOURCE" name="HK_MARKET_SOURCE" disabled data-system-lock="1">
+                  {% for opt_value, opt_label in system_select_options.get('HK_MARKET_SOURCE', []) %}
+                    <option value="{{ opt_value }}" {% if system_config.get('HK_MARKET_SOURCE', '') == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="push-field-row">
+              <div>
+                <label for="A_BACKTEST_SOURCE">A股 / ETF 回测/策略数据源</label>
+              </div>
+              <div>
+                <select id="A_BACKTEST_SOURCE" name="A_BACKTEST_SOURCE" disabled data-system-lock="1">
+                  {% for opt_value, opt_label in system_select_options.get('A_BACKTEST_SOURCE', []) %}
+                    <option value="{{ opt_value }}" {% if system_config.get('A_BACKTEST_SOURCE', '') == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="push-field-row">
+              <div>
+                <label for="HK_BACKTEST_SOURCE">港股回测/策略数据源</label>
+              </div>
+              <div>
+                <select id="HK_BACKTEST_SOURCE" name="HK_BACKTEST_SOURCE" disabled data-system-lock="1">
+                  {% for opt_value, opt_label in system_select_options.get('HK_BACKTEST_SOURCE', []) %}
+                    <option value="{{ opt_value }}" {% if system_config.get('HK_BACKTEST_SOURCE', '') == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="push-field-row">
+              <div>
+                <label for="XUEQIU_TOKEN">雪球 API Token / Cookie</label>
+                <div class="push-field-help">选择雪球源时使用。可填写 xq_a_token，也可粘贴完整 Cookie</div>
+              </div>
+              <div>
+                <input id="XUEQIU_TOKEN" name="XUEQIU_TOKEN" type="password" value="{{ system_config.get('XUEQIU_TOKEN', '') }}" autocomplete="off" readonly data-system-lock="1">
+              </div>
+            </div>
+          </div>
+          <div class="push-action-row">
+            <button type="button" id="system-edit-btn" class="primary-btn action-btn" data-mode="edit" onclick="toggleSystemEdit(this)">修改</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card page-card">
+        <div class="section-header between">
+          <div>
             <h2>推送配置</h2>
             <p class="section-note">配置文件：{{ push_config_path }}</p>
           </div>
@@ -1079,6 +1243,20 @@
     function toggleReturnCalcHelp(){
       const panel = document.getElementById('return-calc-help');
       if(panel){ panel.classList.toggle('hidden'); }
+    }
+
+    function toggleSystemEdit(btn){
+      const form = document.getElementById('system-config-form');
+      if(!form || !btn){ return; }
+      const mode = btn.dataset.mode || 'edit';
+      if(mode === 'edit'){
+        form.querySelectorAll('[data-system-lock="1"]').forEach(function(el){ el.removeAttribute('readonly'); el.removeAttribute('disabled'); });
+        form.classList.add('editing');
+        btn.dataset.mode = 'save';
+        btn.textContent = '保存';
+      }else{
+        form.submit();
+      }
     }
 
     function togglePushEdit(btn){
