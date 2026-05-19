@@ -54,6 +54,7 @@ BACKTEST_OUT_DIR = BASE_DIR / "backtest_out"
 SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
 STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
 STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
+SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
 
 yaml = YAML()
 yaml.preserve_quotes = True
@@ -73,7 +74,7 @@ PAGE_TITLES = {
     "status": "状态",
     "params": "参数",
     "backtest": "回测",
-    "push": "推送",
+    "push": "系统",
 }
 
 PARAM_HELP: Dict[str, str] = {
@@ -124,7 +125,6 @@ PUSH_FIELDS: List[Dict[str, str]] = [
     {"key": "NTFY_USERNAME", "label": "ntfy 用户名", "type": "text", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写用户名；未开启认证可留空。"},
     {"key": "NTFY_PASSWORD", "label": "ntfy 密码", "type": "password", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写密码；未开启认证可留空。"},
     {"key": "NTFY_PRIORITY", "label": "ntfy 优先级", "type": "number", "channel": "ntfy", "help": "ntfy 优先级范围 1-5，默认 4。"},
-    {"key": "NTFY_TAGS", "label": "ntfy Tags", "type": "text", "channel": "ntfy", "help": "逗号分隔，例如 dcf,chart_with_upwards_trend。"},
     {"key": "PUSHPLUS_TOKEN", "label": "PushPlus Token", "type": "password", "channel": "pushplus", "help": "PushPlus 官网获取的 token。"},
 ]
 
@@ -135,6 +135,35 @@ PUSH_SELECT_OPTIONS = {
         ("ntfy", "ntfy"),
         ("pushplus", "PushPlus"),
         ("none", "none"),
+    ],
+}
+
+SYSTEM_DEFAULTS: Dict[str, str] = {
+    "A_QUOTE_SOURCE": "tencent_quote_a",
+    "HK_MARKET_SOURCE": "tencent_hk_unadjusted",
+    "A_BACKTEST_SOURCE": "tencent_a_unadjusted",
+    "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted",
+    "XUEQIU_TOKEN": "",
+}
+
+SYSTEM_SELECT_OPTIONS = {
+    # A股实时保留三源：腾讯主源，雪球/东方财富备用。
+    "A_QUOTE_SOURCE": [
+        ("tencent_quote_a", "腾讯实时 quote"),
+        ("xueqiu_quote_a", "雪球实时 quote"),
+        ("eastmoney_quote_a", "东方财富实时 quote"),
+    ],
+    # 港股实时只保留腾讯主源。
+    "HK_MARKET_SOURCE": [
+        ("tencent_hk_unadjusted", "腾讯港股"),
+    ],
+    # 回测/策略指标只保留腾讯；A股不再展示 Yahoo/东方财富/网易等源。
+    "A_BACKTEST_SOURCE": [
+        ("tencent_a_unadjusted", "腾讯A股/ETF"),
+    ],
+    # 港股回测/策略指标只保留腾讯主源。
+    "HK_BACKTEST_SOURCE": [
+        ("tencent_hk_unadjusted", "腾讯港股"),
     ],
 }
 
@@ -322,17 +351,116 @@ DCF_NAV_STYLE = """
 </style>
 """
 
+STATUS_AUTO_REFRESH_STYLE = """
+<style id="dcf-status-auto-refresh-style">
+/* 状态页刷新按钮与“回测/策略数据源指标”刷新按钮保持一致 */
+form[action$="/refresh-status"] button,
+form[action$="/refresh-status"] input[type="submit"],
+form[action$="/refresh-source-metrics"] button,
+form[action$="/refresh-source-metrics"] input[type="submit"] {
+  min-height: 40px !important;
+  padding: 9px 14px !important;
+  border-radius: 12px !important;
+  font-size: 14px !important;
+  line-height: 20px !important;
+  font-weight: 700 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  text-decoration: none !important;
+}
+</style>
+"""
+
+STATUS_AUTO_REFRESH_SCRIPT = """
+<script id="dcf-status-auto-refresh-script">
+(function () {
+  if (window.__dcfStatusAutoRefreshInstalled) return;
+  window.__dcfStatusAutoRefreshInstalled = true;
+
+  function normalizeStatusUrl(symbolKey) {
+    var url = new URL(window.location.href);
+    url.pathname = "/status";
+    if (symbolKey) url.searchParams.set("symbol_key", symbolKey);
+    return url.toString();
+  }
+
+  function enhanceSymbolSelectors() {
+    document.querySelectorAll('select[name="symbol_key"]').forEach(function (sel) {
+      if (sel.dataset.dcfAutoBound === "1") return;
+      sel.dataset.dcfAutoBound = "1";
+      sel.addEventListener("change", function () {
+        var val = (sel.value || "").trim();
+        if (val) window.location.href = normalizeStatusUrl(val);
+      });
+    });
+    // 状态页选中标的后直接展示，不再需要“查看”按钮。保留其它页面按钮。
+    if (window.location.pathname === "/status" || window.location.pathname === "/") {
+      document.querySelectorAll('button, input[type="submit"], a').forEach(function (el) {
+        var text = (el.innerText || el.value || "").trim();
+        if (text === "查看") {
+          var form = el.closest && el.closest('form');
+          if (form && form.querySelector('select[name="symbol_key"]')) {
+            el.style.display = "none";
+          }
+        }
+      });
+    }
+  }
+
+  function syncMetricRefreshButtonStyle() {
+    var statusBtn = document.querySelector('form[action$="/refresh-status"] button, form[action$="/refresh-status"] input[type="submit"]');
+    if (!statusBtn) return;
+    var cs = window.getComputedStyle(statusBtn);
+    var props = [
+      "background", "backgroundColor", "border", "borderColor", "borderRadius",
+      "boxShadow", "color", "font", "fontFamily", "fontSize", "fontWeight",
+      "height", "lineHeight", "minHeight", "padding", "textTransform"
+    ];
+    document.querySelectorAll('form[action$="/refresh-source-metrics"] button, form[action$="/refresh-source-metrics"] input[type="submit"]').forEach(function (btn) {
+      props.forEach(function (prop) {
+        try { btn.style[prop] = cs[prop]; } catch (e) {}
+      });
+      btn.style.cursor = "pointer";
+    });
+  }
+
+  function startAutoReload() {
+    if (!(window.location.pathname === "/status" || window.location.pathname === "/")) return;
+    var hasStatus = document.body && document.body.innerText && document.body.innerText.indexOf("实时状态") >= 0 || document.querySelector('form[action$="/refresh-status"]');
+    if (!hasStatus) return;
+    var intervalMs = 15000;
+    window.setInterval(function () {
+      if (document.hidden) return;
+      if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+      window.location.reload();
+    }, intervalMs);
+  }
+
+  enhanceSymbolSelectors();
+  syncMetricRefreshButtonStyle();
+  startAutoReload();
+})();
+</script>
+"""
+
 @app.after_request
 def inject_responsive_nav_style(response):
-    """Ensure the 5 main navigation buttons stay in one row on desktop and work well on mobile."""
+    """Inject responsive navigation plus status-page auto refresh behavior."""
     try:
         content_type = response.headers.get("Content-Type", "")
         if "text/html" not in content_type.lower():
             return response
         html = response.get_data(as_text=True)
-        if "dcf-responsive-nav-style" in html or "</head>" not in html:
-            return response
-        html = html.replace("</head>", DCF_NAV_STYLE + "\n</head>", 1)
+        if "</head>" in html and "dcf-responsive-nav-style" not in html:
+            html = html.replace("</head>", DCF_NAV_STYLE + "\n</head>", 1)
+        if "</head>" in html and "dcf-status-auto-refresh-style" not in html:
+            html = html.replace("</head>", STATUS_AUTO_REFRESH_STYLE + "\n</head>", 1)
+        if "</body>" in html and "dcf-status-auto-refresh-script" not in html:
+            html = html.replace("</body>", STATUS_AUTO_REFRESH_SCRIPT + "\n</body>", 1)
         response.set_data(html)
         response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
@@ -709,6 +837,640 @@ def delete_symbol_state(selected: str, symbol_code: str = "") -> None:
             changed = True
     if changed:
         write_state(state)
+
+
+
+def request_runtime_system_config_reload() -> None:
+    """Notify running dcf.py that market-source settings changed."""
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    meta = state.setdefault("_meta", {})
+    try:
+        seq = int(meta.get("system_config_seq", 0) or 0) + 1
+    except Exception:
+        seq = 1
+    meta["system_config_seq"] = seq
+    meta["system_config_updated_at"] = current_time_text()
+    write_state(state)
+
+
+def request_force_refresh_symbol(selected: str, symbol_code: str = "") -> int:
+    """Ask dcf.py to refresh one selected symbol once, even outside trading session.
+
+    The refresh is monitor-only and will not trigger trades. Reference prices for
+    the selected symbol's primary source and backup sources are refreshed by the
+    background process and then read from state cache by the Web page.
+    """
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    meta = state.setdefault("_meta", {})
+    try:
+        seq = int(meta.get("force_refresh_seq", 0) or 0) + 1
+    except Exception:
+        seq = 1
+    selected = str(selected or "").strip()
+    symbol_code = str(symbol_code or "").strip().upper()
+    meta["force_refresh_seq"] = seq
+    meta["force_refresh_requested_at"] = current_time_text()
+    meta["force_refresh_symbol_key"] = selected
+    meta["force_refresh_symbol_code"] = symbol_code
+    meta["force_refresh_symbols"] = [selected] if selected and selected != "COMMON_BACKTEST_CONFIG" else []
+    write_state(state)
+    return seq
+
+
+
+def _parse_web_time(value: str):
+    try:
+        return datetime.strptime(str(value or "").strip(), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _status_age_seconds(selected: str, section: Dict[str, Any], state: Dict[str, Any]) -> float:
+    """Return seconds since the selected symbol was last refreshed; inf when unknown."""
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    candidates = [selected, symbol]
+    for key, val in (state or {}).items():
+        if isinstance(val, dict) and symbol and str(val.get("symbol", "")).strip().upper() == symbol:
+            candidates.append(key)
+    seen = set()
+    for key in candidates:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        node = state.get(key, {}) if isinstance(state, dict) else {}
+        if not isinstance(node, dict):
+            continue
+        raw = node.get("status_updated_at") or node.get("reference_prices_updated_at") or ""
+        # last_status_msg uses Chinese text time like 2026.05.18.21:15; keep that as a display value only.
+        dt = _parse_web_time(str(raw))
+        if dt:
+            return max(0.0, (datetime.now() - dt).total_seconds())
+    return float("inf")
+
+
+def request_auto_refresh_if_stale(selected: str, section: Dict[str, Any], max_age_seconds: int = 20) -> int:
+    """When a user opens/selects a status symbol, ask dcf.py for a fresh monitor-only tick.
+
+    This is throttled so the page's own auto reload does not generate a new seq every time.
+    """
+    if selected == "COMMON_BACKTEST_CONFIG":
+        return 0
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    meta = state.setdefault("_meta", {})
+    symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    age = _status_age_seconds(selected, section, state)
+    last_key = str(meta.get("web_auto_refresh_symbol_key", "") or "")
+    last_at = _parse_web_time(str(meta.get("web_auto_refresh_requested_at", "") or ""))
+    recently_requested = bool(last_at and (datetime.now() - last_at).total_seconds() < max(8, int(max_age_seconds)))
+    if last_key == selected and recently_requested and age <= max_age_seconds:
+        return 0
+    if last_key != selected or age > max_age_seconds:
+        seq = request_force_refresh_symbol(selected, symbol_code)
+        state = read_state()
+        if isinstance(state, dict):
+            meta = state.setdefault("_meta", {})
+            meta["web_auto_refresh_symbol_key"] = selected
+            meta["web_auto_refresh_symbol_code"] = symbol_code
+            meta["web_auto_refresh_requested_at"] = current_time_text()
+            write_state(state)
+        return seq
+    return 0
+
+
+def refresh_reference_prices_now(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+    """Synchronously refresh the 3 realtime quote cards for the selected symbol."""
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not symbol:
+        return [], "未找到标的代码"
+    try:
+        from market_data import get_reference_prices
+        refs = get_reference_prices(symbol, price_scale=safe_float(section.get("price_scale", 1.0), 1.0))
+        refs = _filter_reference_prices_for_symbol(symbol, refs)
+        if symbol.startswith("HK"):
+            refs = _sanitize_hk_reference_prices(refs)
+        error = "" if refs else "参考价返回为空"
+    except Exception as e:
+        refs, error = [], str(e)[:300]
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    updated_at = current_time_text()
+    for key in [selected, symbol]:
+        if not key:
+            continue
+        node = state.setdefault(key, {})
+        if isinstance(node, dict):
+            node["symbol"] = symbol
+            node["reference_prices"] = refs
+            node["reference_prices_updated_at"] = updated_at
+            node["reference_prices_error"] = error
+    write_state(state)
+    return refs, error
+
+
+def refresh_status_snapshot_now(selected: str, section: Dict[str, Any]) -> Tuple[bool, str]:
+    """Best-effort immediate monitor-only status refresh from the Web process.
+
+    In the deployed project this imports dcf.py and calls strategy_for_dcf with
+    allow_trade=False, so clicking refresh updates last_status_msg right away.
+    If importing dcf.py fails, the normal background seq path still handles it.
+    """
+    if selected == "COMMON_BACKTEST_CONFIG":
+        return False, "通用回测参数无实时状态"
+    try:
+        import importlib
+        dcf_runtime = importlib.import_module("dcf")
+        symbol_cfg, strategy_cfg, full_cfg = dcf_runtime.load_config(dcf_runtime.config_path)
+        dcf_runtime.SYMBOL_CONFIG = symbol_cfg
+        dcf_runtime.FULL_CONFIG = full_cfg
+        dcf_runtime.STRATEGY.update(strategy_cfg)
+        state = read_state()
+        if not isinstance(state, dict):
+            state = {}
+        dcf_runtime.strategy_for_dcf(
+            selected,
+            dict(section or {}),
+            state,
+            allow_trade=False,
+            refresh_reason="Web即时刷新，仅更新状态",
+            refresh_reference=True,
+        )
+        node = state.get(selected, {}) if isinstance(state, dict) else {}
+        if isinstance(node, dict):
+            node["status_updated_at"] = current_time_text()
+            node["symbol"] = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+        dcf_runtime.save_state(state)
+        return True, "已即时刷新状态"
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def request_source_metrics_refresh_symbol(selected: str, symbol_code: str = "") -> int:
+    """Ask dcf.py to calculate per-history-source strategy metrics for one symbol.
+
+    This is independent from status refresh. It is monitor-only and only writes
+    source_metrics cache into dcf_monitor_state.json for Web display.
+    """
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    meta = state.setdefault("_meta", {})
+    try:
+        seq = int(meta.get("source_metrics_refresh_seq", 0) or 0) + 1
+    except Exception:
+        seq = 1
+    meta["source_metrics_refresh_seq"] = seq
+    meta["source_metrics_refresh_requested_at"] = current_time_text()
+    meta["source_metrics_refresh_symbol_key"] = selected
+    meta["source_metrics_refresh_symbol_code"] = str(symbol_code or "").strip().upper()
+    meta["source_metrics_refresh_symbols"] = [selected] if selected and selected != "COMMON_BACKTEST_CONFIG" else []
+    write_state(state)
+    return seq
+
+
+
+
+def request_clear_market_state(selected: str, symbol_code: str = "") -> int:
+    """Ask dcf.py to clear market validation/error state for one symbol and refresh it once."""
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    meta = state.setdefault("_meta", {})
+    try:
+        seq = int(meta.get("clear_market_state_seq", 0) or 0) + 1
+    except Exception:
+        seq = 1
+    selected = str(selected or "").strip()
+    symbol_code = str(symbol_code or "").strip().upper()
+    meta["clear_market_state_seq"] = seq
+    meta["clear_market_state_requested_at"] = current_time_text()
+    meta["clear_market_state_symbol_key"] = selected
+    meta["clear_market_state_symbol_code"] = symbol_code
+    meta["clear_market_state_symbols"] = [selected] if selected and selected != "COMMON_BACKTEST_CONFIG" else []
+    write_state(state)
+    return seq
+
+def _filter_reference_prices_for_symbol(symbol_text: str, refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop stale reference-price cards from older versions before rendering.
+
+    Older state caches may still contain Yahoo港股/yahoo_hk_quote entries even
+    after the current market_data.py no longer generates them. Filtering here
+    makes the status page reflect the current 3-source design immediately,
+    without requiring manual state-file cleanup.
+    """
+    if not isinstance(refs, list):
+        return []
+    raw = str(symbol_text or "").upper().strip()
+    if raw.startswith("HK"):
+        allowed_keys = {"tencent_hk_unadjusted"}
+        allowed_sources = {"tencent_hk_quote", "tencent_hk_unadjusted"}
+    else:
+        allowed_keys = {"tencent_quote_a", "xueqiu_quote_a", "eastmoney_quote_a"}
+        allowed_sources = {"tencent_api", "xueqiu_api", "eastmoney_api", "tencent_quote_a", "xueqiu_quote_a", "eastmoney_quote_a"}
+    out = []
+    for item in refs:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "")).strip()
+        source = str(item.get("source", "")).strip()
+        label = str(item.get("label", "")).strip()
+        if key in allowed_keys or source in allowed_sources:
+            # Also explicitly drop any stale Yahoo card by label/source.
+            if "yahoo" in key.lower() or "yahoo" in source.lower() or "Yahoo" in label:
+                continue
+            out.append(dict(item))
+    return out
+
+
+def get_reference_prices_for_status(selected: str, section: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read cached reference prices for status page.
+
+    The web process must not fetch market APIs synchronously; otherwise clicking
+    status/refresh can block Flask workers and cause 500/timeout. dcf.py updates
+    this cache during normal/forced refresh loops.
+    """
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not symbol:
+        return []
+    state = read_state()
+    candidates = []
+    if selected:
+        candidates.append(selected)
+    candidates.append(symbol)
+    # 兼容状态文件中以标的代码字段保存的情况
+    for key, val in (state or {}).items():
+        if isinstance(val, dict) and str(val.get("symbol", "")).strip().upper() == symbol:
+            candidates.append(key)
+    seen = set()
+    for key in candidates:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        node = state.get(key, {}) if isinstance(state, dict) else {}
+        refs = node.get("reference_prices") if isinstance(node, dict) else None
+        if isinstance(refs, list) and refs:
+            symbol_text = str((section or {}).get("symbol", "") or "").upper().strip()
+            refs = _filter_reference_prices_for_symbol(symbol_text, refs)
+            if symbol_text.startswith("HK"):
+                return _sanitize_hk_reference_prices(refs)
+            return refs
+    return []
+
+def _filter_source_metrics_for_current_setting(section: Dict[str, Any], metrics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Show only the currently selected 回测/策略数据源 metric card.
+
+    Older cached metrics may contain 3 cards from prior versions. The status page
+    should now display one card only: the source selected in System settings.
+    """
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    options = _metric_source_options_for_symbol(symbol)
+    if not options:
+        return []
+    wanted_key, wanted_label = options[0]
+    for item in metrics:
+        if isinstance(item, dict) and str(item.get("key", "")) == wanted_key:
+            card = dict(item)
+            card.setdefault("label", wanted_label)
+            return [card]
+    return [{
+        "key": wanted_key,
+        "label": wanted_label,
+        "source": wanted_key,
+        "ok": False,
+        "error": "点击刷新计算",
+        "current_price": None,
+        "ma150": None,
+        "sell": None,
+        "clear": None,
+        "dynamic_k": None,
+        "sideways_score": None,
+        "ma150_source": "",
+        "date": "",
+        "count": 0,
+        "zone": "",
+    }]
+
+
+def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
+    """Read cached history-source metrics for status page.
+
+    dcf.py calculates these after clicking the independent refresh button. The
+    Web process only reads local JSON cache to avoid blocking on network calls.
+    """
+    if selected == "COMMON_BACKTEST_CONFIG":
+        return [], "", ""
+    state = read_state()
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    candidates = [selected, symbol]
+    if symbol:
+        for key, val in (state or {}).items():
+            if isinstance(val, dict) and str(val.get("symbol", "")).strip().upper() == symbol:
+                candidates.append(key)
+    seen = set()
+    for key in candidates:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        node = state.get(key, {}) if isinstance(state, dict) else {}
+        metrics = node.get("source_metrics") if isinstance(node, dict) else None
+        if isinstance(metrics, list) and metrics:
+            selected_metrics = _filter_source_metrics_for_current_setting(section, metrics)
+            if selected_metrics:
+                return selected_metrics, str(node.get("source_metrics_updated_at", "") or ""), str(node.get("source_metrics_error", "") or "")
+    return [], "", ""
+
+
+def _metric_source_options_for_symbol(symbol: str) -> List[Tuple[str, str]]:
+    """Return the single history source selected in System settings.
+
+    回测/策略指标现在只保留腾讯主源。
+    旧配置里的 Yahoo/东方财富/雪球/网易 等源会在 read_system_config() 中自动回退。
+    """
+    raw = normalize_symbol_input(symbol)
+    system_cfg = read_system_config()
+    if raw.startswith("HK"):
+        labels = dict(SYSTEM_SELECT_OPTIONS.get("HK_BACKTEST_SOURCE", []))
+        preferred = str(system_cfg.get("HK_BACKTEST_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
+        if preferred not in labels:
+            preferred = "tencent_hk_unadjusted"
+        return [(preferred, labels.get(preferred, preferred))]
+    return [("tencent_a_unadjusted", "腾讯A股/ETF")]
+
+
+def _compute_ma_series_for_metrics(closes: List[float], period: int) -> List[float]:
+    if len(closes) < period:
+        return []
+    series = []
+    window = sum(closes[:period])
+    series.append(window / period)
+    for i in range(period, len(closes)):
+        window += closes[i] - closes[i - period]
+        series.append(window / period)
+    return series
+
+
+def _sideways_score_for_metrics(ma_series: List[float], window: int) -> float:
+    n = len(ma_series)
+    if n < window + 1:
+        return 0.5
+    seg = ma_series[-(window + 1):]
+    deltas = [seg[i + 1] - seg[i] for i in range(window)]
+    total = sum(abs(x) for x in deltas)
+    if total == 0:
+        return 1.0
+    return max(0.0, min(1.0, 1.0 - abs(sum(deltas)) / total))
+
+
+def _compute_sideways_index_for_metrics(closes: List[float], cfg: Dict[str, Any]) -> float:
+    period30, period60 = 30, 60
+    window30 = int(safe_float(cfg.get("sideways_window_30", 30), 30))
+    window60 = int(safe_float(cfg.get("sideways_window_60", 20), 20))
+    weight60 = max(0.0, min(1.0, safe_float(cfg.get("sideways_weight_60", 0.6), 0.6)))
+    need = max(period30 + window30 + 1, period60 + window60 + 1)
+    if len(closes) < need:
+        return 0.0
+    ma30 = _compute_ma_series_for_metrics(closes, period30)
+    ma60 = _compute_ma_series_for_metrics(closes, period60)
+    if not ma30 or not ma60:
+        return 0.0
+    return max(0.0, min(1.0, (1.0 - weight60) * _sideways_score_for_metrics(ma30, window30) + weight60 * _sideways_score_for_metrics(ma60, window60)))
+
+
+def _calc_ma_for_metrics(closes: List[float], length: int) -> Tuple[Any, str]:
+    if len(closes) >= length:
+        return sum(closes[-length:]) / length, "p" if len(closes) < length * 2 else "f"
+    if len(closes) >= max(5, length // 2):
+        return sum(closes) / len(closes), "p"
+    return None, "insufficient_data"
+
+
+def _get_zone_for_metrics(current_price: float, ma150: float, cfg: Dict[str, Any]) -> str:
+    try:
+        from strategy import get_zone
+        return str(get_zone(current_price, ma150, cfg))
+    except Exception:
+        trend_multiple = safe_float(cfg.get("trend_multiple", 1.2), 1.2)
+        sell_multiple = safe_float(cfg.get("sell_multiple", 1.5), 1.5)
+        if current_price < ma150:
+            return "CHANCE_ZONE"
+        if current_price < ma150 * trend_multiple:
+            return "BOX_ZONE"
+        if current_price < ma150 * sell_multiple:
+            return "TREND_ZONE"
+        return "SELL_ZONE"
+
+
+def build_source_metric_placeholders(section: Dict[str, Any]) -> List[Dict[str, Any]]:
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    return [
+        {
+            "key": key,
+            "label": label,
+            "source": key,
+            "ok": False,
+            "error": "点击刷新计算",
+            "current_price": None,
+            "ma150": None,
+            "sell": None,
+            "clear": None,
+            "dynamic_k": None,
+            "sideways_score": None,
+            "ma150_source": "",
+            "date": "",
+            "count": 0,
+            "zone": "",
+        }
+        for key, label in _metric_source_options_for_symbol(symbol)
+    ]
+
+
+def _calculate_single_source_metric(symbol: str, section: Dict[str, Any], source_key: str, source_label: str) -> Dict[str, Any]:
+    """Calculate one history-source metric card.
+
+    Keep this single-source so Web refreshes do not block on three slow external
+    sources at once. If a source is slow/broken, only that card fails.
+    """
+    config = read_yaml()
+    strategy_cfg = config.get("STRATEGY", {}) if isinstance(config, dict) else {}
+    fetch_days = int(safe_float(strategy_cfg.get("fetch_history_days", 400), 400))
+    ma_len = int(safe_float(strategy_cfg.get("ma_period_short", 150), 150))
+    price_scale = safe_float(section.get("price_scale", 1.0), 1.0)
+    trend_multiple = safe_float(section.get("trend_multiple", 1.2), 1.2)
+    sell_multiple = safe_float(section.get("sell_multiple", 1.5), 1.5)
+    item: Dict[str, Any] = {"key": source_key, "label": source_label, "source": source_key, "ok": False}
+    try:
+        from market_data import get_history_snapshot_by_source
+        snap = get_history_snapshot_by_source(symbol, fetch_days, price_scale=price_scale, source=source_key)
+        closes = [float(x) for x in (snap.closes or []) if float(x) > 0]
+        if len(closes) < max(2, ma_len // 2):
+            raise RuntimeError(f"K线数量不足: {len(closes)}")
+        ma_raw, ma_src = _calc_ma_for_metrics(closes, ma_len)
+        if ma_raw is None:
+            raise RuntimeError(f"无法计算MA{ma_len}: count={len(closes)}")
+        sideways = _compute_sideways_index_for_metrics(closes, section)
+        base_k = safe_float(section.get("k150", 1.0), 1.0)
+        min_k = safe_float(section.get("sideways_min_k150", 0.85), 0.85)
+        if base_k < min_k:
+            min_k = base_k
+        dynamic_k = min_k + (base_k - min_k) * (1.0 - sideways)
+        ma150 = ma_raw * dynamic_k
+        current_price = float(closes[-1])
+        item.update({
+            "ok": True,
+            "source": snap.source,
+            "current_price": round(current_price, 4),
+            "ma150": round(ma150, 4),
+            "ma150_source": ma_src,
+            "sell": round(ma150 * trend_multiple, 4),
+            "clear": round(ma150 * sell_multiple, 4),
+            "dynamic_k": round(dynamic_k, 4),
+            "sideways_score": round(sideways, 4),
+            "date": snap.last_bar_date or "",
+            "count": len(closes),
+            "zone": _get_zone_for_metrics(current_price, ma150, section),
+            "error": "",
+        })
+    except Exception as e:
+        item.update({"ok": False, "error": str(e)[:260], "date": "", "count": 0})
+    return item
+
+
+def _store_source_metrics(selected: str, symbol: str, metrics: List[Dict[str, Any]], error: str = "") -> Tuple[List[Dict[str, Any]], str, str]:
+    updated_at = current_time_text()
+    state = read_state()
+    node = state.setdefault(selected, {}) if isinstance(state, dict) else {}
+    node["source_metrics"] = metrics
+    node["source_metrics_updated_at"] = updated_at
+    node["source_metrics_error"] = error or ""
+    if symbol:
+        node["symbol"] = symbol
+        state.setdefault(symbol, {})
+        if isinstance(state.get(symbol), dict):
+            state[symbol]["source_metrics"] = metrics
+            state[symbol]["source_metrics_updated_at"] = updated_at
+            state[symbol]["source_metrics_error"] = error or ""
+            state[symbol]["symbol"] = symbol
+    write_state(state)
+    return metrics, updated_at, error or ""
+
+
+def calculate_and_store_source_metric(selected: str, section: Dict[str, Any], source_key: str) -> Tuple[List[Dict[str, Any]], str, str]:
+    """Calculate and store one metric card selected by source_key."""
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not symbol:
+        return build_source_metric_placeholders(section), "", "未找到标的代码"
+    options = _metric_source_options_for_symbol(symbol)
+    labels = dict(options)
+    if source_key not in labels:
+        return build_source_metric_placeholders(section), "", f"不支持的数据源: {source_key}"
+    # Preserve existing cards so other cards do not disappear.
+    existing, _, _ = get_source_metrics_for_status(selected, section)
+    if not existing:
+        existing = build_source_metric_placeholders(section)
+    by_key = {str(x.get("key", "")): dict(x) for x in existing if isinstance(x, dict)}
+    for key, label in options:
+        by_key.setdefault(key, {
+            "key": key, "label": label, "source": key, "ok": False,
+            "error": "点击刷新计算", "current_price": None, "ma150": None,
+            "sell": None, "clear": None, "dynamic_k": None,
+            "sideways_score": None, "ma150_source": "", "date": "", "count": 0, "zone": "",
+        })
+    by_key[source_key] = _calculate_single_source_metric(symbol, section, source_key, labels[source_key])
+    metrics = [by_key[key] for key, _ in options]
+    return _store_source_metrics(selected, symbol, metrics, "")
+
+
+def calculate_and_store_source_metrics(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
+    """Calculate all source metrics. Kept for compatibility, but Web should prefer per-source refresh."""
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not symbol:
+        return build_source_metric_placeholders(section), "", "未找到标的代码"
+    results = [_calculate_single_source_metric(symbol, section, key, label) for key, label in _metric_source_options_for_symbol(symbol)]
+    return _store_source_metrics(selected, symbol, results, "")
+
+
+def _sanitize_hk_reference_prices(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Protect status page from stale/wrong cached HK reference prices."""
+    if not isinstance(refs, list):
+        return []
+    base = None
+    for item in refs:
+        try:
+            if str(item.get("key")) == "tencent_hk_unadjusted" and item.get("ok"):
+                base = float(item.get("price"))
+                break
+        except Exception:
+            pass
+    if not base or base <= 0:
+        return refs
+    clean = []
+    for item in refs:
+        item = dict(item or {})
+        if str(item.get("key")) != "tencent_hk_unadjusted" and item.get("ok"):
+            try:
+                p = float(item.get("price"))
+                ratio = p / base
+                if ratio < 0.75 or ratio > 1.25:
+                    item["ok"] = False
+                    item["error"] = f"参考价偏离腾讯港股过大: {p:.4f} vs {base:.4f}"
+                    item["price"] = None
+            except Exception:
+                item["ok"] = False
+                item["error"] = "参考价无法解析"
+                item["price"] = None
+        clean.append(item)
+    return clean
+
+
+def read_system_config() -> Dict[str, str]:
+    cfg = dict(SYSTEM_DEFAULTS)
+    if SYSTEM_CONFIG_FILE.exists():
+        try:
+            raw = json.loads(SYSTEM_CONFIG_FILE.read_text(encoding="utf-8") or "{}")
+            if isinstance(raw, dict):
+                cfg.update({k: "" if v is None else str(v).strip() for k, v in raw.items()})
+        except Exception:
+            pass
+    if cfg.get("A_QUOTE_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_QUOTE_SOURCE"]}:
+        cfg["A_QUOTE_SOURCE"] = SYSTEM_DEFAULTS["A_QUOTE_SOURCE"]
+    if cfg.get("HK_MARKET_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_MARKET_SOURCE"]}:
+        cfg["HK_MARKET_SOURCE"] = SYSTEM_DEFAULTS["HK_MARKET_SOURCE"]
+    if cfg.get("A_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_BACKTEST_SOURCE"]}:
+        cfg["A_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["A_BACKTEST_SOURCE"]
+    if cfg.get("HK_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_BACKTEST_SOURCE"]}:
+        cfg["HK_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["HK_BACKTEST_SOURCE"]
+    cfg["XUEQIU_TOKEN"] = str(cfg.get("XUEQIU_TOKEN", "") or "").strip()
+    return cfg
+
+
+def write_system_config(cfg: Dict[str, Any]) -> Dict[str, str]:
+    merged = dict(SYSTEM_DEFAULTS)
+    merged.update({k: "" if v is None else str(v).strip() for k, v in (cfg or {}).items()})
+    if merged.get("A_QUOTE_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_QUOTE_SOURCE"]}:
+        merged["A_QUOTE_SOURCE"] = SYSTEM_DEFAULTS["A_QUOTE_SOURCE"]
+    if merged.get("HK_MARKET_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_MARKET_SOURCE"]}:
+        merged["HK_MARKET_SOURCE"] = SYSTEM_DEFAULTS["HK_MARKET_SOURCE"]
+    if merged.get("A_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_BACKTEST_SOURCE"]}:
+        merged["A_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["A_BACKTEST_SOURCE"]
+    if merged.get("HK_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_BACKTEST_SOURCE"]}:
+        merged["HK_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["HK_BACKTEST_SOURCE"]
+    SYSTEM_CONFIG_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    request_runtime_system_config_reload()
+    return merged
+
+
+def save_system_config_from_form() -> Dict[str, str]:
+    cfg = read_system_config()
+    for key in SYSTEM_DEFAULTS:
+        if key in request.form:
+            cfg[key] = (request.form.get(key, "") or "").strip()
+    return write_system_config(cfg)
 
 
 def save_push_config_from_form() -> Dict[str, str]:
@@ -1250,12 +2012,18 @@ def _base_context(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
         "backtest_help_text": BACKTEST_HELP_TEXT,
         "backtest_metrics_help_text": BACKTEST_METRICS_HELP_TEXT,
         "symbol_cards": build_symbol_cards(config, selected),
+        "system_config": read_system_config(),
+        "system_select_options": SYSTEM_SELECT_OPTIONS,
         "snapshot_dates": available_snapshot_dates,
         "selected_snapshot_date": selected_snapshot_date,
         "latest_snapshot": latest_snapshot,
         "recent_snapshots": recent_snapshots,
         "market_source_stats": market_source_stats,
         "trade_state_backups": trade_state_backups,
+        "reference_prices": [],
+        "source_metrics": [],
+        "source_metrics_updated_at": "",
+        "source_metrics_error": "",
         "fmt_snapshot_value": fmt_snapshot_value,
     }
 
@@ -1338,9 +2106,80 @@ def status_page():
     config = read_yaml()
     selected = _selected_key(config)
     ctx = _base_context(config, selected)
+    if selected != "COMMON_BACKTEST_CONFIG":
+        section = get_section(config, selected)
+        request_auto_refresh_if_stale(selected, section, max_age_seconds=20)
+        ctx["reference_prices"] = get_reference_prices_for_status(selected, section)
+        metrics, metrics_updated_at, metrics_error = get_source_metrics_for_status(selected, section)
+        if not metrics:
+            metrics = build_source_metric_placeholders(section)
+        ctx["source_metrics"] = metrics
+        ctx["source_metrics_updated_at"] = metrics_updated_at
+        ctx["source_metrics_error"] = metrics_error
     ctx.update({"page_name": "status"})
     return render_template("dashboard.html", **ctx)
 
+
+@app.route("/refresh-status", methods=["POST"])
+def refresh_status_page():
+    config = read_yaml()
+    selected = (request.form.get("symbol_key", "") or "").strip()
+    allowed = {key for key, _ in symbol_options(config)}
+    if selected not in allowed or selected == "COMMON_BACKTEST_CONFIG":
+        selected = _selected_key(config)
+    section = get_section(config, selected)
+    symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    refs, ref_error = refresh_reference_prices_now(selected, section)
+    immediate_ok, immediate_detail = refresh_status_snapshot_now(selected, section)
+    seq = request_force_refresh_symbol(selected, symbol_code)
+    label = selected if selected != "COMMON_BACKTEST_CONFIG" else "当前标的"
+    ref_msg = f"3 个实时行情源已更新 {sum(1 for x in refs if isinstance(x, dict) and x.get('ok'))}/{len(refs) or 3}" if refs else f"3 源参考价待后台刷新：{ref_error or '暂无返回'}"
+    if immediate_ok:
+        flash(f"已手动刷新 {label} ({symbol_code}) 的状态；{ref_msg}。后台也已收到兜底刷新请求（seq={seq}），本次只监控，不触发交易。", "success")
+    else:
+        flash(f"已请求刷新 {label} ({symbol_code}) 的行情/状态；{ref_msg}。后台下一轮会补刷状态（seq={seq}）。原因：{immediate_detail}", "success")
+    return redirect(url_for("status_page", symbol_key=selected))
+
+
+
+@app.route("/refresh-source-metrics", methods=["POST"])
+def refresh_source_metrics_page():
+    config = read_yaml()
+    selected = (request.form.get("symbol_key", "") or "").strip()
+    source_key = (request.form.get("source_key", "") or "").strip()
+    allowed = {key for key, _ in symbol_options(config)}
+    if selected not in allowed or selected == "COMMON_BACKTEST_CONFIG":
+        selected = _selected_key(config)
+    section = get_section(config, selected)
+    symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    try:
+        if source_key:
+            calculate_and_store_source_metric(selected, section, source_key)
+            request_source_metrics_refresh_symbol(selected, symbol_code)
+            flash(f"已刷新 {selected} ({symbol_code}) 的 {source_key} 指标。", "success")
+        else:
+            calculate_and_store_source_metrics(selected, section)
+            request_source_metrics_refresh_symbol(selected, symbol_code)
+            flash(f"已刷新 {selected} ({symbol_code}) 的当前回测/策略数据源指标。", "success")
+    except Exception as e:
+        flash(f"刷新回测/策略数据源指标失败：{e}", "error")
+    return redirect(url_for("status_page", symbol_key=selected))
+
+
+@app.route("/clear-market-state", methods=["POST"])
+def clear_market_state_page():
+    config = read_yaml()
+    selected = (request.form.get("symbol_key", "") or "").strip()
+    allowed = {key for key, _ in symbol_options(config)}
+    if selected not in allowed or selected == "COMMON_BACKTEST_CONFIG":
+        selected = _selected_key(config)
+    section = get_section(config, selected)
+    symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    clear_seq = request_clear_market_state(selected, symbol_code)
+    refresh_seq = request_force_refresh_symbol(selected, symbol_code)
+    label = selected if selected != "COMMON_BACKTEST_CONFIG" else "当前标的"
+    flash(f"已请求清除 {label} ({symbol_code}) 的行情错误/旧价格校验状态，并按当前最新数据刷新一次（clear_seq={clear_seq}, refresh_seq={refresh_seq}）。本次只监控，不触发交易。", "success")
+    return redirect(url_for("status_page", symbol_key=selected))
 
 @app.route("/restore-trade-state", methods=["POST"])
 def restore_trade_state_page():
@@ -1399,6 +2238,10 @@ def push_page():
     cfg = read_push_config()
     if request.method == "POST":
         action = request.form.get("action", "")
+        if action == "save_system":
+            save_system_config_from_form()
+            flash("系统配置已保存，行情源设置已通知主程序即时生效。", "success")
+            return redirect(url_for("push_page"))
         if action == "save_push":
             cfg = save_push_config_from_form()
             flash("推送配置已保存到 /root/dcf/push.conf", "success")
@@ -1412,6 +2255,9 @@ def push_page():
     ctx = _base_context(config, selected)
     ctx.update({
         "page_name": "push",
+        "system_config_path": str(SYSTEM_CONFIG_FILE),
+        "system_config": read_system_config(),
+        "system_select_options": SYSTEM_SELECT_OPTIONS,
         "push_config_path": str(PUSH_CONFIG_FILE),
         "push_log_path": str(PUSH_LOG_FILE),
         "push_config": cfg,

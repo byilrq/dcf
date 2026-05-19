@@ -44,6 +44,27 @@ def load_config(path: str):
     return dcf_cfg, strategy_cfg, common_cfg
 
 
+def load_system_config() -> dict:
+    path = Path(__file__).resolve().parent / "system_config.json"
+    defaults = {"A_BACKTEST_SOURCE": "tencent_a_unadjusted", "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted"}
+    try:
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+            if isinstance(raw, dict):
+                defaults.update({k: str(v).strip() for k, v in raw.items() if v is not None})
+    except Exception:
+        pass
+    return defaults
+
+
+def get_backtest_source_for_symbol(symbol: str) -> str:
+    raw = str(symbol or "").upper().strip()
+    cfg = load_system_config()
+    if raw.startswith("HK"):
+        return str(cfg.get("HK_BACKTEST_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
+    return str(cfg.get("A_BACKTEST_SOURCE", "tencent_a_unadjusted") or "tencent_a_unadjusted").strip()
+
+
 # ===========================
 # 符号映射
 # ===========================
@@ -327,6 +348,37 @@ def compute_sideways_index(closes, cfg):
 # 市场数据
 # ===========================
 def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
+    source = get_backtest_source_for_symbol(symbol)
+    if source and source != "yfinance":
+        try:
+            from market_data import get_history_snapshot_by_source
+            snap = get_history_snapshot_by_source(symbol, days=days, price_scale=1.0, source=source)
+            closes = list(snap.closes or [])[-days:]
+            dates = list(snap.dates or [])[-len(closes):]
+            if len(closes) < 10:
+                raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(closes)} 条")
+            if not dates or len(dates) != len(closes):
+                # Fallback: synthesize dates only if the source did not expose date list.
+                end_dt = datetime.now()
+                dates = [(end_dt - timedelta(days=len(closes)-1-i)).strftime("%Y-%m-%d") for i in range(len(closes))]
+            out = pd.DataFrame({
+                "date": dates,
+                "raw_close": closes,
+                "adj_close": closes,
+                "dividend": [0.0] * len(closes),
+                "split_ratio": [1.0] * len(closes),
+            })
+            out["raw_close"] = pd.to_numeric(out["raw_close"], errors="coerce")
+            out["adj_close"] = pd.to_numeric(out["adj_close"], errors="coerce")
+            out = out.dropna(subset=["raw_close", "adj_close"]).copy()
+            out = out[(out["raw_close"] > 0) & (out["adj_close"] > 0)].tail(days).reset_index(drop=True)
+            if len(out) < 10:
+                raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(out)} 条")
+            logging.info(f"回测数据源: {symbol} -> {source}, count={len(out)}")
+            return out
+        except Exception as e:
+            raise RuntimeError(f"回测数据源 {source} 获取失败: {symbol}: {e}")
+
     yahoo_symbol = to_yahoo_symbol(symbol)
     end_dt = datetime.now()
     start_dt = end_dt - timedelta(days=max(days * 3, 1200))
@@ -370,8 +422,8 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
     out = out.tail(days).reset_index(drop=True)
     if len(out) < 10:
         raise RuntimeError(f"历史数据太少：{symbol} 仅 {len(out)} 条")
+    logging.info(f"回测数据源: {symbol} -> yfinance, count={len(out)}")
     return out
-
 
 # ===========================
 # 回测主逻辑

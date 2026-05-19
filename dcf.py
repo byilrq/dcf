@@ -36,6 +36,7 @@ from strategy import (
 BASE_DIR = Path(__file__).parent
 config_path = os.path.join(BASE_DIR, "dcf.yaml")
 STATE_FILE = BASE_DIR / "dcf_monitor_state.json"
+SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
 LOG_DIR = BASE_DIR / "log"
 TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
 SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
@@ -583,6 +584,200 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
     save_state(state)
     return seq
 
+
+def apply_system_config_update_if_needed(state, last_seen_seq):
+    """Apply Web system market-source changes without restarting dcf.py.
+
+    When the preferred market source changes, old source confirmation state is no longer useful.
+    Clearing it prevents one-time WARN like sina_a -> tencent_api after a deliberate setting change.
+    """
+    disk_state = read_state_raw()
+    disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
+    seq = _safe_int(disk_meta.get("system_config_seq", 0), 0)
+    if seq <= last_seen_seq:
+        return last_seen_seq
+    state.setdefault("_meta", {}).update(disk_meta)
+    for name in list(SYMBOL_CONFIG.keys()):
+        entry = state.get(name)
+        if not isinstance(entry, dict):
+            continue
+        for key in ["pending_market_source", "pending_market_source_count", "last_valid_market_source", "market_source"]:
+            entry.pop(key, None)
+        entry["market_status"] = "system_source_updated"
+    logging.info(f"🔁 系统行情源配置已即时生效 seq={seq}，已清理旧行情源确认状态。")
+    save_state(state)
+    return seq
+
+
+def read_force_refresh_request(state):
+    """Return (is_requested, seq, target_names) for Web manual refresh request.
+
+    Web 状态页刷新只刷新当前选中的标的，避免一次性拉取所有标的
+    的多路参考价导致后台循环变慢。旧版全量刷新字段仍会被忽略为
+    “当前配置范围内的指定标的”，没有指定时才退回全量。
+    """
+    disk_state = read_state_raw()
+    disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
+    requested_seq = _safe_int(disk_meta.get("force_refresh_seq", 0), 0)
+    done_seq = _safe_int(state.get("_meta", {}).get("force_refresh_done_seq", 0), 0)
+    if requested_seq <= done_seq:
+        return False, requested_seq, []
+    state.setdefault("_meta", {}).update(disk_meta)
+    requested = disk_meta.get("force_refresh_symbols") or []
+    if isinstance(requested, str):
+        requested = [requested]
+    if not requested:
+        key = str(disk_meta.get("force_refresh_symbol_key", "") or "").strip()
+        if key:
+            requested = [key]
+    if "__ALL__" in requested:
+        target_names = list(SYMBOL_CONFIG.keys())
+    else:
+        target_names = [name for name in requested if name in SYMBOL_CONFIG]
+    # 兼容通过代码请求刷新
+    code = str(disk_meta.get("force_refresh_symbol_code", "") or "").strip().upper()
+    if code and not target_names:
+        for name, cfg in SYMBOL_CONFIG.items():
+            if isinstance(cfg, dict) and str(cfg.get("symbol", "")).strip().upper() == code:
+                target_names.append(name)
+                break
+    if not target_names:
+        target_names = list(SYMBOL_CONFIG.keys())
+    return True, requested_seq, target_names
+
+
+def read_source_metrics_refresh_request(state):
+    """Return (is_requested, seq, target_names) for Web historical-source metrics refresh.
+
+    This is independent from status refresh. It only calculates MA150/sell/Clear/
+    dynamicK/sideways score for each historical source and caches the result for
+    Web display. It never triggers trades.
+    """
+    disk_state = read_state_raw()
+    disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
+    requested_seq = _safe_int(disk_meta.get("source_metrics_refresh_seq", 0), 0)
+    done_seq = _safe_int(state.get("_meta", {}).get("source_metrics_refresh_done_seq", 0), 0)
+    if requested_seq <= done_seq:
+        return False, requested_seq, []
+    state.setdefault("_meta", {}).update(disk_meta)
+    requested = disk_meta.get("source_metrics_refresh_symbols") or []
+    if isinstance(requested, str):
+        requested = [requested]
+    if not requested:
+        key = str(disk_meta.get("source_metrics_refresh_symbol_key", "") or "").strip()
+        if key:
+            requested = [key]
+    if "__ALL__" in requested:
+        target_names = list(SYMBOL_CONFIG.keys())
+    else:
+        target_names = [name for name in requested if name in SYMBOL_CONFIG]
+    code = str(disk_meta.get("source_metrics_refresh_symbol_code", "") or "").strip().upper()
+    if code and not target_names:
+        for name, cfg in SYMBOL_CONFIG.items():
+            if isinstance(cfg, dict) and str(cfg.get("symbol", "")).strip().upper() == code:
+                target_names.append(name)
+                break
+    if not target_names:
+        target_names = list(SYMBOL_CONFIG.keys())
+    return True, requested_seq, target_names
+
+
+
+def has_pending_web_refresh_request(state: dict) -> bool:
+    """Return True when Web wrote a refresh/control seq newer than what dcf.py has consumed.
+
+    The old loop slept for loop_interval seconds unconditionally, so a user could click
+    refresh during trading hours and wait up to a full interval before anything happened.
+    This helper lets the sleep wake early when Web asks for status, source metrics,
+    clear-market-state, config reload, or system source reload.
+    """
+    try:
+        disk_state = read_state_raw()
+        disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
+        mem_meta = state.get("_meta", {}) if isinstance(state, dict) else {}
+        pairs = [
+            ("force_refresh_seq", "force_refresh_done_seq"),
+            ("source_metrics_refresh_seq", "source_metrics_refresh_done_seq"),
+            ("clear_market_state_seq", "clear_market_state_done_seq"),
+        ]
+        for req_key, done_key in pairs:
+            if _safe_int(disk_meta.get(req_key, 0), 0) > _safe_int(mem_meta.get(done_key, 0), 0):
+                return True
+        if _safe_int(disk_meta.get("config_reload_seq", 0), 0) > _safe_int(mem_meta.get("config_reload_seq", 0), 0):
+            return True
+        if _safe_int(disk_meta.get("system_config_seq", 0), 0) > _safe_int(mem_meta.get("system_config_seq", 0), 0):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def sleep_until_next_loop_or_web_request(state: dict, seconds) -> None:
+    """Sleep in short slices so Web manual refresh is handled almost immediately."""
+    try:
+        total = max(1, int(float(seconds or 1)))
+    except Exception:
+        total = 1
+    # 1 second gives responsive manual refresh without busy-waiting.
+    for _ in range(total):
+        if has_pending_web_refresh_request(state):
+            return
+        time_module.sleep(1)
+
+
+def apply_market_state_clear_if_needed(state):
+    """Clear one symbol's market validation/error state requested by Web.
+
+    Intended for bad source data or intentional price_scale changes. Position and
+    average cost are preserved; price validation anchors are cleared and a normal
+    monitor-only refresh usually follows.
+    """
+    disk_state = read_state_raw()
+    disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
+    seq = _safe_int(disk_meta.get("clear_market_state_seq", 0), 0)
+    done_seq = _safe_int(state.get("_meta", {}).get("clear_market_state_done_seq", 0), 0)
+    if seq <= done_seq:
+        return False, seq, []
+    state.setdefault("_meta", {}).update(disk_meta)
+    requested = disk_meta.get("clear_market_state_symbols") or []
+    if isinstance(requested, str):
+        requested = [requested]
+    if not requested:
+        key = str(disk_meta.get("clear_market_state_symbol_key", "") or "").strip()
+        if key:
+            requested = [key]
+    if "__ALL__" in requested:
+        target_names = list(SYMBOL_CONFIG.keys())
+    else:
+        target_names = [name for name in requested if name in SYMBOL_CONFIG]
+    code = str(disk_meta.get("clear_market_state_symbol_code", "") or "").strip().upper()
+    if code and not target_names:
+        for name, cfg in SYMBOL_CONFIG.items():
+            if isinstance(cfg, dict) and str(cfg.get("symbol", "")).strip().upper() == code:
+                target_names.append(name)
+                break
+    cleared = []
+    for name in target_names:
+        entry = state.get(name)
+        if not isinstance(entry, dict):
+            continue
+        for key in [
+            "last_price", "last_valid_price", "last_valid_market_source", "last_valid_bar_date",
+            "market_source", "market_status", "market_error", "pending_market_source", "pending_market_source_count",
+            "reference_prices_error",
+            "last_trade_price", "last_add_price",
+        ]:
+            entry.pop(key, None)
+        entry["last_status_msg"] = "已清除行情错误/旧价格校验状态，等待下一轮刷新。"
+        entry["market_status"] = "cleared"
+        cleared.append(name)
+    state.setdefault("_meta", {})["clear_market_state_done_seq"] = seq
+    state.setdefault("_meta", {})["clear_market_state_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+    save_state(state)
+    if cleared:
+        logging.info(f"🧹 已清除行情错误/旧价格校验状态 seq={seq}: {','.join(cleared)}")
+    return bool(cleared), seq, cleared
+
 # ===========================
 # 构建每日快照
 # ===========================
@@ -617,6 +812,8 @@ try:
     from market_data import (
         MarketSnapshot,
         get_market_snapshot,
+        get_reference_prices,
+        get_history_snapshot_by_source,
         get_price_from_api,
         get_history_close,
         get_hk_history_close,
@@ -884,11 +1081,28 @@ def _mark_market_warn(dcf_state, msg, reason, source=""):
         dcf_state["market_source"] = source
 
 
+def _canonical_market_source(source):
+    """Normalize source names for switch confirmation to avoid warnings after renamed/deprecated sources."""
+    s = str(source or "").strip()
+    if not s:
+        return ""
+    if s.startswith("sina_a"):
+        # Deprecated A-share source removed from market_data.py; do not treat first switch as risky.
+        return ""
+    if "live_tencent" in s or s.startswith("tencent_a") or s == "tencent_api":
+        return "tencent_api"
+    if "live_eastmoney" in s or s.startswith("eastmoney_a") or s == "eastmoney_api":
+        return "eastmoney_api"
+    if "live_xueqiu" in s or s.startswith("xueqiu") or s == "xueqiu_api":
+        return "xueqiu_api"
+    return s
+
+
 def _check_market_source_switch(dcf_state, snapshot, cfg):
     """行情源切换首轮禁止交易，连续确认后才允许新源进入策略。"""
     new_source = snapshot.source
     last_source = dcf_state.get("last_valid_market_source") or dcf_state.get("market_source")
-    if not last_source or last_source == new_source:
+    if not last_source or last_source == new_source or _canonical_market_source(last_source) in {"", _canonical_market_source(new_source)}:
         dcf_state["pending_market_source"] = ""
         dcf_state["pending_market_source_count"] = 0
         return True, ""
@@ -987,6 +1201,119 @@ def compute_sideways_index(closes, cfg):
     s60 = _ma_directional_sideways_score(ma60_series, window60)
     sideways_score = weight30 * s30 + weight60 * s60
     return max(0.0, min(1.0, sideways_score))
+
+
+# ===========================
+# 历史/策略数据源指标对照
+# ===========================
+def _read_system_config_for_metrics():
+    cfg = {
+        "A_BACKTEST_SOURCE": "tencent_a_unadjusted",
+        "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted",
+    }
+    try:
+        if SYSTEM_CONFIG_FILE.exists():
+            raw = json.loads(SYSTEM_CONFIG_FILE.read_text(encoding="utf-8") or "{}")
+            if isinstance(raw, dict):
+                cfg.update({k: "" if v is None else str(v).strip() for k, v in raw.items()})
+    except Exception as e:
+        logging.debug(f"读取系统回测/策略数据源配置失败: {e}")
+    return cfg
+
+
+def _history_source_options_for_symbol(symbol):
+    """Return the single source shown on Web for 回测/策略数据源指标.
+
+    Keep this in sync with dcf_web.py. The older implementation calculated all
+    historical sources and could overwrite the Web cache with a different source
+    list after the user clicked refresh, so the page appeared to keep yesterday's
+    metric/time.
+    """
+    raw = str(symbol or "").upper().strip()
+    system_cfg = _read_system_config_for_metrics()
+    if raw.startswith("HK"):
+        return [("tencent_hk_unadjusted", "腾讯港股日K")]
+    return [("tencent_a_unadjusted", "腾讯A股/ETF日K")]
+
+
+def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, snap, ma_short_len):
+    closes = list(getattr(snap, "closes", []) or [])
+    if not closes:
+        raise RuntimeError("历史K线为空")
+    ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
+    if ma150_raw is None:
+        raise RuntimeError(f"历史数据不足，无法计算MA150，count={len(closes)}")
+    sideways_score = float(compute_sideways_index(closes, cfg))
+    base_k150 = float(cfg.get("k150", 1.0))
+    min_k150 = float(cfg.get("sideways_min_k150", 0.85))
+    if base_k150 < min_k150:
+        min_k150 = base_k150
+    dynamic_k150 = min_k150 + (base_k150 - min_k150) * (1.0 - sideways_score)
+    ma150 = ma150_raw * dynamic_k150
+    sell_price = ma150 * get_trend_multiple(cfg)
+    clear_price = ma150 * get_sell_multiple(cfg)
+    current_price = float(getattr(snap, "current_price", closes[-1]) or closes[-1])
+    try:
+        zone = get_zone(current_price, ma150, cfg)
+    except Exception:
+        zone = ""
+    return {
+        "key": source_key,
+        "label": source_label,
+        "ok": True,
+        "source": getattr(snap, "source", source_key),
+        "date": getattr(snap, "last_bar_date", "") or "",
+        "count": len(closes),
+        "current_price": round(current_price, 4),
+        "ma150": round(float(ma150), 4),
+        "ma150_source": ma150_source,
+        "sell": round(float(sell_price), 4),
+        "clear": round(float(clear_price), 4),
+        "dynamic_k": round(float(dynamic_k150), 4),
+        "sideways_score": round(float(sideways_score), 4),
+        "zone": zone,
+        "error": "",
+    }
+
+
+def refresh_source_metrics_for_symbol(name, cfg, state):
+    """Refresh historical-source MA/dynamicK comparison for one symbol.
+
+    Results are cached in dcf_monitor_state.json under source_metrics. Web reads
+    this cache only, so the page never blocks on network calls.
+    """
+    symbol = str((cfg or {}).get("symbol", "") or "").strip().upper()
+    dcf_state = state.setdefault(name, build_default_symbol_state(cfg))
+    fetch_days = int(_safe_float(STRATEGY.get("fetch_history_days", 400), 400))
+    ma_short_len = int(_safe_float(STRATEGY.get("ma_period_short", 150), 150))
+    price_scale = cfg.get("price_scale", 1.0)
+    results = []
+    for source_key, source_label in _history_source_options_for_symbol(symbol):
+        try:
+            snap = get_history_snapshot_by_source(symbol, fetch_days, price_scale=price_scale, source=source_key)
+            results.append(_calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, snap, ma_short_len))
+        except Exception as e:
+            results.append({
+                "key": source_key,
+                "label": source_label,
+                "ok": False,
+                "source": source_key,
+                "date": "",
+                "count": 0,
+                "current_price": None,
+                "ma150": None,
+                "ma150_source": "",
+                "sell": None,
+                "clear": None,
+                "dynamic_k": None,
+                "sideways_score": None,
+                "zone": "",
+                "error": str(e)[:240],
+            })
+    dcf_state["source_metrics"] = results
+    dcf_state["source_metrics_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+    logging.info(f"📊 已刷新回测/策略数据源指标: {name} ({symbol})，共 {len(results)} 个源。")
+    return results
 
 # ===========================
 # 推送功能
@@ -1116,7 +1443,7 @@ def log_trade(dcf_name, symbol, price, qty, side, reason, zone=None,
 # ===========================
 # 核心策略逻辑（调用 strategy 模块）
 # ===========================
-def strategy_for_dcf(name, cfg, state):
+def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refresh_reference=False):
     symbol = cfg["symbol"]
     position_mode = get_position_mode(cfg)
     base_units = get_base_units(cfg)
@@ -1162,6 +1489,22 @@ def strategy_for_dcf(name, cfg, state):
         _mark_market_error(dcf_state, msg, reason)
         write_market_skip_snapshot(name, symbol, dcf_state, reason, level="ERROR", last_known_price=last_valid_price)
         return _maybe_market_alert(dcf_state, msg, reason)
+
+
+    # 缓存状态页参考价；只在主程序中请求行情，Web 页面仅读缓存，避免卡死/500。
+    # v46: 参考价只在“刷新当前标的”时拉取当前标的的主源+备用源，
+    # 不再每轮为所有标的拉取多路参考价，降低后台循环负担。
+    if refresh_reference:
+        try:
+            refs = get_reference_prices(symbol, price_scale=price_scale)
+            if isinstance(refs, list) and refs:
+                dcf_state["reference_prices"] = refs
+                dcf_state["reference_prices_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+                dcf_state["reference_prices_error"] = ""
+            else:
+                dcf_state["reference_prices_error"] = "参考价返回为空"
+        except Exception as e:
+            dcf_state["reference_prices_error"] = str(e)[:300]
 
     if not getattr(snapshot, "trade_allowed", True):
         reason = getattr(snapshot, "error", "行情来自缓存或观察源，本轮只监控不交易") or "行情来自缓存或观察源，本轮只监控不交易"
@@ -1305,6 +1648,7 @@ def strategy_for_dcf(name, cfg, state):
         dcf_state["avg_cost"] = current_avg_cost
     zone = get_zone(current_price, ma150, cfg)
     now_str = strategy_now().strftime("%Y.%m.%d.%H:%M")
+    dcf_state["last_time"] = now_str
     sell_price = ma150 * get_trend_multiple(cfg)
     clear_price = ma150 * get_sell_multiple(cfg)
     def _pct_text(value):
@@ -1372,8 +1716,29 @@ def strategy_for_dcf(name, cfg, state):
     )
     logging.info(status_msg + "\n")
     dcf_state["last_status_msg"] = status_msg
+    dcf_state["status_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
     units_before_decision = current_units
     avg_cost_before_decision = current_avg_cost
+    if not allow_trade:
+        write_strategy_snapshot({
+            "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": name, "symbol": symbol, "level": "INFO",
+            "action": "REFRESH_ONLY", "decision": "REFRESH_ONLY",
+            "reason": refresh_reason or "manual refresh; monitor only", "market_status": "ok",
+            "market_source": snapshot.source, "last_bar_date": snapshot.last_bar_date,
+            "history_count": len(closes), "current_price": current_price,
+            "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
+            "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
+            "zone": zone, "sell_price": sell_price, "clear_price": clear_price,
+            "current_units_before": units_before_decision, "current_units_after": current_units,
+            "avg_cost_before": avg_cost_before_decision, "avg_cost_after": current_avg_cost,
+            "target_units": target_units, "double_target": double_target,
+            "last_trade_price": last_trade_price, "last_trade_side": last_trade_side,
+            "last_add_price": dcf_state.get("last_add_price"),
+            "pyramid_step": dcf_state.get("pyramid_step"), "clear_step": dcf_state.get("clear_step"),
+            "trade_allowed": False,
+        })
+        return []
     if strategy_run == "off":
         write_strategy_snapshot({
             "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1690,10 +2055,17 @@ def main_loop():
             "last_log_rotate_date": None,
         }
     last_config_reload_seq = _safe_int(state.get("_meta", {}).get("config_reload_seq", 0), 0)
+    last_system_config_seq = _safe_int(state.get("_meta", {}).get("system_config_seq", 0), 0)
     while True:
         SYMBOL_CONFIG, STRATEGY_from_conf, FULL_CONFIG = load_config(config_path)
         STRATEGY.update(STRATEGY_from_conf)
         last_config_reload_seq = apply_runtime_config_reload_if_needed(state, last_config_reload_seq)
+        last_system_config_seq = apply_system_config_update_if_needed(state, last_system_config_seq)
+        force_refresh, force_refresh_seq, force_refresh_targets = read_force_refresh_request(state)
+        source_metrics_refresh, source_metrics_seq, source_metrics_targets = read_source_metrics_refresh_request(state)
+        apply_market_state_clear_if_needed(state)
+        # clear-market-state may also be paired with a force refresh; re-read after clearing.
+        force_refresh, force_refresh_seq, force_refresh_targets = read_force_refresh_request(state)
         now = strategy_now()
         # 日志轮转
         if should_rotate_logs(state, now):
@@ -1725,19 +2097,47 @@ def main_loop():
                 logging.info("✅ 日志轮转与快照推送完成")
                 logging.info("🕒 下次轮转时间: 明天 09:00")
                 logging.info("=" * 60)
-        # 非交易时段
-        if not in_trade_session(now):
-            time_module.sleep(STRATEGY.get("loop_interval", 60))
+        # 非交易时段：Web 手动刷新允许只监控刷新一次，但不触发交易。
+        in_session = in_trade_session(now)
+        if not in_session and not force_refresh and not source_metrics_refresh:
+            sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
             continue
+        if source_metrics_refresh:
+            logging.info("=" * 60)
+            logging.info(f"📊 收到 Web 回测/策略数据源刷新请求 seq={source_metrics_seq}，目标={','.join(source_metrics_targets) or 'ALL'}，仅计算指标，不触发交易。")
+            logging.info("=" * 60)
+            for _name in source_metrics_targets:
+                _cfg = SYMBOL_CONFIG.get(_name)
+                if isinstance(_cfg, dict):
+                    try:
+                        refresh_source_metrics_for_symbol(_name, _cfg, state)
+                    except Exception as e:
+                        logging.exception(f"{_name} 回测/策略数据源指标刷新失败: {e}")
+            state.setdefault("_meta", {})["source_metrics_refresh_done_seq"] = source_metrics_seq
+            state.setdefault("_meta", {})["source_metrics_refresh_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
+            logging.info(f"✅ 回测/策略数据源指标刷新完成 seq={source_metrics_seq}，目标={','.join(source_metrics_targets) or 'ALL'}。")
+            sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
+            continue
+        if force_refresh:
+            logging.info("=" * 60)
+            logging.info(f"🔄 收到 Web 手动刷新请求 seq={force_refresh_seq}，目标={','.join(force_refresh_targets) or 'ALL'}，本轮只刷新行情/状态，不触发交易。")
+            logging.info("=" * 60)
         # 策略执行
         all_trade_msgs = []
         all_market_error_msgs = []
-        for name, cfg in SYMBOL_CONFIG.items():
+        iter_items = [(name, cfg) for name, cfg in SYMBOL_CONFIG.items() if (not force_refresh or name in force_refresh_targets)]
+        for name, cfg in iter_items:
             if not isinstance(cfg, dict):
                 logging.error(f"配置项 {name} 不是字典，类型为 {type(cfg)}，已跳过。")
                 continue
             try:
-                msgs = strategy_for_dcf(name, cfg, state)
+                msgs = strategy_for_dcf(
+                    name, cfg, state,
+                    allow_trade=not force_refresh,
+                    refresh_reason="Web手动刷新，仅更新状态",
+                    refresh_reference=bool(force_refresh),
+                )
                 for msg in msgs or []:
                     text = str(msg)
                     if "🎯[TRADE]" in text:
@@ -1748,6 +2148,13 @@ def main_loop():
                         logging.info(f"非交易消息未推送: {text[:160]}")
             except Exception as e:
                 logging.exception(f"{name} 策略执行出错: {e}")
+        if force_refresh:
+            state.setdefault("_meta", {})["force_refresh_done_seq"] = force_refresh_seq
+            state.setdefault("_meta", {})["force_refresh_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
+            logging.info(f"✅ Web 手动刷新完成 seq={force_refresh_seq}，目标={','.join(force_refresh_targets) or 'ALL'}，未触发任何交易推送。")
+            sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
+            continue
         save_state(state)
         # 推送交易信号：只有真正 TRADE 才进入买卖推送
         if all_trade_msgs:
@@ -1775,7 +2182,7 @@ def main_loop():
             except Exception:
                 logging.exception("❌ 推送行情错误失败")
             logging.info("=" * 60)
-        time_module.sleep(STRATEGY.get("loop_interval", 60))
+        sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
 
 if __name__ == "__main__":
     try:
