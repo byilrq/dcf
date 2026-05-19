@@ -101,6 +101,10 @@ class MarketSnapshot:
     error: str = ""
     trade_allowed: bool = True
     dates: Optional[List[str]] = None
+    # strategy_source is the historical K-line source used for MA/zone calculations.
+    # source is the real-time quote source used for current_price.
+    strategy_source: str = ""
+    strategy_status: str = "OK"
 
     @property
     def ok(self) -> bool:
@@ -407,20 +411,8 @@ def _xueqiu_symbol(symbol: str) -> str:
 
 def _xueqiu_hk_symbol_candidates(symbol_or_code: str) -> List[str]:
     code = _hk_code(symbol_or_code)
-    four = code[-4:].zfill(4)
-    five = code.zfill(5)
-    # pysnowball/A股与港股在雪球接口里的 symbol 规则不完全一致。
-    # 对港股优先尝试 HK00700 / HK:00700，再尝试纯数字。
-    # 之前 HK00728 用纯数字 00728 会拿到 0.160 这类错误对象，
-    # 所以把带 HK 前缀的候选放在前面。
-    return list(dict.fromkeys([
-        "HK" + five,
-        "HK:" + five,
-        five,
-        four + ".HK",
-        five + ".HK",
-        four,
-    ]))
+    # 雪球港股实时接口实测只稳定接受 5 位纯数字代码：HK00941 -> 00941。
+    return [code]
 
 
 def _fetch_xueqiu_a_realtime_price(symbol: str, price_scale: float) -> Tuple[float, Optional[str]]:
@@ -978,7 +970,8 @@ def _xueqiu_session_headers(x_symbol: str) -> Tuple[requests.Session, dict]:
         if cookie:
             headers["Cookie"] = cookie
         elif token:
-            headers["Cookie"] = f"xq_a_token={token}"
+            # 港股实时接口实测仅 xq_a_token + xqat 即可返回 current。
+            headers["Cookie"] = f"xq_a_token={token}; xqat={token}"
         else:
             sess.get("https://xueqiu.com/", headers=headers, timeout=8)
     except Exception:
@@ -1051,12 +1044,17 @@ def _fetch_xueqiu_realtime_price(symbol: str, price_scale: float) -> Tuple[float
     last_err = None
     for x_symbol in candidates:
         sess, headers = _xueqiu_session_headers(x_symbol)
-        requests_to_try = [
-            ("https://stock.xueqiu.com/v5/stock/realtime/quotec.json", {"symbol": x_symbol}),
-            ("https://stock.xueqiu.com/v5/stock/quote.json", {"symbol": x_symbol, "extend": "detail"}),
-            # 某些接口变体接受 symbols 复数参数。
-            ("https://stock.xueqiu.com/v5/stock/realtime/quotec.json", {"symbols": x_symbol}),
-        ]
+        is_hk_symbol = raw.startswith("HK") or (raw.isdigit() and len(raw) <= 5)
+        if is_hk_symbol:
+            # 港股只请求实测可用的 symbol 参数；symbols 复数参数会返回 301002。
+            requests_to_try = [
+                ("https://stock.xueqiu.com/v5/stock/realtime/quotec.json", {"symbol": x_symbol}),
+            ]
+        else:
+            requests_to_try = [
+                ("https://stock.xueqiu.com/v5/stock/realtime/quotec.json", {"symbol": x_symbol}),
+                ("https://stock.xueqiu.com/v5/stock/quote.json", {"symbol": x_symbol, "extend": "detail"}),
+            ]
         for url, params in requests_to_try:
             try:
                 resp = sess.get(url, params=params, headers=headers, timeout=8)
@@ -1130,24 +1128,82 @@ def _fetch_xueqiu_hk_snapshot(symbol_or_code: str, days: int, price_scale: float
     raise RuntimeError(f"雪球港股K线失败: HK{code}, last_error={last_err}")
 
 
+def _simplify_hk_market_source(source: str) -> str:
+    s = str(source or "").strip()
+    if s in {"tencent_hk_unadjusted", "tencent_hk_quote"}:
+        return "tencent_hk"
+    if s in {"xueqiu_hk_quote", "xueqiu_hk"}:
+        return "xueqiu_hk"
+    return s or "tencent_hk"
+
+
 def _fetch_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
+    """港股策略快照：历史K线固定使用腾讯；实时价按系统页 HK_MARKET_SOURCE 选择。
+
+    - strategy_source: 历史/策略计算源，当前固定为 tencent_hk。
+    - source: 行情实时价源，可为 tencent_hk 或 xueqiu_hk。
+    """
     code = _hk_code(symbol_or_code)
-    errors = []
+    strategy_source = "tencent_hk"
+    try:
+        base = _fetch_tencent_hk_snapshot(code, days, price_scale)
+    except Exception as e:
+        return _read_cache("HK" + code, days, price_scale, "港股策略源 tencent_hk 日K失败: " + str(e))
+
+    closes = list(base.closes or [])
+    dates = list(base.dates or []) if isinstance(base.dates, list) else None
     preferred = str(_load_system_config().get("HK_MARKET_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
-    if preferred != "tencent_hk_unadjusted":
-        preferred = "tencent_hk_unadjusted"
-    hk_sources = [("tencent_hk_unadjusted", _fetch_tencent_hk_snapshot)]
-    for label, fn in hk_sources:
+    realtime_source = "tencent_hk"
+    last_bar_date = base.last_bar_date
+
+    if preferred == "xueqiu_hk_quote":
         try:
-            snap = fn(code, days, price_scale)
-            if errors:
-                failed = "/".join(x.split("=", 1)[0] for x in errors)
-                logging.info(f"港股 HK{code} 已使用行情源 {snap.source}；备用原因: {failed} 不可用。")
-            return snap
+            live_price, live_date = _fetch_xueqiu_realtime_price("HK" + code, price_scale)
+            if live_price and live_price > 0 and closes:
+                closes[-1] = round(float(live_price), 4)
+                realtime_source = "xueqiu_hk"
+                if live_date:
+                    last_bar_date = live_date
+                    if dates:
+                        dates[-1] = live_date
         except Exception as e:
-            errors.append(f"{label}={e}")
-            continue
-    return _read_cache("HK" + code, days, price_scale, "港股日K全部数据源失败: " + "; ".join(errors))
+            logging.warning(f"雪球港股实时价失败 HK{code}: {e}；已回退腾讯港股实时价。")
+            try:
+                live_price, live_date = _fetch_tencent_hk_realtime_price("HK" + code, price_scale)
+                if live_price and live_price > 0 and closes:
+                    closes[-1] = round(float(live_price), 4)
+                    realtime_source = "tencent_hk"
+                    if live_date:
+                        last_bar_date = live_date
+                        if dates:
+                            dates[-1] = live_date
+            except Exception:
+                realtime_source = "tencent_hk"
+    else:
+        # 腾讯作为行情源时，使用轻量 quote 覆盖日K最后一根，避免只停留在昨收。
+        try:
+            live_price, live_date = _fetch_tencent_hk_realtime_price("HK" + code, price_scale)
+            if live_price and live_price > 0 and closes:
+                closes[-1] = round(float(live_price), 4)
+                if live_date:
+                    last_bar_date = live_date
+                    if dates:
+                        dates[-1] = live_date
+        except Exception:
+            pass
+
+    return MarketSnapshot(
+        symbol="HK" + code,
+        source=realtime_source,
+        closes=closes,
+        price_scale=base.price_scale,
+        last_bar_date=last_bar_date,
+        error=base.error,
+        trade_allowed=base.trade_allowed,
+        dates=dates,
+        strategy_source=strategy_source,
+        strategy_status="OK",
+    )
 
 
 def get_market_snapshot(symbol: str, days: int = 400, price_scale: float = 1.0) -> MarketSnapshot:
@@ -1194,11 +1250,12 @@ def get_reference_prices(symbol: str, price_scale: float = 1.0) -> List[dict]:
         return result
     if raw.startswith("HK"):
         preferred = str(cfg.get("HK_MARKET_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
-        if preferred != "tencent_hk_unadjusted":
+        if preferred not in {"tencent_hk_unadjusted", "xueqiu_hk_quote"}:
             preferred = "tencent_hk_unadjusted"
-        # 港股实时参考价只保留腾讯主源。
+        # 港股实时参考价：腾讯主源 + 雪球备用源。回测/策略历史K线仍只走腾讯。
         sources = [
-            ("tencent_hk_unadjusted", "腾讯港股", "tencent_hk_quote", _fetch_tencent_hk_realtime_price),
+            ("tencent_hk_unadjusted", "腾讯港股", "tencent_hk", _fetch_tencent_hk_realtime_price),
+            ("xueqiu_hk_quote", "雪球港股", "xueqiu_hk", _fetch_xueqiu_realtime_price),
         ]
         for key, label, source_name, fn in sources:
             try:

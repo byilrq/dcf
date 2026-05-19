@@ -1098,6 +1098,42 @@ def _canonical_market_source(source):
     return s
 
 
+def _display_source_name(source):
+    s = str(source or "").strip()
+    mapping = {
+        "tencent_hk_unadjusted": "tencent_hk",
+        "tencent_hk_quote": "tencent_hk",
+        "tencent_hk": "tencent_hk",
+        "xueqiu_hk_quote": "xueqiu_hk",
+        "xueqiu_hk": "xueqiu_hk",
+        "tencent_a_unadjusted": "tencent_a",
+        "tencent_a": "tencent_a",
+        "tencent_quote_a": "tencent_a",
+        "tencent_api": "tencent_a",
+        "xueqiu_quote_a": "xueqiu_a",
+        "xueqiu_api": "xueqiu_a",
+        "eastmoney_quote_a": "eastmoney_a",
+        "eastmoney_api": "eastmoney_a",
+    }
+    return mapping.get(s, s or "unknown")
+
+
+def _strategy_source_for_symbol(symbol):
+    raw = str(symbol or "").upper().strip()
+    return "tencent_hk" if raw.startswith("HK") else "tencent_a"
+
+
+def _strategy_calc_cache_key(symbol, strategy_source, last_bar_date, ma_len, cfg):
+    keys = [
+        "k150", "sideways_window_30", "sideways_window_60", "sideways_weight_60", "sideways_min_k150",
+        "trend_multiple", "sell_multiple", "price_scale",
+    ]
+    parts = [str(symbol), str(strategy_source), str(last_bar_date), str(ma_len)]
+    for k in keys:
+        parts.append(f"{k}={cfg.get(k, '')}")
+    return "|".join(parts)
+
+
 def _check_market_source_switch(dcf_state, snapshot, cfg):
     """行情源切换首轮禁止交易，连续确认后才允许新源进入策略。"""
     new_source = snapshot.source
@@ -1609,36 +1645,76 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         dcf_state["last_trade_price"] = current_price
         dcf_state["last_trade_side"] = "buy"
 
-    ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
-    if ma150_raw is None:
-        reason = "历史数据严重不足，无法计算MA150"
-        msg = _build_market_data_error_message(
-            name, symbol, reason,
-            current_price=current_price, last_known_price=last_valid_price, closes_count=len(closes),
-            source=snapshot.source, last_bar_date=snapshot.last_bar_date
-        )
-        logging.info(msg)
-        _mark_market_error(dcf_state, msg, reason, snapshot.source)
-        write_market_skip_snapshot(
-            name, symbol, dcf_state, reason, level="ERROR",
-            current_price=current_price, last_known_price=last_valid_price,
-            closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
-            trade_allowed=False,
-        )
-        return _maybe_market_alert(dcf_state, msg, reason)
-    sideways_score = float(compute_sideways_index(closes, cfg))
-    base_k150 = float(cfg.get("k150", 1.0))
-    min_k150 = float(cfg.get("sideways_min_k150", 0.85))
-    if base_k150 < min_k150:
-        min_k150 = base_k150
-    dynamic_k150 = min_k150 + (base_k150 - min_k150) * (1.0 - sideways_score)
-    ma150 = ma150_raw * dynamic_k150
+    strategy_source = _display_source_name(getattr(snapshot, "strategy_source", "") or _strategy_source_for_symbol(symbol))
+    strategy_status = "OK"
+    strategy_key = _strategy_calc_cache_key(symbol, strategy_source, getattr(snapshot, "last_bar_date", ""), ma_short_len, cfg)
+    strategy_cache = dcf_state.get("strategy_calc_cache") if isinstance(dcf_state.get("strategy_calc_cache"), dict) else {}
+    if strategy_cache.get("key") == strategy_key:
+        ma150 = _safe_float(strategy_cache.get("ma150"), 0.0)
+        ma150_source = str(strategy_cache.get("ma150_source") or "f")
+        sideways_score = _safe_float(strategy_cache.get("sideways_score"), 0.0)
+        dynamic_k150 = _safe_float(strategy_cache.get("dynamic_k150"), 1.0)
+        base_k150 = _safe_float(strategy_cache.get("k150"), float(cfg.get("k150", 1.0)))
+        # 缓存命中时也必须恢复 ma150_raw；后续快照/日志会写入该字段。
+        # 兼容上一版已经写入但缺少 ma150_raw 的旧缓存：用 ma150 / dynamic_k150 反推。
+        ma150_raw = _safe_float(strategy_cache.get("ma150_raw"), 0.0)
+        if ma150_raw <= 0 and dynamic_k150 > 0:
+            ma150_raw = ma150 / dynamic_k150
+        if ma150 <= 0 or ma150_raw <= 0:
+            strategy_cache = {}
+    if not strategy_cache or strategy_cache.get("key") != strategy_key:
+        ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
+        if ma150_raw is None:
+            reason = "历史数据严重不足，无法计算MA150"
+            msg = _build_market_data_error_message(
+                name, symbol, reason,
+                current_price=current_price, last_known_price=last_valid_price, closes_count=len(closes),
+                source=snapshot.source, last_bar_date=snapshot.last_bar_date
+            )
+            logging.info(msg)
+            _mark_market_error(dcf_state, msg, reason, snapshot.source)
+            write_market_skip_snapshot(
+                name, symbol, dcf_state, reason, level="ERROR",
+                current_price=current_price, last_known_price=last_valid_price,
+                closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+                trade_allowed=False,
+            )
+            return _maybe_market_alert(dcf_state, msg, reason)
+        sideways_score = float(compute_sideways_index(closes, cfg))
+        base_k150 = float(cfg.get("k150", 1.0))
+        min_k150 = float(cfg.get("sideways_min_k150", 0.85))
+        if base_k150 < min_k150:
+            min_k150 = base_k150
+        dynamic_k150 = min_k150 + (base_k150 - min_k150) * (1.0 - sideways_score)
+        ma150 = ma150_raw * dynamic_k150
+        dcf_state["strategy_calc_cache"] = {
+            "key": strategy_key,
+            "symbol": symbol,
+            "strategy_source": strategy_source,
+            "strategy_status": "OK",
+            "last_bar_date": getattr(snapshot, "last_bar_date", ""),
+            "ma150": ma150,
+            "ma150_raw": ma150_raw,
+            "ma150_source": ma150_source,
+            "sideways_score": sideways_score,
+            "dynamic_k150": dynamic_k150,
+            "k150": base_k150,
+            "updated_at": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    dcf_state["strategy_source"] = strategy_source
+    dcf_state["strategy_status"] = strategy_status
+    dcf_state["strategy_calc_key"] = strategy_key
+    dcf_state["strategy_calc_updated_at"] = dcf_state.get("strategy_calc_cache", {}).get("updated_at", strategy_now().strftime("%Y-%m-%d %H:%M:%S"))
     dcf_state["ma_short"] = ma150
     dcf_state["k150"] = base_k150
     dcf_state["dynamic_k150"] = dynamic_k150
     dcf_state["sideways_score"] = sideways_score
     dcf_state["last_price"] = current_price
     _mark_market_ok(dcf_state, snapshot)
+    dcf_state["market_source"] = _display_source_name(snapshot.source)
+    dcf_state["last_valid_market_source"] = _display_source_name(snapshot.source)
+    dcf_state["strategy_source"] = strategy_source
+    dcf_state["strategy_status"] = strategy_status
     dcf_state["current_units"] = current_units
     dcf_state["avg_cost"] = current_avg_cost
     dcf_state["ma_short_source"] = ma150_source
@@ -1702,8 +1778,9 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         return "\n".join(lines)
 
     extra_info_full = _build_zone_extra_info()
-    market_line = f"📡行情源: {snapshot.source}，数据状态: OK。"
-    extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line
+    market_line = f"📡行情源: {_display_source_name(snapshot.source)}，数据状态: OK。"
+    strategy_line = f"🧭策略源: {strategy_source}，数据状态: {strategy_status}。"
+    extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line + "\n" + strategy_line
     status_suffix = f"\n🚦策略运行状态: {strategy_run.upper()}"
     status_msg = build_status_message(
         name=name, symbol=symbol, now_str=now_str, zone=zone,
@@ -1725,7 +1802,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             "name": name, "symbol": symbol, "level": "INFO",
             "action": "REFRESH_ONLY", "decision": "REFRESH_ONLY",
             "reason": refresh_reason or "manual refresh; monitor only", "market_status": "ok",
-            "market_source": snapshot.source, "last_bar_date": snapshot.last_bar_date,
+            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "last_bar_date": snapshot.last_bar_date,
             "history_count": len(closes), "current_price": current_price,
             "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
             "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
@@ -1745,7 +1822,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             "name": name, "symbol": symbol, "level": "INFO",
             "action": "MONITOR_ONLY", "decision": "MONITOR_ONLY",
             "reason": "strategy_run=off", "market_status": "ok",
-            "market_source": snapshot.source, "last_bar_date": snapshot.last_bar_date,
+            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "last_bar_date": snapshot.last_bar_date,
             "history_count": len(closes), "current_price": current_price,
             "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
             "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,

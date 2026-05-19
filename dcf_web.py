@@ -20,6 +20,7 @@ from flask import (
     Flask,
     abort,
     flash,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -144,6 +145,8 @@ SYSTEM_DEFAULTS: Dict[str, str] = {
     "A_BACKTEST_SOURCE": "tencent_a_unadjusted",
     "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted",
     "XUEQIU_TOKEN": "",
+    "XUEQIU_TOKEN_UPDATED_AT": "",
+    "XUEQIU_TOKEN_SOURCE": "",
 }
 
 SYSTEM_SELECT_OPTIONS = {
@@ -153,9 +156,10 @@ SYSTEM_SELECT_OPTIONS = {
         ("xueqiu_quote_a", "雪球实时 quote"),
         ("eastmoney_quote_a", "东方财富实时 quote"),
     ],
-    # 港股实时只保留腾讯主源。
+    # 港股实时：腾讯主源，雪球备用。
     "HK_MARKET_SOURCE": [
         ("tencent_hk_unadjusted", "腾讯港股"),
+        ("xueqiu_hk_quote", "雪球港股 quote"),
     ],
     # 回测/策略指标只保留腾讯；A股不再展示 Yahoo/东方财富/网易等源。
     "A_BACKTEST_SOURCE": [
@@ -275,11 +279,15 @@ def default_web_config() -> Dict[str, Any]:
     return {
         "app_name": APP_DISPLAY_NAME,
         "admin_username": "admin",
+        # 明文密码，方便直接在 /root/dcf/web_portal.json 中修改。
+        # 兼容旧版 password_hash；如果 admin_password 非空，优先使用明文密码登录。
+        "admin_password": "admin",
         "password_hash": "",
         "secret_key": secrets.token_hex(32),
         "domain": "sharq.eu.org",
         "public_port": 819,
         "internal_port": 1819,
+        "token_api_key": secrets.token_urlsafe(32),
     }
 
 def load_web_config() -> Dict[str, Any]:
@@ -293,13 +301,22 @@ def load_web_config() -> Dict[str, Any]:
         WEB_CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         return cfg
     try:
-        return json.loads(raw)
+        cfg = json.loads(raw)
+        if isinstance(cfg, dict):
+            merged = default_web_config()
+            merged.update(cfg)
+            # 兼容用户自己写 password 字段。admin_password 优先，password 次之。
+            if not str(merged.get("admin_password", "") or "").strip() and str(merged.get("password", "") or "").strip():
+                merged["admin_password"] = str(merged.get("password", ""))
+            return merged
     except Exception:
         try:
             cfg = ast.literal_eval(raw)
             if isinstance(cfg, dict):
                 merged = default_web_config()
                 merged.update(cfg)
+                if not str(merged.get("admin_password", "") or "").strip() and str(merged.get("password", "") or "").strip():
+                    merged["admin_password"] = str(merged.get("password", ""))
                 WEB_CONFIG_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
                 return merged
         except Exception:
@@ -308,9 +325,22 @@ def load_web_config() -> Dict[str, Any]:
     WEB_CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return cfg
 
+def ensure_web_config_token_api_key() -> str:
+    cfg = load_web_config()
+    key = str(cfg.get("token_api_key", "") or "").strip()
+    if not key:
+        key = secrets.token_urlsafe(32)
+        cfg["token_api_key"] = key
+        try:
+            WEB_CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    return key
+
 def init_app_secret() -> None:
     cfg = load_web_config()
     app.secret_key = cfg.get("secret_key") or secrets.token_hex(32)
+    ensure_web_config_token_api_key()
 
 init_app_secret()
 
@@ -372,6 +402,65 @@ form[action$="/refresh-source-metrics"] input[type="submit"] {
   gap: 6px !important;
   text-decoration: none !important;
 }
+
+/* 系统页雪球 Token/Cookie 输入框统一为系统选择框尺寸 */
+.dcf-xq-token-wrap {
+  position: relative !important;
+  display: block !important;
+  width: 100% !important;
+}
+textarea[name="XUEQIU_TOKEN"], input[name="XUEQIU_TOKEN"] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 56px !important;
+  height: 56px !important;
+  padding: 12px 54px 12px 18px !important;
+  border-radius: 18px !important;
+  font-size: 16px !important;
+  line-height: 24px !important;
+  font-family: inherit !important;
+  resize: vertical !important;
+}
+.dcf-xq-token-toggle {
+  position: absolute !important;
+  right: 14px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  width: 34px !important;
+  height: 34px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  color: inherit !important;
+  opacity: 0.72 !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 18px !important;
+  line-height: 1 !important;
+  padding: 0 !important;
+}
+.dcf-xq-token-toggle:hover { opacity: 1 !important; }
+.dcf-xq-token-updated-inline {
+  display: inline-flex !important;
+  align-items: center !important;
+  margin-left: 12px !important;
+  padding: 3px 9px !important;
+  border-radius: 999px !important;
+  font-size: 12px !important;
+  line-height: 18px !important;
+  font-weight: 600 !important;
+  opacity: 0.8 !important;
+  vertical-align: middle !important;
+}
+.dcf-xq-token-updated-note {
+  margin-top: 8px !important;
+  color: #64748b !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+}
 </style>
 """
 
@@ -428,6 +517,93 @@ STATUS_AUTO_REFRESH_SCRIPT = """
     });
   }
 
+
+
+  function enhanceXueqiuTokenField() {
+    var field = document.querySelector('textarea[name="XUEQIU_TOKEN"], input[name="XUEQIU_TOKEN"]');
+    if (!field || field.dataset.dcfXqEnhanced === "1") return;
+    field.dataset.dcfXqEnhanced = "1";
+
+    var meta = window.__DCF_XQ_META || {};
+    var updatedText = (meta.updated_at || '').trim();
+    var sourceText = (meta.source || '').trim();
+
+    try {
+      var selects = Array.prototype.slice.call(document.querySelectorAll('select'));
+      var ref = selects.find(function (s) { return s.name === 'HK_BACKTEST_SOURCE'; }) || selects.find(function (s) { return s.name === 'A_BACKTEST_SOURCE'; }) || selects[0];
+      if (ref) {
+        var cs = window.getComputedStyle(ref);
+        ["height", "minHeight", "padding", "border", "borderRadius", "font", "fontSize", "fontFamily", "lineHeight", "backgroundColor", "color", "boxShadow"].forEach(function (prop) {
+          try { field.style[prop] = cs[prop]; } catch (e) {}
+        });
+        field.style.width = '100%';
+        field.style.maxWidth = 'none';
+        field.style.boxSizing = 'border-box';
+        field.style.paddingRight = '54px';
+      }
+    } catch (e) {}
+
+    var wrap = field.closest('.dcf-xq-token-wrap');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.className = 'dcf-xq-token-wrap';
+      field.parentNode.insertBefore(wrap, field);
+      wrap.appendChild(field);
+    }
+    try {
+      wrap.style.width = '100%';
+      var fieldParent = wrap.parentElement;
+      if (fieldParent) {
+        fieldParent.style.width = '100%';
+        fieldParent.style.maxWidth = 'none';
+      }
+    } catch (e) {}
+
+    if (!wrap.querySelector('.dcf-xq-token-toggle')) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dcf-xq-token-toggle';
+      btn.setAttribute('aria-label', '显示或隐藏雪球 Token/Cookie');
+      btn.title = '显示/隐藏';
+      btn.textContent = '👁';
+      btn.addEventListener('click', function () {
+        if (field.tagName === 'TEXTAREA') {
+          field.dataset.dcfVisible = field.dataset.dcfVisible === '1' ? '0' : '1';
+          field.style.webkitTextSecurity = field.dataset.dcfVisible === '1' ? 'none' : 'disc';
+          btn.textContent = field.dataset.dcfVisible === '1' ? '🙈' : '👁';
+          return;
+        }
+        var isHidden = (field.type || '').toLowerCase() === 'password';
+        try { field.type = isHidden ? 'text' : 'password'; } catch (e) {}
+        btn.textContent = isHidden ? '🙈' : '👁';
+      });
+      wrap.appendChild(btn);
+    }
+
+    var labelEl = null;
+    var all = Array.prototype.slice.call(document.querySelectorAll('label, th, td, div, span, p'));
+    for (var i = 0; i < all.length; i++) {
+      var txt = (all[i].innerText || all[i].textContent || '').trim();
+      if (txt.indexOf('雪球 API Token / Cookie') >= 0 && all[i].querySelector('input, textarea, select') === null) {
+        labelEl = all[i];
+        break;
+      }
+    }
+    var noteText = updatedText ? ('更新时间：' + updatedText + (sourceText ? '｜' + sourceText : '')) : '更新时间：暂无';
+    if (labelEl && !labelEl.querySelector('.dcf-xq-token-updated-inline')) {
+      var inline = document.createElement('span');
+      inline.className = 'dcf-xq-token-updated-inline';
+      inline.textContent = noteText;
+      labelEl.appendChild(inline);
+    } else if (!document.getElementById('dcf-xq-token-updated-note')) {
+      var note = document.createElement('div');
+      note.id = 'dcf-xq-token-updated-note';
+      note.className = 'dcf-xq-token-updated-note';
+      note.textContent = '雪球 Token / Cookie ' + noteText;
+      wrap.insertAdjacentElement('afterend', note);
+    }
+  }
+
   function startAutoReload() {
     if (!(window.location.pathname === "/status" || window.location.pathname === "/")) return;
     var hasStatus = document.body && document.body.innerText && document.body.innerText.indexOf("实时状态") >= 0 || document.querySelector('form[action$="/refresh-status"]');
@@ -442,6 +618,7 @@ STATUS_AUTO_REFRESH_SCRIPT = """
 
   enhanceSymbolSelectors();
   syncMetricRefreshButtonStyle();
+  enhanceXueqiuTokenField();
   startAutoReload();
 })();
 </script>
@@ -459,6 +636,17 @@ def inject_responsive_nav_style(response):
             html = html.replace("</head>", DCF_NAV_STYLE + "\n</head>", 1)
         if "</head>" in html and "dcf-status-auto-refresh-style" not in html:
             html = html.replace("</head>", STATUS_AUTO_REFRESH_STYLE + "\n</head>", 1)
+        if "</body>" in html and "dcf-xq-token-meta" not in html:
+            try:
+                _xq_cfg = read_system_config()
+                _xq_meta = {
+                    "updated_at": str(_xq_cfg.get("XUEQIU_TOKEN_UPDATED_AT", "") or ""),
+                    "source": str(_xq_cfg.get("XUEQIU_TOKEN_SOURCE", "") or ""),
+                }
+                _xq_script = '<script id="dcf-xq-token-meta">window.__DCF_XQ_META=' + json.dumps(_xq_meta, ensure_ascii=False) + ';</script>'
+                html = html.replace("</body>", _xq_script + "\n</body>", 1)
+            except Exception:
+                pass
         if "</body>" in html and "dcf-status-auto-refresh-script" not in html:
             html = html.replace("</body>", STATUS_AUTO_REFRESH_SCRIPT + "\n</body>", 1)
         response.set_data(html)
@@ -1068,8 +1256,8 @@ def _filter_reference_prices_for_symbol(symbol_text: str, refs: List[Dict[str, A
         return []
     raw = str(symbol_text or "").upper().strip()
     if raw.startswith("HK"):
-        allowed_keys = {"tencent_hk_unadjusted"}
-        allowed_sources = {"tencent_hk_quote", "tencent_hk_unadjusted"}
+        allowed_keys = {"tencent_hk_unadjusted", "xueqiu_hk_quote"}
+        allowed_sources = {"tencent_hk_quote", "tencent_hk_unadjusted", "xueqiu_hk_quote", "xueqiu_hk"}
     else:
         allowed_keys = {"tencent_quote_a", "xueqiu_quote_a", "eastmoney_quote_a"}
         allowed_sources = {"tencent_api", "xueqiu_api", "eastmoney_api", "tencent_quote_a", "xueqiu_quote_a", "eastmoney_quote_a"}
@@ -1446,6 +1634,8 @@ def read_system_config() -> Dict[str, str]:
     if cfg.get("HK_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_BACKTEST_SOURCE"]}:
         cfg["HK_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["HK_BACKTEST_SOURCE"]
     cfg["XUEQIU_TOKEN"] = str(cfg.get("XUEQIU_TOKEN", "") or "").strip()
+    cfg["XUEQIU_TOKEN_UPDATED_AT"] = str(cfg.get("XUEQIU_TOKEN_UPDATED_AT", "") or "").strip()
+    cfg["XUEQIU_TOKEN_SOURCE"] = str(cfg.get("XUEQIU_TOKEN_SOURCE", "") or "").strip()
     return cfg
 
 
@@ -1905,9 +2095,16 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        stored_user = cfg.get("admin_username", "admin")
-        stored_hash = cfg.get("password_hash", "")
-        if username == stored_user and stored_hash and check_password_hash(stored_hash, password):
+        stored_user = str(cfg.get("admin_username", "admin") or "admin")
+        stored_plain = str(cfg.get("admin_password", "") or cfg.get("password", "") or "")
+        stored_hash = str(cfg.get("password_hash", "") or "")
+        ok = False
+        if username == stored_user:
+            if stored_plain:
+                ok = (password == stored_plain)
+            elif stored_hash:
+                ok = check_password_hash(stored_hash, password)
+        if ok:
             session["logged_in"] = True
             session["username"] = username
             return redirect(url_for("status_page"))
@@ -2232,6 +2429,81 @@ def backtest_page():
     ctx.update({"page_name": "backtest", "backtest_output": backtest_output, "backtest_cards": backtest_cards, "backtest_files": backtest_files})
     return render_template("dashboard.html", **ctx)
 
+
+
+
+def _token_api_response(payload, status=200):
+    resp = jsonify(payload)
+    resp.status_code = status
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-DCF-TokenAPI-Key, X-API-Key, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return resp
+
+def _get_tokenapi_key_from_request() -> str:
+    value = (
+        request.headers.get("X-DCF-TokenAPI-Key")
+        or request.headers.get("X-API-Key")
+        or request.args.get("key")
+        or request.args.get("api_key")
+        or ""
+    )
+    if not value and request.is_json:
+        try:
+            value = (request.get_json(silent=True) or {}).get("api_key", "")
+        except Exception:
+            value = ""
+    if not value:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            value = auth.split(None, 1)[1]
+    return str(value or "").strip()
+
+def _extract_xueqiu_token_from_cookie(text: str) -> str:
+    m = re.search(r"(?:^|;\s*)xq_a_token=([^;\s]+)", str(text or ""))
+    return m.group(1).strip() if m else ""
+
+@app.route("/tokenapi", methods=["POST", "OPTIONS"])
+def tokenapi_update_xueqiu_cookie():
+    if request.method == "OPTIONS":
+        return _token_api_response({"ok": True})
+    expected = ensure_web_config_token_api_key()
+    provided = _get_tokenapi_key_from_request()
+    if not expected or not secrets.compare_digest(str(provided), str(expected)):
+        return _token_api_response({"ok": False, "message": "API key 无效"}, 401)
+    data = request.get_json(silent=True) if request.is_json else {}
+    if not isinstance(data, dict):
+        data = {}
+    cookie = str(data.get("cookie") or data.get("cookieHeader") or data.get("cookie_header") or "").strip()
+    token = str(data.get("token") or "").strip()
+    if not token and cookie:
+        token = _extract_xueqiu_token_from_cookie(cookie)
+    if cookie:
+        saved_value = cookie
+        mode = "cookie"
+    elif token:
+        saved_value = token
+        mode = "token"
+    else:
+        return _token_api_response({"ok": False, "message": "缺少 token 或 cookie"}, 400)
+    cfg = read_system_config()
+    old_value = cfg.get("XUEQIU_TOKEN", "")
+    changed = old_value != saved_value
+    cfg["XUEQIU_TOKEN"] = saved_value
+    cfg["XUEQIU_TOKEN_UPDATED_AT"] = current_time_text()
+    source = str(data.get("source") or "browser_extension").strip()[:80]
+    cfg["XUEQIU_TOKEN_SOURCE"] = source
+    write_system_config(cfg)
+    return _token_api_response({
+        "ok": True,
+        "changed": changed,
+        "mode": mode,
+        "token_present": bool(token),
+        "cookie_present": bool(cookie),
+        "updated_at": cfg["XUEQIU_TOKEN_UPDATED_AT"],
+        "source": source,
+        "message": "雪球 Token/Cookie 已更新" if changed else "雪球 Token/Cookie 未变化，已刷新更新时间",
+    })
 
 @app.route("/push", methods=["GET", "POST"])
 def push_page():
