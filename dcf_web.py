@@ -10,7 +10,8 @@ import secrets
 import subprocess
 import sys
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from io import BytesIO
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -797,7 +798,7 @@ def _snapshot_matches(record: Dict[str, Any], selected: str, symbol_code: str) -
 
 
 def get_strategy_snapshots(selected: str, symbol_code: str, day: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    records = [r for r in read_snapshot_records(day, limit=5000) if _snapshot_matches(r, selected, symbol_code)]
+    records = [normalize_snapshot_source_fields(r) for r in read_snapshot_records(day, limit=5000) if _snapshot_matches(r, selected, symbol_code)]
     recent = list(reversed(records[-10:]))
     latest = recent[0] if recent else {}
     return latest, recent
@@ -807,7 +808,7 @@ def build_market_source_stats(selected: str, symbol_code: str, day: str) -> List
     records = [r for r in read_snapshot_records(day, limit=100000) if _snapshot_matches(r, selected, symbol_code)]
     stats: Dict[str, Dict[str, Any]] = {}
     for r in records:
-        source = str(r.get("market_source") or r.get("source") or "unknown").strip() or "unknown"
+        source = display_source_name(r.get("market_source") or r.get("source") or "unknown")
         row = stats.setdefault(source, {"source": source, "total": 0, "ok": 0, "warn": 0, "error": 0, "skip": 0})
         row["total"] += 1
         status = str(r.get("market_status") or "").strip().lower()
@@ -973,6 +974,36 @@ def fmt_snapshot_value(value: Any, digits: int = 3) -> str:
         return f"{float(value):.{digits}f}"
     except Exception:
         return str(value)
+
+def display_source_name(source: Any) -> str:
+    """Normalize source names for Web display and historical snapshot stats."""
+    s = str(source or "").strip()
+    mapping = {
+        "tencent_hk_unadjusted": "tencent_hk",
+        "tencent_hk_quote": "tencent_hk",
+        "tencent_hk": "tencent_hk",
+        "xueqiu_hk_quote": "xueqiu_hk",
+        "xueqiu_hk": "xueqiu_hk",
+        "tencent_a_unadjusted": "tencent_a",
+        "tencent_a": "tencent_a",
+        "tencent_quote_a": "tencent_a",
+        "tencent_api": "tencent_a",
+        "xueqiu_quote_a": "xueqiu_a",
+        "xueqiu_api": "xueqiu_a",
+        "eastmoney_quote_a": "eastmoney_a",
+        "eastmoney_api": "eastmoney_a",
+    }
+    return mapping.get(s, s or "unknown")
+
+
+def normalize_snapshot_source_fields(record: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(record, dict):
+        return record
+    out = dict(record)
+    for key in ("market_source", "strategy_source", "source"):
+        if key in out:
+            out[key] = display_source_name(out.get(key))
+    return out
 
 def write_state(data: Dict[str, Any]) -> None:
     try:
@@ -1695,6 +1726,50 @@ def save_push_config_from_form() -> Dict[str, str]:
 def current_time_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+def _parse_hm_web(value: Any, default_h: int = 9, default_m: int = 30) -> Tuple[int, int]:
+    try:
+        h, m = str(value or "").strip().strip("'").strip('"').split(":", 1)
+        return int(h), int(m)
+    except Exception:
+        return default_h, default_m
+
+
+def _strategy_timezone_name_from_config(config: Dict[str, Any]) -> str:
+    aliases = {
+        "shanghai": "Asia/Shanghai", "上海": "Asia/Shanghai", "china": "Asia/Shanghai", "cn": "Asia/Shanghai",
+        "tokyo": "Asia/Tokyo", "东京": "Asia/Tokyo", "japan": "Asia/Tokyo", "jp": "Asia/Tokyo",
+        "singapore": "Asia/Singapore", "新加坡": "Asia/Singapore", "sg": "Asia/Singapore",
+        "los_angeles": "America/Los_Angeles", "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles", "洛杉矶": "America/Los_Angeles",
+    }
+    strategy = config.get("STRATEGY", {}) if isinstance(config, dict) else {}
+    raw = str(strategy.get("timezone", "Asia/Shanghai") or "Asia/Shanghai").strip()
+    return aliases.get(raw.lower(), raw) if raw else "Asia/Shanghai"
+
+
+def web_strategy_now(config: Dict[str, Any] = None) -> datetime:
+    config = config if isinstance(config, dict) else read_yaml()
+    name = _strategy_timezone_name_from_config(config)
+    try:
+        tz = ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("Asia/Shanghai")
+    return datetime.now(tz)
+
+
+def web_in_trade_session(config: Dict[str, Any] = None) -> bool:
+    config = config if isinstance(config, dict) else read_yaml()
+    strategy = config.get("STRATEGY", {}) if isinstance(config, dict) else {}
+    now = web_strategy_now(config)
+    sh, sm = _parse_hm_web(strategy.get("session_start", "09:30"), 9, 30)
+    eh, em = _parse_hm_web(strategy.get("session_end", "16:00"), 16, 0)
+    return dt_time(sh, sm) <= now.time() <= dt_time(eh, em)
+
+
+def trade_session_text(config: Dict[str, Any] = None) -> str:
+    config = config if isinstance(config, dict) else read_yaml()
+    strategy = config.get("STRATEGY", {}) if isinstance(config, dict) else {}
+    return f"{strategy.get('session_start', '09:30')}-{strategy.get('session_end', '16:00')}（{_strategy_timezone_name_from_config(config)}）"
+
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -1727,6 +1802,14 @@ def symbol_options(config: Dict[str, Any]) -> List[Tuple[str, str]]:
         symbol = str(item.get("symbol", "")).strip()
         result.append((name, f"{name} ({symbol})" if symbol else name))
     return result
+
+
+def first_real_symbol_key(config: Dict[str, Any]) -> str:
+    symbol_cfg = config.get("SYMBOL_CONFIG", {}) or {}
+    for name in symbol_cfg.keys():
+        if str(name).strip():
+            return str(name)
+    return ""
 
 def get_section(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
     if selected == "COMMON_BACKTEST_CONFIG":
@@ -2151,23 +2234,35 @@ def download_backtest_bundle():
     bio.seek(0)
     return send_file(bio, as_attachment=True, download_name=f"backtest_bundle_{symbol}.zip", mimetype="application/zip")
 
-def _selected_key(config: Dict[str, Any]) -> str:
+def _selected_key(config: Dict[str, Any], prefer_real_symbol: bool = False) -> str:
     options = symbol_options(config)
     allowed = {key for key, _ in options}
     requested = (request.args.get("symbol_key", "") or "").strip()
     if requested and requested in allowed:
+        if prefer_real_symbol and requested == "COMMON_BACKTEST_CONFIG":
+            real = first_real_symbol_key(config)
+            if real:
+                session["selected_symbol_key"] = real
+                return real
         session["selected_symbol_key"] = requested
         return requested
     stored = str(session.get("selected_symbol_key", "")).strip()
-    if stored in allowed:
+    if stored in allowed and not (prefer_real_symbol and stored == "COMMON_BACKTEST_CONFIG"):
         return stored
+    if prefer_real_symbol:
+        real = first_real_symbol_key(config)
+        if real:
+            session["selected_symbol_key"] = real
+            return real
     fallback = options[0][0] if options else "COMMON_BACKTEST_CONFIG"
     session["selected_symbol_key"] = fallback
     return fallback
 
-def build_symbol_cards(config: Dict[str, Any], selected: str) -> List[Dict[str, str]]:
+def build_symbol_cards(config: Dict[str, Any], selected: str, include_common: bool = True) -> List[Dict[str, str]]:
     symbol_cfg = config.get("SYMBOL_CONFIG", {}) or {}
-    cards = [{"key": "COMMON_BACKTEST_CONFIG", "label": "通用回测参数", "symbol": "", "active": selected == "COMMON_BACKTEST_CONFIG"}]
+    cards = []
+    if include_common:
+        cards.append({"key": "COMMON_BACKTEST_CONFIG", "label": "通用回测参数", "symbol": "", "active": selected == "COMMON_BACKTEST_CONFIG"})
     for name, item in symbol_cfg.items():
         cards.append({"key": name, "label": name, "symbol": str(item.get("symbol", "")).strip(), "active": selected == name})
     return cards
@@ -2301,11 +2396,15 @@ def symbols_page():
 @app.route("/status", methods=["GET"])
 def status_page():
     config = read_yaml()
-    selected = _selected_key(config)
+    selected = _selected_key(config, prefer_real_symbol=True)
     ctx = _base_context(config, selected)
+    ctx["symbol_cards"] = build_symbol_cards(config, selected, include_common=False)
     if selected != "COMMON_BACKTEST_CONFIG":
         section = get_section(config, selected)
-        request_auto_refresh_if_stale(selected, section, max_age_seconds=20)
+        if web_in_trade_session(config):
+            request_auto_refresh_if_stale(selected, section, max_age_seconds=20)
+        else:
+            ctx["status_session_notice"] = f"当前不在交易时段 {trade_session_text(config)} 内，状态页只展示最近一次状态，不自动刷新行情。"
         ctx["reference_prices"] = get_reference_prices_for_status(selected, section)
         metrics, metrics_updated_at, metrics_error = get_source_metrics_for_status(selected, section)
         if not metrics:
@@ -2326,6 +2425,10 @@ def refresh_status_page():
         selected = _selected_key(config)
     section = get_section(config, selected)
     symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not web_in_trade_session(config):
+        now_text = web_strategy_now(config).strftime("%Y-%m-%d %H:%M:%S")
+        flash(f"当前不在交易时段 {trade_session_text(config)} 内，已跳过状态刷新。当前策略时间：{now_text}。", "warning")
+        return redirect(url_for("status_page", symbol_key=selected))
     refs, ref_error = refresh_reference_prices_now(selected, section)
     immediate_ok, immediate_detail = refresh_status_snapshot_now(selected, section)
     seq = request_force_refresh_symbol(selected, symbol_code)
@@ -2349,6 +2452,10 @@ def refresh_source_metrics_page():
         selected = _selected_key(config)
     section = get_section(config, selected)
     symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not web_in_trade_session(config):
+        now_text = web_strategy_now(config).strftime("%Y-%m-%d %H:%M:%S")
+        flash(f"当前不在交易时段 {trade_session_text(config)} 内，已跳过回测/策略数据源指标刷新。当前策略时间：{now_text}。", "warning")
+        return redirect(url_for("status_page", symbol_key=selected))
     try:
         if source_key:
             calculate_and_store_source_metric(selected, section, source_key)
@@ -2372,6 +2479,10 @@ def clear_market_state_page():
         selected = _selected_key(config)
     section = get_section(config, selected)
     symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    if not web_in_trade_session(config):
+        now_text = web_strategy_now(config).strftime("%Y-%m-%d %H:%M:%S")
+        flash(f"当前不在交易时段 {trade_session_text(config)} 内，已跳过清除并刷新行情状态。当前策略时间：{now_text}。", "warning")
+        return redirect(url_for("status_page", symbol_key=selected))
     clear_seq = request_clear_market_state(selected, symbol_code)
     refresh_seq = request_force_refresh_symbol(selected, symbol_code)
     label = selected if selected != "COMMON_BACKTEST_CONFIG" else "当前标的"

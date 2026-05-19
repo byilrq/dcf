@@ -923,6 +923,13 @@ def write_strategy_snapshot(record):
     try:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         rec = {str(k): _json_safe_value(v) for k, v in (record or {}).items()}
+        # Normalize source names before writing snapshots so future stats/log views are consistent.
+        try:
+            for _src_key in ("market_source", "strategy_source", "source"):
+                if _src_key in rec:
+                    rec[_src_key] = _display_source_name(rec.get(_src_key))
+        except Exception:
+            pass
         if "time" not in rec:
             rec["time"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
         if "date" not in rec:
@@ -1049,7 +1056,7 @@ def write_market_skip_snapshot(name, symbol, dcf_state, reason, level="ERROR", s
         "decision": "SKIP_TRADE",
         "reason": str(reason),
         "market_status": "error" if str(level).upper() == "ERROR" else "warn",
-        "market_source": source or dcf_state.get("market_source", ""),
+        "market_source": _display_source_name(source or dcf_state.get("market_source", "")),
         "current_price": current_price,
         "last_valid_price": last_known_price if last_known_price is not None else dcf_state.get("last_valid_price"),
         "last_price": dcf_state.get("last_price"),
@@ -1070,7 +1077,7 @@ def _mark_market_error(dcf_state, msg, reason, source=""):
     dcf_state["market_status"] = "error"
     dcf_state["market_error"] = str(reason)[:500]
     if source:
-        dcf_state["market_source"] = source
+        dcf_state["market_source"] = _display_source_name(source)
 
 
 def _mark_market_warn(dcf_state, msg, reason, source=""):
@@ -1078,7 +1085,7 @@ def _mark_market_warn(dcf_state, msg, reason, source=""):
     dcf_state["market_status"] = "warn"
     dcf_state["market_error"] = str(reason)[:500]
     if source:
-        dcf_state["market_source"] = source
+        dcf_state["market_source"] = _display_source_name(source)
 
 
 def _canonical_market_source(source):
@@ -1160,16 +1167,16 @@ def _check_market_source_switch(dcf_state, snapshot, cfg):
     dcf_state["pending_market_source_count"] = pending_count
 
     if pending_count < required:
-        return False, f"行情源从 {last_source} 切换到 {new_source}，等待连续确认 {pending_count}/{required}；本轮只监控不交易"
+        return False, f"行情源从 {_display_source_name(last_source)} 切换到 {_display_source_name(new_source)}，等待连续确认 {pending_count}/{required}；本轮只监控不交易"
 
-    return True, f"行情源从 {last_source} 切换到 {new_source}，已连续确认 {pending_count}/{required}"
+    return True, f"行情源从 {_display_source_name(last_source)} 切换到 {_display_source_name(new_source)}，已连续确认 {pending_count}/{required}"
 
 
 def _mark_market_ok(dcf_state, snapshot):
     dcf_state["market_status"] = "ok"
     dcf_state["market_error"] = ""
-    dcf_state["market_source"] = snapshot.source
-    dcf_state["last_valid_market_source"] = snapshot.source
+    dcf_state["market_source"] = _display_source_name(snapshot.source)
+    dcf_state["last_valid_market_source"] = _display_source_name(snapshot.source)
     dcf_state["last_valid_price"] = snapshot.current_price
     dcf_state["last_valid_bar_date"] = snapshot.last_bar_date
     dcf_state["pending_market_source"] = ""
@@ -2043,7 +2050,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "name": name, "symbol": symbol, "level": "INFO",
         "action": action, "decision": action, "reason": reason,
         "trade_count": len(messages),
-        "market_status": "ok", "market_source": snapshot.source,
+        "market_status": "ok", "market_source": _display_source_name(snapshot.source),
         "last_bar_date": snapshot.last_bar_date, "history_count": len(closes),
         "current_price": current_price, "ma150": ma150, "ma150_raw": ma150_raw,
         "ma150_source": ma150_source, "dynamic_k150": dynamic_k150,
@@ -2174,9 +2181,36 @@ def main_loop():
                 logging.info("✅ 日志轮转与快照推送完成")
                 logging.info("🕒 下次轮转时间: 明天 09:00")
                 logging.info("=" * 60)
-        # 非交易时段：Web 手动刷新允许只监控刷新一次，但不触发交易。
+        # 非交易时段：严格按配置的交易时段工作。
+        # Web 手动状态刷新 / 指标刷新在盘外只登记为已跳过，不生成状态文本、不拉实时行情、不写策略快照。
         in_session = in_trade_session(now)
-        if not in_session and not force_refresh and not source_metrics_refresh:
+        if not in_session:
+            if force_refresh:
+                state.setdefault("_meta", {})["force_refresh_done_seq"] = force_refresh_seq
+                state.setdefault("_meta", {})["force_refresh_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+                state.setdefault("_meta", {})["force_refresh_skip_reason"] = (
+                    f"非交易时段，已跳过 Web 手动刷新；当前策略时间 {now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"交易时段 {STRATEGY.get('session_start', '09:30')}-{STRATEGY.get('session_end', '16:00')}"
+                )
+                save_state(state)
+                logging.info(
+                    f"⏸️ 非交易时段，跳过 Web 手动刷新 seq={force_refresh_seq}，"
+                    f"当前策略时间={now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"交易时段={STRATEGY.get('session_start', '09:30')}-{STRATEGY.get('session_end', '16:00')}。"
+                )
+            if source_metrics_refresh:
+                state.setdefault("_meta", {})["source_metrics_refresh_done_seq"] = source_metrics_seq
+                state.setdefault("_meta", {})["source_metrics_refresh_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+                state.setdefault("_meta", {})["source_metrics_refresh_skip_reason"] = (
+                    f"非交易时段，已跳过回测/策略指标刷新；当前策略时间 {now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"交易时段 {STRATEGY.get('session_start', '09:30')}-{STRATEGY.get('session_end', '16:00')}"
+                )
+                save_state(state)
+                logging.info(
+                    f"⏸️ 非交易时段，跳过回测/策略指标刷新 seq={source_metrics_seq}，"
+                    f"当前策略时间={now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"交易时段={STRATEGY.get('session_start', '09:30')}-{STRATEGY.get('session_end', '16:00')}。"
+                )
             sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
             continue
         if source_metrics_refresh:
