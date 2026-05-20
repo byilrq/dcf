@@ -798,20 +798,6 @@
     }
 
 
-
-    /* 参数页：去掉各参数分组方框背景，只保留字段本身 */
-    .params-form .params-group-card{
-      background:transparent !important;
-      border:0 !important;
-      box-shadow:none !important;
-      padding:0 !important;
-      backdrop-filter:none !important;
-      -webkit-backdrop-filter:none !important;
-    }
-    .params-form .params-group-card .subsection-title{
-      margin-top:4px;
-    }
-
     /* === requested light-theme refinements based on dcf_light_theme_fixed === */
     body.theme-x3-light .params-basic-info-flat,
     body:not(.theme-x3-dark) .params-basic-info-flat{
@@ -829,104 +815,6 @@
     body.theme-x3-light form[action*="backtest"] input,
     body:not(.theme-x3-dark) form[action*="backtest"] input{
       background:#fbfdfc !important;
-    }
-
-
-    /* 参数页最终覆盖：参数分组不再使用卡片背景/边框/阴影 */
-    body .params-form .params-group-card,
-    body.theme-x3-dark .params-form .params-group-card,
-    body.theme-x3-light .params-form .params-group-card,
-    body:not(.theme-x3-dark) .params-form .params-group-card{
-      background:transparent !important;
-      background-image:none !important;
-      border:0 !important;
-      box-shadow:none !important;
-      padding:0 !important;
-      margin:0 0 18px !important;
-      backdrop-filter:none !important;
-      -webkit-backdrop-filter:none !important;
-    }
-
-
-    /* === light theme expandable panels: match dark theme, remove extra white box === */
-    body.theme-x3-light .raw-output,
-    body:not(.theme-x3-dark) .raw-output{
-      background:transparent !important;
-      background-image:none !important;
-      border:0 !important;
-      box-shadow:none !important;
-      padding:0 !important;
-      color:#263447 !important;
-      backdrop-filter:none !important;
-      -webkit-backdrop-filter:none !important;
-    }
-    body.theme-x3-light .raw-output summary,
-    body:not(.theme-x3-dark) .raw-output summary{
-      color:#dbeafe !important;
-      background:rgba(8,16,29,.72) !important;
-      border:1px solid rgba(103,125,155,.28) !important;
-      border-radius:14px !important;
-      padding:10px 12px !important;
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 10px 22px rgba(15,23,42,.12) !important;
-    }
-    body.theme-x3-light .raw-output[open] summary,
-    body:not(.theme-x3-dark) .raw-output[open] summary{
-      margin-bottom:10px !important;
-    }
-    body.theme-x3-light .output-box,
-    body:not(.theme-x3-dark) .output-box,
-    body.theme-x3-light .status-box,
-    body:not(.theme-x3-dark) .status-box{
-      background:rgba(8,16,29,.64) !important;
-      border:1px solid rgba(103,125,155,.26) !important;
-      color:#e5edf7 !important;
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 12px 28px rgba(15,23,42,.14) !important;
-    }
-    body.theme-x3-light .output-box pre,
-    body:not(.theme-x3-dark) .output-box pre,
-    body.theme-x3-light .status-box pre,
-    body:not(.theme-x3-dark) .status-box pre{
-      color:#dbeafe !important;
-      opacity:1 !important;
-      text-shadow:none !important;
-    }
-    body.theme-x3-light details.snapshot-details,
-    body:not(.theme-x3-dark) details.snapshot-details{
-      background:rgba(8,16,29,.50) !important;
-      border:1px solid rgba(103,125,155,.26) !important;
-      color:#e5edf7 !important;
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 12px 28px rgba(15,23,42,.13) !important;
-    }
-    body.theme-x3-light details.snapshot-details > summary,
-    body:not(.theme-x3-dark) details.snapshot-details > summary{
-      color:#dbeafe !important;
-      text-shadow:none !important;
-    }
-    body.theme-x3-light .help-panel,
-    body:not(.theme-x3-dark) .help-panel,
-    body.theme-x3-light .return-help-panel,
-    body:not(.theme-x3-dark) .return-help-panel{
-      background:linear-gradient(180deg, rgba(18,31,49,.92), rgba(12,27,43,.86)) !important;
-      border-color:rgba(91,113,143,.26) !important;
-      color:rgba(226,236,248,.92) !important;
-      box-shadow:0 18px 40px rgba(15,23,42,.18), inset 0 1px 0 rgba(255,255,255,.06) !important;
-    }
-    body.theme-x3-light .help-panel pre,
-    body:not(.theme-x3-dark) .help-panel pre,
-    body.theme-x3-light .return-help-panel,
-    body:not(.theme-x3-dark) .return-help-panel{
-      color:#dbeafe !important;
-    }
-    body.theme-x3-light .return-help-panel h3,
-    body:not(.theme-x3-dark) .return-help-panel h3,
-    body.theme-x3-light .return-help-panel h4,
-    body:not(.theme-x3-dark) .return-help-panel h4{
-      color:#ccfbf1 !important;
-    }
-    body.theme-x3-light .return-help-panel code,
-    body:not(.theme-x3-dark) .return-help-panel code{
-      background:rgba(8,16,29,.58) !important;
-      color:#e0f2fe !important;
     }
 
   </style>
@@ -1022,9 +910,9 @@
               <input type="hidden" name="symbol_key" value="{{ selected }}">
               <button type="submit" class="primary-btn action-btn">刷新</button>
             </form>
-            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认重置当前标的的运行状态，并清除行情错误、旧价格校验和行情源观察状态？仅影响当前标的，其他标的不受影响；随后会按最新数据刷新一次，本次只监控不触发交易。');">
+            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认清除当前标的的行情错误、旧价格校验和行情源观察状态，并按最新数据刷新一次？本次只监控，不触发交易。');">
               <input type="hidden" name="symbol_key" value="{{ selected }}">
-              <button type="submit" class="secondary-btn action-btn">重置</button>
+              <button type="submit" class="secondary-btn action-btn">清除</button>
             </form>
           </div>
         </div>
@@ -1051,7 +939,7 @@
               <div class="reference-price-card {% if ref.primary %}primary{% endif %} {% if not ref.ok %}error{% endif %}">
                 <div class="name">{{ ref.label }}{% if ref.primary %}<span class="source-chip">当前优先</span>{% endif %}</div>
                 <div class="price">{% if ref.ok %}{{ fmt_snapshot_value(ref.price) }}{% else %}-{% endif %}</div>
-                <div class="meta">{{ ref.source }}{% if ref.date %} · {{ ref.date }}{% endif %}</div>
+                <div class="meta">{{ ref.source }}{% if ref.updated_at %} · {{ ref.updated_at }}{% elif ref.date %} · {{ ref.date }}{% endif %}</div>
                 {% if not ref.ok and ref.error %}<div class="meta">{{ ref.error }}</div>{% endif %}
               </div>
             {% endfor %}
@@ -1266,7 +1154,7 @@
           </div>
           <section class="page-card-group compact-group">
             {% for group in grouped_fields %}
-              <div class="params-group-card params-group-{{ group['id'] }}{% if group['title'] == '基础信息' %} params-basic-info-flat{% endif %}">
+              <div class="config-card{% if group['title'] == '基础信息' %} params-basic-info-flat{% endif %}">
                 {% if group['title'] != '基础信息' %}
                   <div class="subsection-title">{{ group['title'] }}</div>
                 {% endif %}

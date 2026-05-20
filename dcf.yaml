@@ -1,6 +1,6 @@
 COMMON_BACKTEST_CONFIG:
   name: 通用回测参数
-  strategy_run: on
+  strategy_run: 'on'
   price_scale: 1.0
   base_units: 2.5%
   target_units: 5%
@@ -16,7 +16,7 @@ COMMON_BACKTEST_CONFIG:
   sell_multiple: 1.5
   add_box_step: 0.05
   add_box_units_percent: 0.1
-  box_grid_enabled: no
+  box_grid_enabled: 'no'
   grid_box_percent: 0.01
   grid_box_units_percent: 0.05
   trend_zone_step_percent: 0.01
@@ -25,28 +25,50 @@ COMMON_BACKTEST_CONFIG:
   pyramid_add_enabled: auto
   pyramid_steps: 8
   pyramid_weights:
-    - 0.05
-    - 0.07
-    - 0.09
-    - 0.11
-    - 0.13
-    - 0.15
-    - 0.17
-    - 0.23
+  - 0.05
+  - 0.07
+  - 0.09
+  - 0.11
+  - 0.13
+  - 0.15
+  - 0.17
+  - 0.23
+  box_add_step: 0.05
+  pyramid_add_step: 0.05
+  clear_pyramid_weights:
+  - 0.05
+  - 0.07
+  - 0.09
+  - 0.11
+  - 0.13
+  - 0.15
+  - 0.17
+  - 0.23
+  clear_pyramid_steps: 8
+  pyramid_add_weights:
+  - 0.05
+  - 0.07
+  - 0.09
+  - 0.11
+  - 0.13
+  - 0.15
+  - 0.17
+  - 0.23
+  pyramid_add_steps: 8
 STRATEGY:
   loop_interval: 60
   fetch_history_days: 400
   ma_period_short: 150
   ma_period_long: 300
   session_start: 09:25
-  session_end: '16:00'
+  session_end: '23:00'
   daily_push_time: 08:00
   log_rotate_time: 08:00
 SYMBOL_CONFIG:
   南方DCF:
     symbol: SZ159232
     price_scale: 1.0
-    strategy_run: on
+    strategy_run: 'on'
     base_units: 1%
     target_units: 10%
     double_target_factor: 2.0
@@ -61,7 +83,7 @@ SYMBOL_CONFIG:
     sell_multiple: 1.5
     add_box_step: 0.05
     add_box_units_percent: 0.1
-    box_grid_enabled: no
+    box_grid_enabled: 'no'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
     trend_zone_step_percent: 0.01
@@ -70,18 +92,40 @@ SYMBOL_CONFIG:
     pyramid_add_enabled: auto
     pyramid_steps: 8
     pyramid_weights:
-      - 0.05
-      - 0.07
-      - 0.09
-      - 0.11
-      - 0.13
-      - 0.15
-      - 0.17
-      - 0.23
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
   电信:
     symbol: HK00728
     price_scale: 1.0
-    strategy_run: on
+    strategy_run: 'on'
     base_units: 5%
     target_units: 10%
     double_target_factor: 2.0
@@ -96,7 +140,7 @@ SYMBOL_CONFIG:
     sell_multiple: 1.5
     add_box_step: 0.025
     add_box_units_percent: 0.1
-    box_grid_enabled: no
+    box_grid_enabled: 'no'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
     trend_zone_step_percent: 0.01
@@ -105,18 +149,97 @@ SYMBOL_CONFIG:
     pyramid_add_enabled: auto
     pyramid_steps: 8
     pyramid_weights:
-      - 0.05
-      - 0.07
-      - 0.09
-      - 0.11
-      - 0.13
-      - 0.15
-      - 0.17
-      - 0.23
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.025
+    pyramid_add_step: 0.025
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  海油:
+    symbol: SH600938
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 5%
+    current_avg_cost: 0.0
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: auto
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
   招行:
     symbol: SH600036
     price_scale: 1.0
-    strategy_run: on
+    strategy_run: 'on'
     base_units: 5%
     target_units: 10%
     double_target_factor: 2.0
@@ -131,7 +254,7 @@ SYMBOL_CONFIG:
     sell_multiple: 1.5
     add_box_step: 0.03
     add_box_units_percent: 0.1
-    box_grid_enabled: no
+    box_grid_enabled: 'no'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
     trend_zone_step_percent: 0.03
@@ -140,12 +263,548 @@ SYMBOL_CONFIG:
     pyramid_add_enabled: auto
     pyramid_steps: 8
     pyramid_weights:
-      - 0.05
-      - 0.07
-      - 0.09
-      - 0.11
-      - 0.13
-      - 0.15
-      - 0.17
-      - 0.23
- 
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.03
+    pyramid_add_step: 0.03
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  永新:
+    symbol: SZ002014
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 10%
+    current_avg_cost: 11.99
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: 'yes'
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  纳指ETF:
+    symbol: SZ159696
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 10%
+    current_avg_cost: 1.742
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 20
+    sideways_weight_60: 0.6
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: auto
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  海控:
+    symbol: HK01919
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 0%
+    current_avg_cost: 14.74
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: auto
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  青岛港:
+    symbol: SH601298
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 10%
+    current_avg_cost: 8.9
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: auto
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  陕能:
+    symbol: SZ001286
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 5%
+    current_avg_cost: 0.0
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.1
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: auto
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  福耀:
+    symbol: SH600660
+    price_scale: 1.0
+    strategy_run: 'on'
+    base_units: 5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 10%
+    current_avg_cost: 59.101098
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: 'yes'
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  腾讯:
+    symbol: HK00700
+    strategy_run: 'on'
+    price_scale: 1.0
+    base_units: 10%
+    target_units: 20%
+    double_target_factor: 2.0
+    current_units: 20%
+    current_avg_cost: 483.6
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 15
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.4
+    add_box_step: 0.025
+    add_box_units_percent: 0.05
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.1
+    clear_zone_step_percent: 0.03
+    pyramid_add_enabled: 'yes'
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    box_add_step: 0.025
+    pyramid_add_step: 0.025
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  紫金:
+    name: 通用回测参数
+    strategy_run: 'on'
+    price_scale: 1.0
+    base_units: 2.5%
+    target_units: 10%
+    double_target_factor: 2.0
+    current_units: 10%
+    current_avg_cost: 30.325
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 20
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: 'yes'
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    symbol: SH601899
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  铺子:
+    name: 通用回测参数
+    strategy_run: 'on'
+    price_scale: 1.0
+    base_units: 2.5%
+    target_units: 5%
+    double_target_factor: 2.0
+    current_units: 5%
+    current_avg_cost: 55.16
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 20
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: 'yes'
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    symbol: SZ002847
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8

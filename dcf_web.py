@@ -623,7 +623,7 @@ STATUS_AUTO_REFRESH_SCRIPT = """
     if (!(window.location.pathname === "/status" || window.location.pathname === "/")) return;
     var hasStatus = document.body && document.body.innerText && document.body.innerText.indexOf("实时状态") >= 0 || document.querySelector('form[action$="/refresh-status"]');
     if (!hasStatus) return;
-    var intervalMs = 15000;
+    var intervalMs = 60000;
     window.setInterval(function () {
       if (document.hidden) return;
       if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
@@ -1002,24 +1002,16 @@ def fmt_snapshot_value(value: Any, digits: int = 3) -> str:
         return str(value)
 
 def display_source_name(source: Any) -> str:
-    """Normalize source names for Web display and historical snapshot stats."""
+    """Customer-facing source name from market_data.py; no local hardcoding."""
     s = str(source or "").strip()
-    mapping = {
-        "tencent_hk_unadjusted": "tencent_hk",
-        "tencent_hk_quote": "tencent_hk",
-        "tencent_hk": "tencent_hk",
-        "xueqiu_hk_quote": "xueqiu_hk",
-        "xueqiu_hk": "xueqiu_hk",
-        "tencent_a_unadjusted": "tencent_a",
-        "tencent_a": "tencent_a",
-        "tencent_quote_a": "tencent_a",
-        "tencent_api": "tencent_a",
-        "xueqiu_quote_a": "xueqiu_a",
-        "xueqiu_api": "xueqiu_a",
-        "eastmoney_quote_a": "eastmoney_a",
-        "eastmoney_api": "eastmoney_a",
-    }
-    return mapping.get(s, s or "unknown")
+    if market_get_source_display_name:
+        try:
+            return market_get_source_display_name(s)
+        except Exception:
+            pass
+    if s.startswith("cache_"):
+        return "本地缓存"
+    return s or "未知"
 
 
 def normalize_snapshot_source_fields(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1206,6 +1198,10 @@ def refresh_reference_prices_now(selected: str, section: Dict[str, Any]) -> Tupl
     if not isinstance(state, dict):
         state = {}
     updated_at = current_time_text()
+    if isinstance(refs, list):
+        for _ref in refs:
+            if isinstance(_ref, dict):
+                _ref["updated_at"] = updated_at
     for key in [selected, symbol]:
         if not key:
             continue
@@ -1456,8 +1452,10 @@ def _filter_source_metrics_for_current_setting(section: Dict[str, Any], metrics:
         "key": wanted_key,
         "label": wanted_label,
         "source": wanted_key,
-        "ok": False,
-        "error": "点击刷新计算",
+        "ok": True,
+        "level": "INFO",
+        "status": "PENDING",
+        "error": "",
         "current_price": None,
         "ma150": None,
         "sell": None,
@@ -1551,6 +1549,48 @@ def _metric_display_card(item: Dict[str, Any]) -> MetricDisplayDict:
     return card
 
 
+def _is_pending_metric_message(text: Any) -> bool:
+    return str(text or "").strip() in {"", "点击刷新计算", "待刷新", "未刷新", "请点击刷新计算"}
+
+def _metric_error_text(item: Dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    err = str(item.get("error", "") or "").strip()
+    if _is_pending_metric_message(err):
+        return ""
+    return err
+
+def _collect_metric_errors(metrics: List[Dict[str, Any]]) -> str:
+    errors = []
+    for item in metrics or []:
+        if not isinstance(item, dict):
+            continue
+        err = _metric_error_text(item)
+        level = str(item.get("level", "") or "").upper()
+        if err and (not item.get("ok") or level in {"WARN", "ERROR"}):
+            errors.append(err)
+    return "；".join(errors)
+
+def _status_text_with_badge(status_text: str, level: str) -> str:
+    level = str(level or "INFO").upper()
+    if level == "ERROR":
+        badge = "🔴[ERROR]"
+    elif level == "WARN":
+        badge = "🟡[WARN]"
+    else:
+        badge = "🟢[INFO]"
+    lines = str(status_text or "").splitlines()
+    if not lines:
+        return status_text or ""
+    head = lines[0]
+    for old_badge in ("🟢[INFO]", "🟡[WARN]", "🔴[ERROR]"):
+        if old_badge in head:
+            head = head.replace(old_badge, badge, 1)
+            break
+    lines[0] = head
+    return "\n".join(lines)
+
+
 def _normalize_metric_cards(metrics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for item in metrics or []:
@@ -1599,10 +1639,11 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
         if isinstance(metrics, list) and metrics:
             selected_metrics = _normalize_metric_cards(_filter_source_metrics_for_current_setting(section, metrics))
             if selected_metrics:
-                err = str(node.get("source_metrics_error", "") or "")
+                err = str(node.get("source_metrics_error", "") or "").strip()
+                if _is_pending_metric_message(err):
+                    err = ""
                 if not err:
-                    errs = [str(x.get("error", "")) for x in selected_metrics if isinstance(x, dict) and x.get("error")]
-                    err = "；".join(errs)
+                    err = _collect_metric_errors(selected_metrics)
                 return selected_metrics, str(node.get("source_metrics_updated_at", "") or ""), err
         fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
         if fallback:
@@ -1692,8 +1733,10 @@ def build_source_metric_placeholders(section: Dict[str, Any]) -> List[Dict[str, 
             "key": key,
             "label": label,
             "source": key,
-            "ok": False,
-            "error": "点击刷新计算",
+            "ok": True,
+            "level": "INFO",
+            "status": "PENDING",
+            "error": "",
             "current_price": None,
             "ma150": None,
             "sell": None,
@@ -1767,9 +1810,11 @@ def _store_source_metrics(selected: str, symbol: str, metrics: List[Dict[str, An
     state = read_state()
     node = state.setdefault(selected, {}) if isinstance(state, dict) else {}
     metrics = _normalize_metric_cards(metrics)
+    error = str(error or "").strip()
+    if _is_pending_metric_message(error):
+        error = ""
     if not error:
-        errs = [str(x.get("error", "")) for x in metrics if isinstance(x, dict) and (not x.get("ok") or x.get("level") in {"WARN", "ERROR"}) and x.get("error")]
-        error = "；".join(errs)
+        error = _collect_metric_errors(metrics)
     node["source_metrics"] = metrics
     node["source_metrics_updated_at"] = updated_at
     node["source_metrics_error"] = error or ""
@@ -1802,7 +1847,8 @@ def calculate_and_store_source_metric(selected: str, section: Dict[str, Any], so
     for key, label in options:
         by_key.setdefault(key, {
             "key": key, "label": label, "source": key, "ok": False,
-            "error": "点击刷新计算", "current_price": None, "ma150": None,
+            "level": "INFO", "status": "PENDING",
+            "error": "", "current_price": None, "ma150": None,
             "sell": None, "clear": None, "dynamic_k": None,
             "sideways_score": None, "ma150_source": "", "date": "", "count": 0, "zone": "",
         })
@@ -2617,7 +2663,7 @@ def status_page():
     if selected != "COMMON_BACKTEST_CONFIG":
         section = get_section(config, selected)
         if web_in_trade_session(config):
-            request_auto_refresh_if_stale(selected, section, max_age_seconds=20)
+            request_auto_refresh_if_stale(selected, section, max_age_seconds=60)
         else:
             ctx["status_session_notice"] = f"当前不在交易时段 {trade_session_text(config)} 内，状态页只展示最近一次状态，不自动刷新行情。"
         ctx["reference_prices"] = get_reference_prices_for_status(selected, section)
@@ -2628,11 +2674,14 @@ def status_page():
         ctx["source_metrics_updated_at"] = metrics_updated_at
         ctx["source_metrics_error"] = metrics_error
         if metrics_error:
-            prefix = "🔴[ERROR]" if any(isinstance(x, dict) and str(x.get("level", "")).upper() == "ERROR" for x in metrics) else "🟡[WARN]"
+            metric_level = "ERROR" if any(isinstance(x, dict) and str(x.get("level", "")).upper() == "ERROR" for x in metrics) else "WARN"
+            prefix = "🔴[ERROR]" if metric_level == "ERROR" else "🟡[WARN]"
             alert_line = f"{prefix} 回测/策略数据源指标: {metrics_error}"
-            status_text = str(ctx.get("status_text", "") or "")
+            status_text = _status_text_with_badge(str(ctx.get("status_text", "") or ""), metric_level)
             if alert_line not in status_text:
                 ctx["status_text"] = (status_text.rstrip() + "\n" + alert_line).strip()
+            else:
+                ctx["status_text"] = status_text
     ctx.update({"page_name": "status"})
     return render_template("dashboard.html", **ctx)
 

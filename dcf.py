@@ -836,10 +836,9 @@ try:
         get_a_history_close,
         get_a_price,
         get_hk_price,
-        get_source_display_name as market_source_display_name,
-        get_source_canonical_key as market_source_canonical_key,
+        get_source_display_name as market_get_source_display_name,
+        get_source_canonical_key as market_get_source_canonical_key,
         normalize_system_source_value as market_normalize_system_source_value,
-        get_source_options as market_get_source_options,
     )
 except Exception as _market_import_error:
     raise RuntimeError(f"无法导入行情接口文件 market_data.py: {_market_import_error}")
@@ -1109,23 +1108,21 @@ def _mark_market_warn(dcf_state, msg, reason, source=""):
 
 
 def _canonical_market_source(source):
-    """Normalize source names for switch confirmation via market_data.py."""
+    """Canonical source key from market_data.py; fallback only preserves raw value."""
     try:
-        return market_source_canonical_key(source)
+        return market_get_source_canonical_key(str(source or ""))
     except Exception:
         return str(source or "").strip()
 
-
 def _display_source_name(source):
-    """Customer-facing source names from market_data.py; fallback only on import failure."""
+    """Customer-facing source name from market_data.py. Internal codes are not shown."""
+    s = str(source or "").strip()
     try:
-        return market_source_display_name(source)
+        return market_get_source_display_name(s)
     except Exception:
-        s = str(source or "").strip()
         if s.startswith("cache_"):
             return "本地缓存"
         return s or "未知"
-
 
 def _strategy_level_badge(level: str) -> str:
     level = str(level or "INFO").upper()
@@ -1321,11 +1318,24 @@ def compute_sideways_index(closes, cfg):
 # 历史/策略数据源指标对照
 # ===========================
 def _normalize_system_source_key(field, value):
+    """Normalize system source values through market_data.py; no legacy HK Sina alias."""
     try:
         return market_normalize_system_source_value(field, value)
     except Exception:
-        return str(value or "").strip()
-
+        raw = str(value or "").strip()
+        allowed = {
+            "A_BACKTEST_SOURCE": {"historical_a1", "historical_a2"},
+            "HK_BACKTEST_SOURCE": {"historical_hk1", "historical_hk2"},
+            "A_QUOTE_SOURCE": {"live_a1", "live_a2", "live_a3"},
+            "HK_MARKET_SOURCE": {"live_hk1", "live_hk2", "live_hk3"},
+        }.get(field, set())
+        defaults = {
+            "A_BACKTEST_SOURCE": "historical_a1",
+            "HK_BACKTEST_SOURCE": "historical_hk1",
+            "A_QUOTE_SOURCE": "live_a1",
+            "HK_MARKET_SOURCE": "live_hk1",
+        }
+        return raw if raw in allowed else defaults.get(field, raw)
 
 
 def _read_system_config_for_metrics():
@@ -1346,17 +1356,24 @@ def _read_system_config_for_metrics():
 
 
 def _history_source_options_for_symbol(symbol):
-    """Return the selected 回测/策略数据源 only; labels come from market_data.py."""
+    """Return the selected 回测/策略数据源 only; labels are customer-facing names."""
     raw = str(symbol or "").upper().strip()
     system_cfg = _read_system_config_for_metrics()
-    field = "HK_BACKTEST_SOURCE" if raw.startswith("HK") else "A_BACKTEST_SOURCE"
-    default_key = "historical_hk1" if raw.startswith("HK") else "historical_a1"
-    key = system_cfg.get(field, default_key)
-    try:
-        options = dict(market_get_source_options(field))
-    except Exception:
-        options = {}
-    return [(key, options.get(key, _display_source_name(key)))]
+    if raw.startswith("HK"):
+        key = system_cfg.get("HK_BACKTEST_SOURCE", "historical_hk1")
+        labels = {
+            "historical_hk1": "腾讯港股日K",
+            "historical_hk2": "Yahoo港股日K",
+            "historical_hk3": "备用",
+        }
+    else:
+        key = system_cfg.get("A_BACKTEST_SOURCE", "historical_a1")
+        labels = {
+            "historical_a1": "腾讯A股/ETF日K",
+            "historical_a2": "新浪A股/ETF日K",
+            "historical_a3": "备用",
+        }
+    return [(key, labels.get(key, _display_source_name(key)))]
 
 
 def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, snap, ma_short_len):
@@ -1663,15 +1680,18 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         return _maybe_market_alert(dcf_state, msg, reason)
 
 
-    # 缓存状态页参考价；只在主程序中请求行情，Web 页面仅读缓存，避免卡死/500。
-    # v46: 参考价只在“刷新当前标的”时拉取当前标的的主源+备用源，
-    # 不再每轮为所有标的拉取多路参考价，降低后台循环负担。
+    # 缓存状态页参考价；交易时段内后台每轮刷新当前标的的全部实时源。
+    # Web 页面仅读缓存，避免每次打开页面都直接阻塞拉行情。
     if refresh_reference:
         try:
             refs = get_reference_prices(symbol, price_scale=price_scale)
+            updated_at = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
             if isinstance(refs, list) and refs:
+                for _ref in refs:
+                    if isinstance(_ref, dict):
+                        _ref["updated_at"] = updated_at
                 dcf_state["reference_prices"] = refs
-                dcf_state["reference_prices_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+                dcf_state["reference_prices_updated_at"] = updated_at
                 dcf_state["reference_prices_error"] = ""
             else:
                 dcf_state["reference_prices_error"] = "参考价返回为空"
@@ -2406,7 +2426,7 @@ def main_loop():
                     name, cfg, state,
                     allow_trade=not force_refresh,
                     refresh_reason="Web手动刷新，仅更新状态",
-                    refresh_reference=bool(force_refresh),
+                    refresh_reference=True,
                 )
                 for msg in msgs or []:
                     text = str(msg)
