@@ -118,9 +118,9 @@ def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], cur
 
 
 def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, double_target: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any], str]:
-    add_box_step = float(cfg.get('add_box_step', 0.05))
-    pyramid_weights = cfg.get('pyramid_weights', [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205]) or [1.0]
-    total_steps = min(int(cfg.get('pyramid_steps', len(pyramid_weights))), len(pyramid_weights))
+    pyramid_add_step = float(cfg.get('pyramid_add_step', cfg.get('add_box_step', 0.05)))
+    pyramid_weights = cfg.get('pyramid_add_weights', cfg.get('pyramid_weights', [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205])) or [1.0]
+    total_steps = min(int(cfg.get('pyramid_add_steps', cfg.get('pyramid_steps', len(pyramid_weights)))), len(pyramid_weights))
     pyramid_step = int(state.get('pyramid_step', 0) or 0)
     last_add_price = state.get('last_add_price', current_price) or current_price
     current_units = state.get('current_units', 0.0)
@@ -138,7 +138,7 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
             return add_qty, new_state, 'PYRAMID_INIT'
         return 0.0, new_state, ''
     if target_reached_once and pyramid_step < total_steps and last_add_price > 0:
-        if current_price <= last_add_price * (1 - add_box_step) + POSITION_EPSILON:
+        if current_price <= last_add_price * (1 - pyramid_add_step) + POSITION_EPSILON:
             add_qty = normalize_position_amount(target_units * pyramid_weights[pyramid_step], mode, lot_size)
             max_allowed = normalize_position_amount(double_target - current_units, mode, lot_size)
             add_qty = normalize_position_amount(min(add_qty, max_allowed), mode, lot_size)
@@ -151,7 +151,7 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
 
 
 def get_box_fixed_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any]]:
-    add_box_step = float(cfg.get('add_box_step', 0.05))
+    box_add_step = float(cfg.get('box_add_step', cfg.get('add_box_step', 0.05)))
     add_box_units_pct = float(cfg.get('add_box_units_percent', 0.1))
     last_add_price = state.get('last_add_price', 0.0) or 0.0
     last_trade_price = state.get('last_trade_price', 0.0) or 0.0
@@ -159,7 +159,7 @@ def get_box_fixed_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], targe
     current_units = state.get('current_units', 0.0)
     anchor_candidates = [p for p in (last_add_price, last_trade_price, initial_price, current_price) if p and p > 0]
     anchor_price = max(anchor_candidates) if anchor_candidates else current_price
-    if current_price > anchor_price * (1 - add_box_step) + POSITION_EPSILON:
+    if current_price > anchor_price * (1 - box_add_step) + POSITION_EPSILON:
         return 0.0, state.copy()
     max_add = normalize_position_amount(target_units - current_units, mode, lot_size)
     if max_add <= POSITION_EPSILON:

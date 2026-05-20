@@ -165,7 +165,26 @@ def get_sell_multiple(cfg):
     return _safe_float(cfg.get("sell_multiple", 1.5), 1.5)
 
 def get_add_box_step(cfg):
-    return _safe_float(cfg.get("add_box_step", 0.05), 0.05)
+    return _safe_float(cfg.get("box_add_step", cfg.get("add_box_step", 0.05)), 0.05)
+
+def get_pyramid_add_step(cfg):
+    return _safe_float(cfg.get("pyramid_add_step", cfg.get("add_box_step", 0.05)), 0.05)
+
+def get_clear_pyramid_weights(cfg):
+    return cfg.get("clear_pyramid_weights", cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255]))
+
+def get_pyramid_add_weights(cfg):
+    return cfg.get("pyramid_add_weights", cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255]))
+
+def get_clear_pyramid_steps(cfg):
+    weights = get_clear_pyramid_weights(cfg) or []
+    steps = int(_safe_float(cfg.get("clear_pyramid_steps", cfg.get("pyramid_steps", len(weights))), len(weights)))
+    return min(steps, len(weights)) if weights else max(steps, 0)
+
+def get_pyramid_add_steps(cfg):
+    weights = get_pyramid_add_weights(cfg) or []
+    steps = int(_safe_float(cfg.get("pyramid_add_steps", cfg.get("pyramid_steps", len(weights))), len(weights)))
+    return min(steps, len(weights)) if weights else max(steps, 0)
 
 def get_add_box_units_percent(cfg):
     return _safe_float(cfg.get("add_box_units_percent", 0.1), 0.1)
@@ -244,6 +263,8 @@ def normalize_symbol_state(name, cfg, entry):
     double_target = get_double_target(cfg)
     legacy_mode = entry.get("position_mode")
     reset_reason = None
+    had_current_units = "current_units" in entry and entry.get("current_units") not in (None, "")
+    had_avg_cost = "avg_cost" in entry and entry.get("avg_cost") not in (None, "")
     if "last_trade_price" not in entry:
         entry["last_trade_price"] = None
     if "last_trade_side" not in entry:
@@ -290,10 +311,13 @@ def normalize_symbol_state(name, cfg, entry):
         entry["pyramid_active"] = False
         entry["target_reached_once"] = False
     else:
+        # Runtime state is authoritative. Config changes or program restarts must not
+        # silently overwrite live strategy anchors/position state. YAML current_units
+        # and current_avg_cost are only used to initialize missing/new/reset state.
         entry["current_units"] = normalize_position_amount(current_units, mode)
-        if live_units is not None:
+        if not had_current_units and live_units is not None:
             entry["current_units"] = live_units
-        if live_avg_cost is not None:
+        if not had_avg_cost and live_avg_cost is not None:
             entry["avg_cost"] = live_avg_cost
         elif entry["current_units"] <= POSITION_EPSILON:
             entry["avg_cost"] = 0.0
@@ -574,13 +598,12 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
         return seq
     for name in target_names:
         old_entry = state.get(name, {}) if isinstance(state.get(name, {}), dict) else {}
-        preserved_last_price = old_entry.get("last_price")
-        new_entry = build_default_symbol_state(SYMBOL_CONFIG[name])
-        if preserved_last_price is not None:
-            new_entry["last_price"] = preserved_last_price
-        state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], new_entry)
+        if old_entry:
+            state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], old_entry)
+        else:
+            state[name] = build_default_symbol_state(SYMBOL_CONFIG[name])
         state[name]["last_status_msg"] = None
-        logging.info(f"🔁 参数已即时刷新: {name}，运行状态已按最新 dcf.yaml 重置。")
+        logging.info(f"🔁 参数已即时刷新: {name}，已加载最新 dcf.yaml；运行状态保持不变。")
     save_state(state)
     return seq
 
@@ -726,11 +749,11 @@ def sleep_until_next_loop_or_web_request(state: dict, seconds) -> None:
 
 
 def apply_market_state_clear_if_needed(state):
-    """Clear one symbol's market validation/error state requested by Web.
+    """Reset one symbol's runtime state requested by Web.
 
-    Intended for bad source data or intentional price_scale changes. Position and
-    average cost are preserved; price validation anchors are cleared and a normal
-    monitor-only refresh usually follows.
+    This is the only normal Web path that intentionally resets strategy runtime
+    fields such as last_trade_price, last_add_price, pyramid_step, clear_step,
+    current_units and avg_cost. Other symbols are not touched.
     """
     disk_state = read_state_raw()
     disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
@@ -756,27 +779,20 @@ def apply_market_state_clear_if_needed(state):
             if isinstance(cfg, dict) and str(cfg.get("symbol", "")).strip().upper() == code:
                 target_names.append(name)
                 break
-    cleared = []
+    reset_names = []
     for name in target_names:
-        entry = state.get(name)
-        if not isinstance(entry, dict):
+        if name not in SYMBOL_CONFIG:
             continue
-        for key in [
-            "last_price", "last_valid_price", "last_valid_market_source", "last_valid_bar_date",
-            "market_source", "market_status", "market_error", "pending_market_source", "pending_market_source_count",
-            "reference_prices_error",
-            "last_trade_price", "last_add_price",
-        ]:
-            entry.pop(key, None)
-        entry["last_status_msg"] = "已清除行情错误/旧价格校验状态，等待下一轮刷新。"
-        entry["market_status"] = "cleared"
-        cleared.append(name)
+        state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], build_default_symbol_state(SYMBOL_CONFIG[name]))
+        state[name]["last_status_msg"] = "已手动重置该标的运行状态，并清除行情错误/旧价格校验状态，等待下一轮刷新。"
+        state[name]["market_status"] = "reset"
+        reset_names.append(name)
     state.setdefault("_meta", {})["clear_market_state_done_seq"] = seq
     state.setdefault("_meta", {})["clear_market_state_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
     save_state(state)
-    if cleared:
-        logging.info(f"🧹 已清除行情错误/旧价格校验状态 seq={seq}: {','.join(cleared)}")
-    return bool(cleared), seq, cleared
+    if reset_names:
+        logging.info(f"♻️ 已手动重置标的运行状态并清除行情状态 seq={seq}: {','.join(reset_names)}")
+    return bool(reset_names), seq, reset_names
 
 # ===========================
 # 构建每日快照
@@ -820,6 +836,10 @@ try:
         get_a_history_close,
         get_a_price,
         get_hk_price,
+        get_source_display_name as market_source_display_name,
+        get_source_canonical_key as market_source_canonical_key,
+        normalize_system_source_value as market_normalize_system_source_value,
+        get_source_options as market_get_source_options,
     )
 except Exception as _market_import_error:
     raise RuntimeError(f"无法导入行情接口文件 market_data.py: {_market_import_error}")
@@ -844,7 +864,7 @@ def _format_market_message_lines(name, symbol, level, reason, current_price=None
         head = f"🟡[WARN]【{name}】 ({symbol})"
         status = "⚠️行情源观察中，本轮只监控不交易。"
     else:
-        head = f"🎯[ERROR]【{name}】 ({symbol})"
+        head = f"🔴[ERROR]【{name}】 ({symbol})"
         status = "❌行情数据异常，已跳过本轮策略，不会触发交易。"
     lines = [
         head,
@@ -1089,45 +1109,96 @@ def _mark_market_warn(dcf_state, msg, reason, source=""):
 
 
 def _canonical_market_source(source):
-    """Normalize source names for switch confirmation to avoid warnings after renamed/deprecated sources."""
-    s = str(source or "").strip()
-    if not s:
-        return ""
-    if s.startswith("sina_a"):
-        # Deprecated A-share source removed from market_data.py; do not treat first switch as risky.
-        return ""
-    if "live_tencent" in s or s.startswith("tencent_a") or s == "tencent_api":
-        return "tencent_api"
-    if "live_eastmoney" in s or s.startswith("eastmoney_a") or s == "eastmoney_api":
-        return "eastmoney_api"
-    if "live_xueqiu" in s or s.startswith("xueqiu") or s == "xueqiu_api":
-        return "xueqiu_api"
-    return s
+    """Normalize source names for switch confirmation via market_data.py."""
+    try:
+        return market_source_canonical_key(source)
+    except Exception:
+        return str(source or "").strip()
 
 
 def _display_source_name(source):
-    s = str(source or "").strip()
-    mapping = {
-        "tencent_hk_unadjusted": "tencent_hk",
-        "tencent_hk_quote": "tencent_hk",
-        "tencent_hk": "tencent_hk",
-        "xueqiu_hk_quote": "xueqiu_hk",
-        "xueqiu_hk": "xueqiu_hk",
-        "tencent_a_unadjusted": "tencent_a",
-        "tencent_a": "tencent_a",
-        "tencent_quote_a": "tencent_a",
-        "tencent_api": "tencent_a",
-        "xueqiu_quote_a": "xueqiu_a",
-        "xueqiu_api": "xueqiu_a",
-        "eastmoney_quote_a": "eastmoney_a",
-        "eastmoney_api": "eastmoney_a",
-    }
-    return mapping.get(s, s or "unknown")
+    """Customer-facing source names from market_data.py; fallback only on import failure."""
+    try:
+        return market_source_display_name(source)
+    except Exception:
+        s = str(source or "").strip()
+        if s.startswith("cache_"):
+            return "本地缓存"
+        return s or "未知"
+
+
+def _strategy_level_badge(level: str) -> str:
+    level = str(level or "INFO").upper()
+    if level == "ERROR":
+        return "🔴[ERROR]"
+    if level == "WARN":
+        return "🟡[WARN]"
+    return "🟢[INFO]"
+
+
+def _short_strategy_issue(level: str = "", error: str = "", ma150_source: str = "") -> str:
+    """Return a very short issue tag for message headers and pushes."""
+    level = str(level or "").upper()
+    err = str(error or "").strip()
+    src = str(ma150_source or "").strip()
+    if level in {"", "INFO", "OK"} and not err:
+        return ""
+    if src and src != "f":
+        return f"MA150={src}"
+    low = err.lower()
+    if "ma150" in low and ("不足" in err or "insufficient" in low):
+        return "K线不足"
+    if "历史" in err and "不足" in err:
+        return "K线不足"
+    if "cookie" in low or "token" in low or "401" in err or "403" in err:
+        return "Cookie失效"
+    if "timeout" in low or "超时" in err:
+        return "超时"
+    if "connection" in low or "连接" in err or "disconnected" in low:
+        return "连接失败"
+    if "price" in low or "价格" in err:
+        return "价格异常"
+    if "k线" in err or "k线" in low:
+        return "K线异常"
+    # Keep message compact in the title line.
+    return err[:18] if err else ("策略异常" if level == "WARN" else "策略错误")
+
+
+def _annotate_message_header(msg: str, level: str = "INFO", issue: str = "") -> str:
+    """Change the first-line badge and append a compact issue tag."""
+    if not msg:
+        return msg
+    level = str(level or "INFO").upper()
+    badge = _strategy_level_badge(level)
+    lines = str(msg).split("\n")
+    head = lines[0]
+    for old in ("🟢[INFO]", "🟡[WARN]", "🔴[ERROR]"):
+        if old in head:
+            head = head.replace(old, badge, 1)
+            break
+    if issue and "｜" not in head:
+        head = f"{head}｜{issue}"
+    lines[0] = head
+    return "\n".join(lines)
+
+
+def _apply_strategy_alert_to_message(msg: str, level: str = "INFO", issue: str = "") -> str:
+    """Apply compact strategy/data alert to status or trade push text."""
+    level = str(level or "INFO").upper()
+    if level not in {"WARN", "ERROR"}:
+        return msg
+    msg = _annotate_message_header(msg, level, issue)
+    if issue and "⚠️策略:" not in msg:
+        msg += f"\n⚠️策略: {issue}"
+    return msg
+
 
 
 def _strategy_source_for_symbol(symbol):
     raw = str(symbol or "").upper().strip()
-    return "tencent_hk" if raw.startswith("HK") else "tencent_a"
+    cfg = _read_system_config_for_metrics()
+    key = cfg.get("HK_BACKTEST_SOURCE", "historical_hk1") if raw.startswith("HK") else cfg.get("A_BACKTEST_SOURCE", "historical_a1")
+    return _display_source_name(key)
 
 
 def _strategy_calc_cache_key(symbol, strategy_source, last_bar_date, ma_len, cfg):
@@ -1249,10 +1320,18 @@ def compute_sideways_index(closes, cfg):
 # ===========================
 # 历史/策略数据源指标对照
 # ===========================
+def _normalize_system_source_key(field, value):
+    try:
+        return market_normalize_system_source_value(field, value)
+    except Exception:
+        return str(value or "").strip()
+
+
+
 def _read_system_config_for_metrics():
     cfg = {
-        "A_BACKTEST_SOURCE": "tencent_a_unadjusted",
-        "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted",
+        "A_BACKTEST_SOURCE": "historical_a1",
+        "HK_BACKTEST_SOURCE": "historical_hk1",
     }
     try:
         if SYSTEM_CONFIG_FILE.exists():
@@ -1261,22 +1340,23 @@ def _read_system_config_for_metrics():
                 cfg.update({k: "" if v is None else str(v).strip() for k, v in raw.items()})
     except Exception as e:
         logging.debug(f"读取系统回测/策略数据源配置失败: {e}")
+    cfg["A_BACKTEST_SOURCE"] = _normalize_system_source_key("A_BACKTEST_SOURCE", cfg.get("A_BACKTEST_SOURCE"))
+    cfg["HK_BACKTEST_SOURCE"] = _normalize_system_source_key("HK_BACKTEST_SOURCE", cfg.get("HK_BACKTEST_SOURCE"))
     return cfg
 
 
 def _history_source_options_for_symbol(symbol):
-    """Return the single source shown on Web for 回测/策略数据源指标.
-
-    Keep this in sync with dcf_web.py. The older implementation calculated all
-    historical sources and could overwrite the Web cache with a different source
-    list after the user clicked refresh, so the page appeared to keep yesterday's
-    metric/time.
-    """
+    """Return the selected 回测/策略数据源 only; labels come from market_data.py."""
     raw = str(symbol or "").upper().strip()
     system_cfg = _read_system_config_for_metrics()
-    if raw.startswith("HK"):
-        return [("tencent_hk_unadjusted", "腾讯港股日K")]
-    return [("tencent_a_unadjusted", "腾讯A股/ETF日K")]
+    field = "HK_BACKTEST_SOURCE" if raw.startswith("HK") else "A_BACKTEST_SOURCE"
+    default_key = "historical_hk1" if raw.startswith("HK") else "historical_a1"
+    key = system_cfg.get(field, default_key)
+    try:
+        options = dict(market_get_source_options(field))
+    except Exception:
+        options = {}
+    return [(key, options.get(key, _display_source_name(key)))]
 
 
 def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, snap, ma_short_len):
@@ -1304,7 +1384,9 @@ def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, sna
         "key": source_key,
         "label": source_label,
         "ok": True,
-        "source": getattr(snap, "source", source_key),
+        "level": "INFO" if ma150_source == "f" else "WARN",
+        "status": "OK" if ma150_source == "f" else "WARN",
+        "source": _display_source_name(getattr(snap, "source", source_key)),
         "date": getattr(snap, "last_bar_date", "") or "",
         "count": len(closes),
         "current_price": round(current_price, 4),
@@ -1315,7 +1397,55 @@ def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, sna
         "dynamic_k": round(float(dynamic_k150), 4),
         "sideways_score": round(float(sideways_score), 4),
         "zone": zone,
-        "error": "",
+        "error": "" if ma150_source == "f" else f"策略数据为非完整口径: MA150来源={ma150_source}",
+    }
+
+
+def _source_metric_from_strategy_state(symbol, cfg, dcf_state):
+    """Build the Web 回测/策略指标 card from the latest strategy calculation cache."""
+    strategy_source = _display_source_name(dcf_state.get("strategy_source") or _strategy_source_for_symbol(symbol))
+    cache = dcf_state.get("strategy_calc_cache") if isinstance(dcf_state.get("strategy_calc_cache"), dict) else {}
+    ma150 = _safe_float(dcf_state.get("ma_short", cache.get("ma150")), 0.0)
+    dynamic_k = _safe_float(dcf_state.get("dynamic_k150", cache.get("dynamic_k150")), 0.0)
+    sideways = _safe_float(dcf_state.get("sideways_score", cache.get("sideways_score")), 0.0)
+    current_price = _safe_float(dcf_state.get("last_price"), 0.0)
+    ma150_source = str(dcf_state.get("ma_short_source") or cache.get("ma150_source") or "")
+    last_bar_date = str(cache.get("last_bar_date") or dcf_state.get("last_valid_bar_date") or "")
+    updated_at = str(dcf_state.get("strategy_calc_updated_at") or cache.get("updated_at") or strategy_now().strftime("%Y-%m-%d %H:%M:%S"))
+    history_count = _safe_int(cache.get("history_count", dcf_state.get("history_count", 0)), 0)
+    ok = ma150 > 0 and current_price > 0
+    err = str(dcf_state.get("strategy_error") or "")
+    level = str(dcf_state.get("strategy_level") or ("INFO" if ok else "ERROR")).upper()
+    status = str(dcf_state.get("strategy_status") or ("OK" if ok else "ERROR")).upper()
+    if ok and ma150_source and ma150_source != "f" and level == "INFO":
+        level = "WARN"
+        status = "WARN"
+        err = err or f"策略数据为非完整口径: MA150来源={ma150_source}"
+    zone = ""
+    try:
+        if ok:
+            zone = get_zone(current_price, ma150, cfg)
+    except Exception:
+        zone = ""
+    return {
+        "key": strategy_source,
+        "label": f"{strategy_source} 策略值",
+        "ok": bool(ok and level != "ERROR"),
+        "level": level,
+        "status": status,
+        "source": strategy_source,
+        "date": last_bar_date,
+        "updated_at": updated_at,
+        "count": history_count,
+        "current_price": round(current_price, 4) if current_price else None,
+        "ma150": round(ma150, 4) if ma150 else None,
+        "ma150_source": ma150_source,
+        "sell": round(ma150 * get_trend_multiple(cfg), 4) if ma150 else None,
+        "clear": round(ma150 * get_sell_multiple(cfg), 4) if ma150 else None,
+        "dynamic_k": round(dynamic_k, 4) if dynamic_k else None,
+        "sideways_score": round(sideways, 4),
+        "zone": zone,
+        "error": err,
     }
 
 
@@ -1340,7 +1470,9 @@ def refresh_source_metrics_for_symbol(name, cfg, state):
                 "key": source_key,
                 "label": source_label,
                 "ok": False,
-                "source": source_key,
+                "level": "ERROR",
+                "status": "ERROR",
+                "source": _display_source_name(source_key),
                 "date": "",
                 "count": 0,
                 "current_price": None,
@@ -1355,6 +1487,14 @@ def refresh_source_metrics_for_symbol(name, cfg, state):
             })
     dcf_state["source_metrics"] = results
     dcf_state["source_metrics_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+    errors = [str(x.get("error", "")) for x in results if isinstance(x, dict) and (not x.get("ok") or x.get("level") in {"WARN", "ERROR"}) and x.get("error")]
+    dcf_state["source_metrics_error"] = "；".join(errors)
+    if results and all(isinstance(x, dict) and x.get("ok") for x in results):
+        dcf_state["strategy_metrics_level"] = "INFO"
+    elif any(isinstance(x, dict) and x.get("level") == "ERROR" for x in results):
+        dcf_state["strategy_metrics_level"] = "ERROR"
+    else:
+        dcf_state["strategy_metrics_level"] = "WARN"
     logging.info(f"📊 已刷新回测/策略数据源指标: {name} ({symbol})，共 {len(results)} 个源。")
     return results
 
@@ -1502,20 +1642,9 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     last_known_price = dcf_state.get("last_price")
     current_units = normalize_position_amount(dcf_state.get("current_units", base_units), position_mode)
     current_avg_cost = dcf_state.get("avg_cost", 0.0)
-    live_units = get_live_current_units(cfg)
-    live_avg_cost = get_live_current_avg_cost(cfg)
-    if live_units is not None and abs(live_units - current_units) > POSITION_EPSILON:
-        current_units = live_units
-        dcf_state["current_units"] = current_units
-        if live_avg_cost is not None:
-            current_avg_cost = live_avg_cost
-            dcf_state["avg_cost"] = current_avg_cost
-        elif current_units <= POSITION_EPSILON:
-            current_avg_cost = 0.0
-            dcf_state["avg_cost"] = 0.0
-    elif live_avg_cost is not None and abs(live_avg_cost - current_avg_cost) > POSITION_EPSILON:
-        current_avg_cost = live_avg_cost
-        dcf_state["avg_cost"] = current_avg_cost
+    # Runtime state is authoritative during normal strategy loops.
+    # YAML current_units/current_avg_cost are only used by build_default_symbol_state()
+    # for new symbols or explicit Web reset, and must not overwrite live state here.
     price_scale = cfg.get("price_scale", 1.0)
     fetch_days = STRATEGY.get("fetch_history_days", 400)
     ma_short_len = STRATEGY.get("ma_period_short", 150)
@@ -1679,6 +1808,17 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 source=snapshot.source, last_bar_date=snapshot.last_bar_date
             )
             logging.info(msg)
+            dcf_state["strategy_status"] = "ERROR"
+            dcf_state["strategy_level"] = "ERROR"
+            dcf_state["strategy_error"] = reason
+            dcf_state["source_metrics"] = [{
+                "key": strategy_source, "label": f"{strategy_source} 策略值", "ok": False, "level": "ERROR", "status": "ERROR",
+                "source": strategy_source, "date": getattr(snapshot, "last_bar_date", "") or "", "count": len(closes),
+                "current_price": current_price, "ma150": None, "sell": None, "clear": None,
+                "dynamic_k": None, "sideways_score": None, "ma150_source": "", "zone": "", "error": reason,
+            }]
+            dcf_state["source_metrics_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+            dcf_state["source_metrics_error"] = reason
             _mark_market_error(dcf_state, msg, reason, snapshot.source)
             write_market_skip_snapshot(
                 name, symbol, dcf_state, reason, level="ERROR",
@@ -1706,8 +1846,17 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             "sideways_score": sideways_score,
             "dynamic_k150": dynamic_k150,
             "k150": base_k150,
+            "history_count": len(closes),
             "updated_at": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+    if ma150_source and ma150_source != "f":
+        strategy_status = "WARN"
+        dcf_state["strategy_level"] = "WARN"
+        dcf_state["strategy_error"] = f"策略数据为非完整口径: MA150来源={ma150_source}"
+    else:
+        strategy_status = "OK"
+        dcf_state["strategy_level"] = "INFO"
+        dcf_state["strategy_error"] = ""
     dcf_state["strategy_source"] = strategy_source
     dcf_state["strategy_status"] = strategy_status
     dcf_state["strategy_calc_key"] = strategy_key
@@ -1725,6 +1874,9 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     dcf_state["current_units"] = current_units
     dcf_state["avg_cost"] = current_avg_cost
     dcf_state["ma_short_source"] = ma150_source
+    dcf_state["source_metrics"] = [_source_metric_from_strategy_state(symbol, cfg, dcf_state)]
+    dcf_state["source_metrics_updated_at"] = dcf_state.get("strategy_calc_updated_at")
+    dcf_state["source_metrics_error"] = dcf_state.get("strategy_error", "")
     dcf_state["position_mode"] = position_mode
     if current_units > 0 and current_avg_cost == 0:
         current_avg_cost = current_price
@@ -1740,11 +1892,8 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     def _build_zone_extra_info():
         dynamic_info = f"⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
         lines = []
-        pyramid_steps_cfg = int(_safe_float(cfg.get("pyramid_steps", 0), 0))
-        pyramid_weights = cfg.get("pyramid_weights", []) or []
-        total_pyramid_steps = pyramid_steps_cfg if pyramid_steps_cfg > 0 else len(pyramid_weights)
-        if pyramid_weights:
-            total_pyramid_steps = min(total_pyramid_steps, len(pyramid_weights)) if total_pyramid_steps > 0 else len(pyramid_weights)
+        total_add_pyramid_steps = get_pyramid_add_steps(cfg)
+        total_clear_pyramid_steps = get_clear_pyramid_steps(cfg)
 
         if zone == "BOX_ZONE":
             grid_status = "已开启" if get_box_grid_enabled(cfg) else "未开启"
@@ -1763,8 +1912,8 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             else:
                 pyramid_status = "未开启"
             cur_step = int(dcf_state.get("pyramid_step", 0) or 0)
-            step_pct = _safe_float(cfg.get("add_box_step", 0.05), 0.05)
-            lines.append(f"🧱机会倒金字塔: {pyramid_status}，加仓{cur_step}/{total_pyramid_steps}步，步长{_pct_text(step_pct)}")
+            step_pct = get_pyramid_add_step(cfg)
+            lines.append(f"🧱机会倒金字塔: {pyramid_status}，加仓{cur_step}/{total_add_pyramid_steps}步，步长{_pct_text(step_pct)}")
         elif zone == "TREND_ZONE":
             step_pct = _safe_float(cfg.get("trend_zone_step_percent", 0.01), 0.01)
             sell_pct = _safe_float(cfg.get("trend_zone_sell_percent", 0.05), 0.05)
@@ -1773,8 +1922,10 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 cur_step = max(0, int((current_price - last_trade_price) / (last_trade_price * step_pct)))
             lines.append(f"📈趋势卖出: 步长{_pct_text(step_pct)}，当前{cur_step}步，单次目标{_pct_text(sell_pct)}")
         elif zone == "SELL_ZONE":
-            pyramid_weights_for_sell = cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])
+            pyramid_weights_for_sell = get_clear_pyramid_weights(cfg)
             sell_plan = calculate_pyramid_sell_plan(target_units, pyramid_weights_for_sell, position_mode, 100)
+            if total_clear_pyramid_steps > 0:
+                sell_plan = sell_plan[:total_clear_pyramid_steps]
             total_steps = len(sell_plan)
             cur_clear_step = int(dcf_state.get("clear_step", 0) or 0)
             target_clear_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
@@ -1786,7 +1937,9 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
 
     extra_info_full = _build_zone_extra_info()
     market_line = f"📡行情源: {_display_source_name(snapshot.source)}，数据状态: OK。"
-    strategy_line = f"🧭策略源: {strategy_source}，数据状态: {strategy_status}。"
+    strategy_level_for_msg = str(dcf_state.get("strategy_level") or ("WARN" if strategy_status == "WARN" else "INFO")).upper()
+    strategy_issue = _short_strategy_issue(strategy_level_for_msg, dcf_state.get("strategy_error", ""), ma150_source)
+    strategy_line = f"🧭策略源: {strategy_source}，数据状态: {strategy_status}{('，' + strategy_issue) if strategy_issue else ''}。"
     extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line + "\n" + strategy_line
     status_suffix = f"\n🚦策略运行状态: {strategy_run.upper()}"
     status_msg = build_status_message(
@@ -1798,6 +1951,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         sell_price=sell_price, clear_price=clear_price,
         position_mode=position_mode, extra_info=extra_info_full
     )
+    status_msg = _apply_strategy_alert_to_message(status_msg, strategy_level_for_msg, strategy_issue)
     logging.info(status_msg + "\n")
     dcf_state["last_status_msg"] = status_msg
     dcf_state["status_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1806,10 +1960,10 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     if not allow_trade:
         write_strategy_snapshot({
             "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
-            "name": name, "symbol": symbol, "level": "INFO",
+            "name": name, "symbol": symbol, "level": strategy_level_for_msg,
             "action": "REFRESH_ONLY", "decision": "REFRESH_ONLY",
             "reason": refresh_reason or "manual refresh; monitor only", "market_status": "ok",
-            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "last_bar_date": snapshot.last_bar_date,
+            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue, "last_bar_date": snapshot.last_bar_date,
             "history_count": len(closes), "current_price": current_price,
             "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
             "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
@@ -1826,10 +1980,10 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     if strategy_run == "off":
         write_strategy_snapshot({
             "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
-            "name": name, "symbol": symbol, "level": "INFO",
+            "name": name, "symbol": symbol, "level": strategy_level_for_msg,
             "action": "MONITOR_ONLY", "decision": "MONITOR_ONLY",
             "reason": "strategy_run=off", "market_status": "ok",
-            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "last_bar_date": snapshot.last_bar_date,
+            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue, "last_bar_date": snapshot.last_bar_date,
             "history_count": len(closes), "current_price": current_price,
             "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
             "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
@@ -1926,6 +2080,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             sell_price=sell_price, clear_price=clear_price,
             position_mode=position_mode, extra_info=extra_info
         )
+        trade_msg = _apply_strategy_alert_to_message(trade_msg, strategy_level_for_msg, strategy_issue)
         logging.info(trade_msg)
         messages.append(trade_msg)
     state_dict.update(add_state)
@@ -1977,11 +2132,15 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 sell_price=sell_price, clear_price=clear_price,
                 position_mode=position_mode, extra_info=extra_info
             )
+            trade_msg = _apply_strategy_alert_to_message(trade_msg, strategy_level_for_msg, strategy_issue)
             logging.info(trade_msg)
             messages.append(trade_msg)
     elif zone == "SELL_ZONE":
-        pyramid_weights = cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])
+        pyramid_weights = get_clear_pyramid_weights(cfg)
         sell_plan = calculate_pyramid_sell_plan(target_units, pyramid_weights, position_mode, 100)
+        clear_steps_cfg = get_clear_pyramid_steps(cfg)
+        if clear_steps_cfg > 0:
+            sell_plan = sell_plan[:clear_steps_cfg]
         total_steps = len(sell_plan)
         target_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
         if target_step > clear_step:
@@ -2032,25 +2191,25 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                     sell_price=sell_price, clear_price=clear_price,
                     position_mode=position_mode, extra_info=extra_info
                 )
+                trade_msg = _apply_strategy_alert_to_message(trade_msg, strategy_level_for_msg, strategy_issue)
                 logging.info(trade_msg)
                 messages.append(trade_msg)
                 if current_units <= POSITION_EPSILON:
                     break
 
-    # 保存状态
-    dcf_state["pyramid_step"] = pyramid_step
-    dcf_state["last_add_price"] = last_add_price
-    dcf_state["pyramid_active"] = pyramid_active
-    dcf_state["target_reached_once"] = target_reached_once
-    dcf_state["clear_step"] = clear_step
+    # 交易态字段只在真实 BUY/SELL 分支内写入；普通 NO_TRADE 不回写
+    # last_add_price/pyramid_step/clear_step/pyramid_active/target_reached_once。
     action = "TRADE" if messages else "NO_TRADE"
     reason = "; ".join([line.split("🗞交易:", 1)[-1].strip() for line in messages if "🗞交易:" in line]) if messages else "未触发交易条件"
+    if strategy_issue:
+        reason = f"{reason}｜{strategy_issue}"
     write_strategy_snapshot({
         "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
-        "name": name, "symbol": symbol, "level": "INFO",
+        "name": name, "symbol": symbol, "level": strategy_level_for_msg,
         "action": action, "decision": action, "reason": reason,
         "trade_count": len(messages),
         "market_status": "ok", "market_source": _display_source_name(snapshot.source),
+        "strategy_source": strategy_source, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue,
         "last_bar_date": snapshot.last_bar_date, "history_count": len(closes),
         "current_price": current_price, "ma150": ma150, "ma150_raw": ma150_raw,
         "ma150_source": ma150_source, "dynamic_k150": dynamic_k150,

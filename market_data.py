@@ -11,8 +11,9 @@ DCF market data adapter layer.
 2. A股/ETF 在交易时段必须叠加实时价，实时价顺序：腾讯 -> 雪球 -> 东方财富。
 3. 不伪造历史 K 线；缓存只用于展示/观察，默认不允许交易。
 4. 成功获取真实行情时写入本地缓存；全部接口失败时可返回缓存快照，但 trade_allowed=False。
-5. 港股优先腾讯不复权日K；A股/ETF 优先腾讯/东方财富/网易历史日K，并叠加实时价。
-6. A股/ETF 不再使用新浪日K；新浪日K盘中滞后，不能作为实盘行情源。
+5. 港股策略默认腾讯不复权日K；A股/ETF 默认腾讯/东方财富/网易历史日K，并叠加实时价。
+6. 回测/策略历史源支持固定内部代号映射；客户可见信息使用真实源名称，不展示内部代号。
+7. A股/ETF 新增新浪日K作为可选历史源；港股第二历史源使用 Yahoo 港股日K。
 """
 
 from __future__ import annotations
@@ -37,10 +38,10 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
 
 SYSTEM_DEFAULTS = {
-    "A_QUOTE_SOURCE": "tencent_quote_a",
-    "HK_MARKET_SOURCE": "tencent_hk_unadjusted",
-    "A_BACKTEST_SOURCE": "tencent_a_unadjusted",
-    "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted",
+    "A_QUOTE_SOURCE": "live_a1",
+    "HK_MARKET_SOURCE": "live_hk1",
+    "A_BACKTEST_SOURCE": "historical_a1",
+    "HK_BACKTEST_SOURCE": "historical_hk1",
     "XUEQIU_TOKEN": "",
 }
 
@@ -60,59 +61,140 @@ def _load_system_config() -> dict:
 def _preferred_order(items, preferred_key: str):
     if not preferred_key:
         return items
-    preferred_key = str(preferred_key).strip()
+    preferred_key = normalize_source_key(preferred_key)
     head = [item for item in items if item[0] == preferred_key]
     tail = [item for item in items if item[0] != preferred_key]
     return head + tail
 
-MARKET_DATA_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-]
 
-EASTMONEY_A_ENDPOINTS = [
-    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-]
-EASTMONEY_HK_ENDPOINTS = [
-    "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
-    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-    "https://84.push2his.eastmoney.com/api/qt/stock/kline/get",
-    "https://17.push2his.eastmoney.com/api/qt/stock/kline/get",
-    "http://push2his.eastmoney.com/api/qt/stock/kline/get",
-]
-NETEASE_A_ENDPOINTS = [
-    "https://quotes.money.163.com/service/chddata.html",
-    "http://quotes.money.163.com/service/chddata.html",
-]
+# Internal stable source ids used between programs.  Real implementation names are
+# normalized here so all callers can pass either the new stable ids or legacy names.
+SOURCE_ALIASES = {
+    # A-share / ETF realtime
+    "live_a1": "tencent_quote_a",
+    "live_a2": "xueqiu_quote_a",
+    "live_a3": "eastmoney_quote_a",
+    # HK realtime
+    "live_hk1": "tencent_hk_unadjusted",
+    "live_hk2": "xueqiu_hk_quote",
+    "live_hk3": "eastmoney_hk_quote",
+    # A-share / ETF historical
+    "historical_a1": "tencent_a_unadjusted",
+    "historical_a2": "sina_a_unadjusted",
+    # HK historical
+    "historical_hk1": "tencent_hk_unadjusted",
+    "historical_hk2": "yahoo_csv_hk",
+    # legacy/display aliases
+    "tencent_quote_a": "tencent_quote_a", "tencent_api": "tencent_quote_a", "腾讯实时": "tencent_quote_a",
+    "xueqiu_quote_a": "xueqiu_quote_a", "xueqiu_api": "xueqiu_quote_a", "雪球实时": "xueqiu_quote_a",
+    "eastmoney_quote_a": "eastmoney_quote_a", "eastmoney_api": "eastmoney_quote_a", "东方财富实时": "eastmoney_quote_a",
+    "tencent_hk_quote": "tencent_hk_unadjusted", "tencent_hk": "tencent_hk_unadjusted", "腾讯港股": "tencent_hk_unadjusted",
+    "xueqiu_hk_quote": "xueqiu_hk_quote", "xueqiu_hk": "xueqiu_hk_quote", "雪球港股": "xueqiu_hk_quote",
+    "eastmoney_hk_quote": "eastmoney_hk_quote", "eastmoney_hk": "eastmoney_hk_quote", "东方财富港股": "eastmoney_hk_quote",
+    "tencent_a": "tencent_a_unadjusted", "tencent_a_unadjusted": "tencent_a_unadjusted", "腾讯A股/ETF日K": "tencent_a_unadjusted",
+    "sina_a": "sina_a_unadjusted", "sina_a_unadjusted": "sina_a_unadjusted", "新浪A股/ETF日K": "sina_a_unadjusted",
+    "eastmoney_a": "eastmoney_a_unadjusted", "eastmoney_a_unadjusted": "eastmoney_a_unadjusted", "东方财富A股/ETF日K": "eastmoney_a_unadjusted",
+    "netease_a": "netease_a_unadjusted", "netease_a_unadjusted": "netease_a_unadjusted", "网易A股/ETF日K": "netease_a_unadjusted",
+    "tencent_hk_unadjusted": "tencent_hk_unadjusted", "腾讯港股日K": "tencent_hk_unadjusted",
+    "yahoo_hk": "yahoo_csv_hk", "yahoo_csv_hk": "yahoo_csv_hk", "yfinance_hk": "yfinance_hk", "Yahoo港股日K": "yahoo_csv_hk",
+}
 
-# 默认不复权，避免把复权价当现价；只有 fqt=0 空时才尝试 1/2，仍会保留 source 标识。
-EASTMONEY_FQT_OPTIONS = ["0", "1", "2"]
+SOURCE_DISPLAY_NAMES = {
+    "tencent_quote_a": "腾讯实时",
+    "xueqiu_quote_a": "雪球实时",
+    "eastmoney_quote_a": "东方财富实时",
+    "tencent_hk_unadjusted": "腾讯港股日K",
+    "xueqiu_hk_quote": "雪球港股",
+    "eastmoney_hk_quote": "东方财富港股",
+    "tencent_a_unadjusted": "腾讯A股/ETF日K",
+    "sina_a_unadjusted": "新浪A股/ETF日K",
+    "eastmoney_a_unadjusted": "东方财富A股/ETF日K",
+    "netease_a_unadjusted": "网易A股/ETF日K",
+    "yahoo_csv_hk": "Yahoo港股日K",
+    "yfinance_hk": "Yahoo港股日K",
+    "eastmoney_hk_unadjusted": "东方财富港股日K",
+    "xueqiu_hk": "雪球港股日K",
+}
+
+SOURCE_OPTION_GROUPS = {
+    "A_QUOTE_SOURCE": [
+        ("live_a1", "腾讯实时"),
+        ("live_a2", "雪球实时"),
+        ("live_a3", "东方财富实时"),
+    ],
+    "HK_MARKET_SOURCE": [
+        ("live_hk1", "腾讯港股"),
+        ("live_hk2", "雪球港股"),
+        ("live_hk3", "东方财富港股"),
+    ],
+    "A_BACKTEST_SOURCE": [
+        ("historical_a1", "腾讯A股/ETF日K"),
+        ("historical_a2", "新浪A股/ETF日K"),
+    ],
+    "HK_BACKTEST_SOURCE": [
+        ("historical_hk1", "腾讯港股日K"),
+        ("historical_hk2", "Yahoo港股日K"),
+    ],
+}
+
+STABLE_SOURCE_ALIASES = {}
+for field, options in SOURCE_OPTION_GROUPS.items():
+    for stable_id, _label in options:
+        impl = SOURCE_ALIASES.get(stable_id, stable_id)
+        STABLE_SOURCE_ALIASES[stable_id] = stable_id
+        STABLE_SOURCE_ALIASES[impl] = stable_id
+        STABLE_SOURCE_ALIASES[SOURCE_DISPLAY_NAMES.get(impl, _label)] = stable_id
+# extra compatibility aliases
+STABLE_SOURCE_ALIASES.update({
+    "tencent_api": "live_a1", "xueqiu_api": "live_a2", "eastmoney_api": "live_a3",
+    "tencent_hk": "live_hk1", "xueqiu_hk": "live_hk2", "eastmoney_hk": "live_hk3",
+    "yfinance_hk": "historical_hk2",
+})
 
 
-@dataclass
-class MarketSnapshot:
-    symbol: str
-    source: str
-    closes: List[float]
-    price_scale: float = 1.0
-    last_bar_date: Optional[str] = None
-    error: str = ""
-    trade_allowed: bool = True
-    dates: Optional[List[str]] = None
-    # strategy_source is the historical K-line source used for MA/zone calculations.
-    # source is the real-time quote source used for current_price.
-    strategy_source: str = ""
-    strategy_status: str = "OK"
+def normalize_source_key(source: str) -> str:
+    """Return the implementation source key used inside market_data.py."""
+    key = str(source or "").strip()
+    return SOURCE_ALIASES.get(key, key)
 
-    @property
-    def ok(self) -> bool:
-        return bool(self.closes)
 
-    @property
-    def current_price(self) -> float:
-        return round(float(self.closes[-1]), 4) if self.closes else 0.0
+def get_source_canonical_key(source: str) -> str:
+    """Return a stable implementation key for comparisons across display/legacy/stable ids."""
+    if str(source or "").startswith("cache_"):
+        return "cache"
+    return normalize_source_key(source)
+
+
+def display_source_name(source: str) -> str:
+    key = normalize_source_key(source)
+    if str(key or "").startswith("cache_"):
+        return "本地缓存"
+    return SOURCE_DISPLAY_NAMES.get(key, key or "未知")
+
+
+def get_source_display_name(source: str) -> str:
+    """Public display-name API for dcf.py/dcf_web.py/backtest_dcf.py."""
+    return display_source_name(source)
+
+
+def normalize_system_source_value(field: str, value: str) -> str:
+    """Normalize system_config values to stable ids used between programs."""
+    raw = str(value or "").strip()
+    stable = STABLE_SOURCE_ALIASES.get(raw, raw)
+    allowed = {x[0] for x in SOURCE_OPTION_GROUPS.get(field, [])}
+    if stable in allowed:
+        return stable
+    return SYSTEM_DEFAULTS.get(field, stable)
+
+
+def get_source_options(field: str):
+    """Return customer-facing select options for one system source field."""
+    return list(SOURCE_OPTION_GROUPS.get(field, []))
+
+
+def get_all_source_options():
+    """Return all customer-facing source select options."""
+    return {k: list(v) for k, v in SOURCE_OPTION_GROUPS.items()}
 
 
 def _headers(referer: str = "https://quote.eastmoney.com/") -> dict:
@@ -422,7 +504,7 @@ def _fetch_xueqiu_a_realtime_price(symbol: str, price_scale: float) -> Tuple[flo
 def _fetch_a_realtime_price(symbol: str, price_scale: float) -> Tuple[float, Optional[str], str]:
     """A股/ETF 实时价统一入口：腾讯优先，雪球第二，东方财富第三。"""
     errors = []
-    preferred = str(_load_system_config().get("A_QUOTE_SOURCE", "tencent_quote_a") or "tencent_quote_a").strip()
+    preferred = normalize_source_key(_load_system_config().get("A_QUOTE_SOURCE", "tencent_quote_a") or "tencent_quote_a")
     quote_sources = _preferred_order([
         ("tencent_quote_a", _fetch_tencent_a_realtime_price),
         ("xueqiu_quote_a", _fetch_xueqiu_a_realtime_price),
@@ -513,9 +595,10 @@ def _fetch_tencent_a_snapshot(symbol: str, days: int, price_scale: float) -> Mar
     dedup = {}
     for k in rows:
         try:
-            date = str(k[0])
+            date = str(k[0]).strip()
             close_price = float(k[2]) * float(price_scale)
-            if close_price > 0:
+            volume = float(k[5]) if len(k) > 5 and k[5] not in (None, "", "-") else 1.0
+            if date and close_price > 0 and volume > 0:
                 dedup[date] = round(close_price, 4)
         except Exception:
             continue
@@ -527,6 +610,60 @@ def _fetch_tencent_a_snapshot(symbol: str, days: int, price_scale: float) -> Mar
         return snap
     raise RuntimeError(f"腾讯A股/ETF K线数据不足: {symbol}, count={len(closes)}, last_error={last_err}")
 
+
+
+
+def _sina_a_symbol(symbol: str) -> str:
+    raw = str(symbol or "").upper().strip()
+    if raw.startswith("SH"):
+        return "sh" + raw[2:]
+    if raw.startswith("SZ"):
+        return "sz" + raw[2:]
+    if raw.isdigit() and len(raw) == 6:
+        return ("sh" if raw.startswith("6") else "sz") + raw
+    raise ValueError(f"不支持的A股代码格式: {symbol}")
+
+
+def _fetch_sina_a_snapshot(symbol: str, days: int, price_scale: float) -> MarketSnapshot:
+    """A股/ETF 可选历史源：新浪日K。
+
+    新浪 CN_MarketDataService 返回 dict 行：day/open/high/low/close/volume。
+    仅用于回测/策略历史对比；实盘主快照仍由默认链路叠加实时价。
+    """
+    s_symbol = _sina_a_symbol(symbol)
+    lmt = max(int(days), 2)
+    url = "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
+    params = {"symbol": s_symbol, "scale": "240", "ma": "no", "datalen": str(lmt)}
+    try:
+        resp = requests.get(url, params=params, headers=_headers("https://finance.sina.com.cn/"), timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise RuntimeError(f"新浪A股/ETF日K请求失败: {symbol}, error={e}")
+    part = (((data or {}).get("result") or {}).get("data"))
+    rows = part.get("data") if isinstance(part, dict) else part
+    if not isinstance(rows, list):
+        rows = []
+    dedup = {}
+    for row in rows:
+        try:
+            if not isinstance(row, dict):
+                continue
+            date = str(row.get("day") or row.get("date") or "").strip()
+            close_price = float(row.get("close")) * float(price_scale)
+            volume = float(row.get("volume", 1) or 0)
+            if date and close_price > 0 and volume > 0:
+                dedup[date] = round(close_price, 4)
+        except Exception:
+            continue
+    dates = sorted(dedup.keys())
+    closes = [dedup[d] for d in dates]
+    if len(closes) >= 2:
+        snap = MarketSnapshot(symbol.upper(), "sina_a_unadjusted", closes[-lmt:], price_scale, dates[-1] if dates else None, dates=dates[-lmt:])
+        _write_cache(snap)
+        return snap
+    status = ((data or {}).get("result") or {}).get("status")
+    raise RuntimeError(f"新浪A股/ETF日K数据不足: {symbol}, count={len(closes)}, status={status}")
 
 def _netease_a_code(symbol: str) -> str:
     """网易历史行情代码。上海=0+代码，深圳=1+代码。"""
@@ -682,13 +819,17 @@ def _fetch_yahoo_csv_hk_snapshot(symbol_or_code: str, days: int, price_scale: fl
     timestamps = node.get("timestamp") or []
     quote = (((node.get("indicators") or {}).get("quote") or [{}])[0] or {})
     close_values = quote.get("close") or []
+    volume_values = quote.get("volume") or []
     closes, dates = [], []
-    for ts, val in zip(timestamps, close_values):
+    for idx, (ts, val) in enumerate(zip(timestamps, close_values)):
         try:
             if val is None:
                 continue
             close_price = float(val) * float(price_scale)
-            if close_price > 0:
+            volume = 1.0
+            if idx < len(volume_values) and volume_values[idx] is not None:
+                volume = float(volume_values[idx])
+            if close_price > 0 and volume > 0:
                 dates.append(datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d"))
                 closes.append(round(close_price, 4))
         except Exception:
@@ -775,9 +916,10 @@ def _fetch_tencent_hk_snapshot(symbol_or_code: str, days: int, price_scale: floa
     for k in rows:
         try:
             # 常见格式 [date, open, close, high, low, volume, ...]
-            date = str(k[0])
+            date = str(k[0]).strip()
             close_price = float(k[2]) * float(price_scale)
-            if close_price > 0:
+            volume = float(k[5]) if len(k) > 5 and k[5] not in (None, "", "-") else 1.0
+            if date and close_price > 0 and volume > 0:
                 dedup[date] = round(close_price, 4)
         except Exception:
             continue
@@ -1152,7 +1294,7 @@ def _fetch_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> Ma
 
     closes = list(base.closes or [])
     dates = list(base.dates or []) if isinstance(base.dates, list) else None
-    preferred = str(_load_system_config().get("HK_MARKET_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
+    preferred = normalize_source_key(_load_system_config().get("HK_MARKET_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted")
     realtime_source = "tencent_hk"
     last_bar_date = base.last_bar_date
 
@@ -1168,6 +1310,29 @@ def _fetch_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> Ma
                         dates[-1] = live_date
         except Exception as e:
             logging.warning(f"雪球港股实时价失败 HK{code}: {e}；已回退腾讯港股实时价。")
+            try:
+                live_price, live_date = _fetch_tencent_hk_realtime_price("HK" + code, price_scale)
+                if live_price and live_price > 0 and closes:
+                    closes[-1] = round(float(live_price), 4)
+                    realtime_source = "tencent_hk"
+                    if live_date:
+                        last_bar_date = live_date
+                        if dates:
+                            dates[-1] = live_date
+            except Exception:
+                realtime_source = "tencent_hk"
+    elif preferred == "eastmoney_hk_quote":
+        try:
+            live_price, live_date = _fetch_eastmoney_hk_realtime_price("HK" + code, price_scale)
+            if live_price and live_price > 0 and closes:
+                closes[-1] = round(float(live_price), 4)
+                realtime_source = "eastmoney_hk"
+                if live_date:
+                    last_bar_date = live_date
+                    if dates:
+                        dates[-1] = live_date
+        except Exception as e:
+            logging.warning(f"东方财富港股实时价失败 HK{code}: {e}；已回退腾讯港股实时价。")
             try:
                 live_price, live_date = _fetch_tencent_hk_realtime_price("HK" + code, price_scale)
                 if live_price and live_price > 0 and closes:
@@ -1242,76 +1407,117 @@ def get_hk_price(symbol: str, price_scale: float = 1.0) -> float:
 # 对外辅助：状态页参考价格 / 回测历史源
 # ===========================
 def get_reference_prices(symbol: str, price_scale: float = 1.0) -> List[dict]:
-    """Return reference prices for Web status page without affecting strategy state."""
+    """Return realtime reference prices for Web status page.
+
+    The returned card keys are the stable protocol ids (live_a1/live_hk3, etc.).
+    Labels and visible source names come from SOURCE_OPTION_GROUPS / get_source_display_name,
+    so dcf_web.py does not need to hardcode market-source names or counts.
+    """
     raw = str(symbol or "").upper().strip()
     cfg = _load_system_config()
-    result = []
     if not raw:
-        return result
+        return []
+
     if raw.startswith("HK"):
-        preferred = str(cfg.get("HK_MARKET_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
-        if preferred not in {"tencent_hk_unadjusted", "xueqiu_hk_quote"}:
-            preferred = "tencent_hk_unadjusted"
-        # 港股实时参考价：腾讯主源 + 雪球备用源。回测/策略历史K线仍只走腾讯。
-        sources = [
-            ("tencent_hk_unadjusted", "腾讯港股", "tencent_hk", _fetch_tencent_hk_realtime_price),
-            ("xueqiu_hk_quote", "雪球港股", "xueqiu_hk", _fetch_xueqiu_realtime_price),
-        ]
-        for key, label, source_name, fn in sources:
-            try:
-                price, date = fn(raw, price_scale)
-                result.append({
-                    "key": key,
-                    "label": label,
-                    "price": price,
-                    "source": source_name,
-                    "date": date,
-                    "ok": True,
-                    "primary": key == preferred,
-                    "error": "",
-                })
-            except Exception as e:
-                result.append({
-                    "key": key,
-                    "label": label,
-                    "price": None,
-                    "source": source_name,
-                    "date": "",
-                    "ok": False,
-                    "primary": key == preferred,
-                    "error": str(e)[:180],
-                })
-        return result
-    preferred = str(cfg.get("A_QUOTE_SOURCE", "tencent_quote_a") or "tencent_quote_a").strip()
-    sources = [
-        ("tencent_quote_a", "腾讯实时", _fetch_tencent_a_realtime_price),
-        ("xueqiu_quote_a", "雪球实时", _fetch_xueqiu_a_realtime_price),
-        ("eastmoney_quote_a", "东方财富实时", _fetch_eastmoney_a_realtime_price),
-    ]
-    for key, label, fn in sources:
+        field = "HK_MARKET_SOURCE"
+        preferred = normalize_system_source_value(field, cfg.get(field, SYSTEM_DEFAULTS.get(field, "live_hk1")))
+        fn_map = {
+            "live_hk1": _fetch_tencent_hk_realtime_price,
+            "live_hk2": _fetch_xueqiu_realtime_price,
+            "live_hk3": _fetch_eastmoney_hk_realtime_price,
+        }
+    else:
+        field = "A_QUOTE_SOURCE"
+        preferred = normalize_system_source_value(field, cfg.get(field, SYSTEM_DEFAULTS.get(field, "live_a1")))
+        fn_map = {
+            "live_a1": _fetch_tencent_a_realtime_price,
+            "live_a2": _fetch_xueqiu_a_realtime_price,
+            "live_a3": _fetch_eastmoney_a_realtime_price,
+        }
+
+    result = []
+    for key, _label in get_source_options(field):
+        label = get_source_display_name(key)
+        fn = fn_map.get(key)
+        if fn is None:
+            result.append({
+                "key": key,
+                "label": label,
+                "price": None,
+                "source": label,
+                "date": "",
+                "ok": False,
+                "primary": key == preferred,
+                "error": "数据源未配置",
+            })
+            continue
         try:
             price, date = fn(raw, price_scale)
-            result.append({"key": key, "label": label, "price": price, "source": {"tencent_quote_a":"tencent_api","eastmoney_quote_a":"eastmoney_api","xueqiu_quote_a":"xueqiu_api"}.get(key, key), "date": date, "ok": True, "primary": key == preferred, "error": ""})
+            result.append({
+                "key": key,
+                "label": label,
+                "price": price,
+                "source": label,
+                "date": date or "",
+                "ok": True,
+                "primary": key == preferred,
+                "error": "",
+            })
         except Exception as e:
-            result.append({"key": key, "label": label, "price": None, "source": key, "date": "", "ok": False, "primary": key == preferred, "error": str(e)[:160]})
+            result.append({
+                "key": key,
+                "label": label,
+                "price": None,
+                "source": label,
+                "date": "",
+                "ok": False,
+                "primary": key == preferred,
+                "error": str(e)[:180],
+            })
     return result
 
 
 def get_history_snapshot_by_source(symbol: str, days: int = 400, price_scale: float = 1.0, source: str = "") -> MarketSnapshot:
-    """Fetch historical daily closes from a specific source for backtest comparison."""
-    raw = str(symbol or "").upper().strip()
-    source = str(source or "").strip()
-    if raw.startswith("HK"):
-        key = source or str(_load_system_config().get("HK_BACKTEST_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted")
-        if key != "tencent_hk_unadjusted":
-            key = "tencent_hk_unadjusted"
-        return _fetch_tencent_hk_snapshot(raw, days, price_scale)
-    key = source or str(_load_system_config().get("A_BACKTEST_SOURCE", "tencent_a_unadjusted") or "tencent_a_unadjusted")
-    # 回测/策略指标的 A股/ETF 历史源只保留腾讯；旧配置自动回退腾讯，避免刷新旧缓存或失败源。
-    if key != "tencent_a_unadjusted":
-        key = "tencent_a_unadjusted"
-    return _fetch_tencent_a_snapshot(raw, days, price_scale)
+    """Fetch historical daily closes from a specific source for backtest/strategy comparison.
 
+    Accepts both stable internal ids (historical_a1/historical_hk2) and legacy
+    implementation names (tencent_a_unadjusted/yahoo_csv_hk).  This keeps the
+    program-to-program protocol stable while preserving all original data-source
+    implementations in this adapter file.
+    """
+    raw = str(symbol or "").upper().strip()
+    key = normalize_source_key(source or (_load_system_config().get("HK_BACKTEST_SOURCE" if raw.startswith("HK") else "A_BACKTEST_SOURCE", "") or ""))
+
+    if raw.startswith("HK"):
+        if not key:
+            key = "tencent_hk_unadjusted"
+        if key in {"tencent_hk_unadjusted", "tencent_hk_quote"}:
+            return _fetch_tencent_hk_snapshot(raw, days, price_scale)
+        if key == "yahoo_csv_hk":
+            return _fetch_yahoo_csv_hk_snapshot(raw, days, price_scale)
+        if key == "yfinance_hk":
+            return _fetch_yfinance_hk_snapshot(raw, days, price_scale)
+        if key == "eastmoney_hk_unadjusted":
+            return _fetch_eastmoney_hk_snapshot(raw, days, price_scale)
+        if key == "xueqiu_hk":
+            return _fetch_xueqiu_hk_snapshot(raw, days, price_scale)
+        if key == "reserved_hk_history":
+            raise RuntimeError("备用港股历史源暂未开发")
+        raise RuntimeError(f"未知港股回测/策略历史源: {display_source_name(key)}")
+
+    if not key:
+        key = "tencent_a_unadjusted"
+    if key in {"tencent_a_unadjusted", "tencent_quote_a"}:
+        return _fetch_tencent_a_snapshot(raw, days, price_scale)
+    if key == "sina_a_unadjusted":
+        return _fetch_sina_a_snapshot(raw, days, price_scale)
+    if key == "eastmoney_a_unadjusted":
+        return _fetch_eastmoney_kline_snapshot(_eastmoney_secid(raw), raw.upper(), days, price_scale, EASTMONEY_A_ENDPOINTS, "eastmoney_a")
+    if key == "netease_a_unadjusted":
+        return _fetch_netease_a_snapshot(raw, days, price_scale)
+    if key == "reserved_a_history":
+        raise RuntimeError("备用A股/ETF历史源暂未开发")
+    raise RuntimeError(f"未知A股/ETF回测/策略历史源: {display_source_name(key)}")
 def self_test(symbols: Optional[List[str]] = None, days: int = 30) -> int:
     symbols = symbols or ["SH600036", "SZ159232", "SZ002847", "HK00728", "HK01919", "HK00700"]
     ok = 0

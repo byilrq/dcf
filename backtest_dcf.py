@@ -23,6 +23,11 @@ from strategy import (
     POSITION_EPSILON,
 )
 
+try:
+    from market_data import normalize_system_source_value as market_normalize_system_source_value
+except Exception:
+    market_normalize_system_source_value = None
+
 
 # ===========================
 # 配置读取
@@ -46,7 +51,7 @@ def load_config(path: str):
 
 def load_system_config() -> dict:
     path = Path(__file__).resolve().parent / "system_config.json"
-    defaults = {"A_BACKTEST_SOURCE": "tencent_a_unadjusted", "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted"}
+    defaults = {"A_BACKTEST_SOURCE": "historical_a1", "HK_BACKTEST_SOURCE": "historical_hk1"}
     try:
         if path.exists():
             raw = json.loads(path.read_text(encoding="utf-8") or "{}")
@@ -61,8 +66,10 @@ def get_backtest_source_for_symbol(symbol: str) -> str:
     raw = str(symbol or "").upper().strip()
     cfg = load_system_config()
     if raw.startswith("HK"):
-        return str(cfg.get("HK_BACKTEST_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
-    return str(cfg.get("A_BACKTEST_SOURCE", "tencent_a_unadjusted") or "tencent_a_unadjusted").strip()
+        value = cfg.get("HK_BACKTEST_SOURCE", "historical_hk1")
+        return market_normalize_system_source_value("HK_BACKTEST_SOURCE", value) if market_normalize_system_source_value else str(value or "historical_hk1").strip()
+    value = cfg.get("A_BACKTEST_SOURCE", "historical_a1")
+    return market_normalize_system_source_value("A_BACKTEST_SOURCE", value) if market_normalize_system_source_value else str(value or "historical_a1").strip()
 
 
 # ===========================

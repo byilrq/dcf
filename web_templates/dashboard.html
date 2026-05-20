@@ -601,6 +601,334 @@
       .page-nav-link{font-size:12px !important;min-height:34px !important;padding-left:1px !important;padding-right:1px !important;}
     }
 
+
+    /* === light theme polish: match system page, softer contrast === */
+    body.theme-x3-light,
+    body:not(.theme-x3-dark){
+      background:linear-gradient(180deg,#edf3f1 0%,#f4f7f6 48%,#eef4f2 100%) !important;
+      color:#243142 !important;
+    }
+    body.theme-x3-light::before,
+    body:not(.theme-x3-dark)::before{
+      background:
+        radial-gradient(circle at 16% 0%, rgba(5,150,105,.055), transparent 34%),
+        radial-gradient(circle at 86% 8%, rgba(56,189,248,.045), transparent 32%),
+        linear-gradient(90deg, rgba(15,23,42,.026) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(15,23,42,.022) 1px, transparent 1px) !important;
+      background-size:auto,auto,46px 46px,46px 46px !important;
+    }
+    body.theme-x3-light .topbar,
+    body:not(.theme-x3-dark) .topbar,
+    body.theme-x3-light .page-nav,
+    body:not(.theme-x3-dark) .page-nav,
+    body.theme-x3-light .card,
+    body:not(.theme-x3-dark) .card,
+    body.theme-x3-light .page-card,
+    body:not(.theme-x3-dark) .page-card,
+    body.theme-x3-light .symbols-current-card,
+    body:not(.theme-x3-dark) .symbols-current-card{
+      background:linear-gradient(180deg, rgba(255,255,255,.86), rgba(248,251,250,.78)) !important;
+      border-color:rgba(15,23,42,.105) !important;
+      color:#243142 !important;
+      box-shadow:0 14px 34px rgba(15,23,42,.075), inset 0 1px 0 rgba(255,255,255,.92) !important;
+    }
+    body.theme-x3-light .section-header,
+    body:not(.theme-x3-dark) .section-header,
+    body.theme-x3-light .push-field-row,
+    body:not(.theme-x3-dark) .push-field-row{
+      border-color:rgba(15,23,42,.09) !important;
+    }
+    body.theme-x3-light .section-header h2,
+    body:not(.theme-x3-dark) .section-header h2,
+    body.theme-x3-light .section-header h3,
+    body:not(.theme-x3-dark) .section-header h3,
+    body.theme-x3-light .subsection-title,
+    body:not(.theme-x3-dark) .subsection-title,
+    body.theme-x3-light label,
+    body:not(.theme-x3-dark) label{
+      color:#1f2937 !important;
+    }
+    body.theme-x3-light .section-note,
+    body:not(.theme-x3-dark) .section-note,
+    body.theme-x3-light .snapshot-empty,
+    body:not(.theme-x3-dark) .snapshot-empty,
+    body.theme-x3-light .push-field-help,
+    body:not(.theme-x3-dark) .push-field-help{
+      color:#5f6f83 !important;
+    }
+    body.theme-x3-light input,
+    body:not(.theme-x3-dark) input,
+    body.theme-x3-light select,
+    body:not(.theme-x3-dark) select,
+    body.theme-x3-light textarea,
+    body:not(.theme-x3-dark) textarea{
+      background:#fbfdfc !important;
+      border:1px solid rgba(15,23,42,.18) !important;
+      color:#162033 !important;
+      box-shadow:0 1px 0 rgba(255,255,255,.92), inset 0 1px 2px rgba(15,23,42,.035) !important;
+    }
+    body.theme-x3-light input::placeholder,
+    body:not(.theme-x3-dark) input::placeholder,
+    body.theme-x3-light textarea::placeholder,
+    body:not(.theme-x3-dark) textarea::placeholder{
+      color:#8a97a8 !important;
+    }
+    body.theme-x3-light input[readonly],
+    body:not(.theme-x3-dark) input[readonly],
+    body.theme-x3-light select:disabled,
+    body:not(.theme-x3-dark) select:disabled{
+      background:#eef3f1 !important;
+      color:#4b5f73 !important;
+      opacity:1 !important;
+    }
+    body.theme-x3-light .config-card,
+    body:not(.theme-x3-dark) .config-card,
+    body.theme-x3-light .summary-line,
+    body:not(.theme-x3-dark) .summary-line,
+    body.theme-x3-light .status-box,
+    body:not(.theme-x3-dark) .status-box,
+    body.theme-x3-light .output-box,
+    body:not(.theme-x3-dark) .output-box,
+    body.theme-x3-light .raw-output,
+    body:not(.theme-x3-dark) .raw-output,
+    body.theme-x3-light details.snapshot-details,
+    body:not(.theme-x3-dark) details.snapshot-details{
+      background:linear-gradient(180deg, rgba(255,255,255,.82), rgba(244,248,247,.78)) !important;
+      border:1px solid rgba(15,23,42,.12) !important;
+      color:#263447 !important;
+      box-shadow:0 10px 22px rgba(15,23,42,.045), inset 0 1px 0 rgba(255,255,255,.86) !important;
+    }
+    body.theme-x3-light .status-box pre,
+    body:not(.theme-x3-dark) .status-box pre,
+    body.theme-x3-light .output-box pre,
+    body:not(.theme-x3-dark) .output-box pre,
+    body.theme-x3-light .help-panel pre,
+    body:not(.theme-x3-dark) .help-panel pre,
+    body.theme-x3-light details.snapshot-details > summary,
+    body:not(.theme-x3-dark) details.snapshot-details > summary{
+      color:#263447 !important;
+      opacity:1 !important;
+      text-shadow:none !important;
+    }
+    body.theme-x3-light .reference-price-card,
+    body:not(.theme-x3-dark) .reference-price-card,
+    body.theme-x3-light .source-metric-card,
+    body:not(.theme-x3-dark) .source-metric-card,
+    body.theme-x3-light .snapshot-kv,
+    body:not(.theme-x3-dark) .snapshot-kv{
+      background:#f8fbfa !important;
+      border-color:rgba(15,23,42,.12) !important;
+      color:#263447 !important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.88) !important;
+    }
+    body.theme-x3-light .reference-price-card.primary,
+    body:not(.theme-x3-dark) .reference-price-card.primary{
+      background:linear-gradient(135deg, rgba(5,150,105,.10), rgba(14,165,233,.055)) !important;
+      border-color:rgba(5,150,105,.32) !important;
+    }
+    body.theme-x3-light .reference-price-card.error,
+    body:not(.theme-x3-dark) .reference-price-card.error,
+    body.theme-x3-light .source-metric-card.error,
+    body:not(.theme-x3-dark) .source-metric-card.error{
+      background:rgba(254,242,242,.92) !important;
+      border-color:rgba(220,38,38,.22) !important;
+    }
+    body.theme-x3-light .reference-price-card .name,
+    body:not(.theme-x3-dark) .reference-price-card .name,
+    body.theme-x3-light .source-metric-card .name,
+    body:not(.theme-x3-dark) .source-metric-card .name,
+    body.theme-x3-light .snapshot-kv .k,
+    body:not(.theme-x3-dark) .snapshot-kv .k,
+    body.theme-x3-light .snapshot-table th,
+    body:not(.theme-x3-dark) .snapshot-table th{
+      color:#52647a !important;
+    }
+    body.theme-x3-light .reference-price-card .price,
+    body:not(.theme-x3-dark) .reference-price-card .price,
+    body.theme-x3-light .source-metric-card .price,
+    body:not(.theme-x3-dark) .source-metric-card .price,
+    body.theme-x3-light .snapshot-kv .v,
+    body:not(.theme-x3-dark) .snapshot-kv .v,
+    body.theme-x3-light .summary-value,
+    body:not(.theme-x3-dark) .summary-value{
+      color:#142033 !important;
+    }
+    body.theme-x3-light .reference-price-card .meta,
+    body:not(.theme-x3-dark) .reference-price-card .meta,
+    body.theme-x3-light .source-metric-card .meta,
+    body:not(.theme-x3-dark) .source-metric-card .meta,
+    body.theme-x3-light .source-metric-card .metric-line,
+    body:not(.theme-x3-dark) .source-metric-card .metric-line,
+    body.theme-x3-light .summary-label,
+    body:not(.theme-x3-dark) .summary-label{
+      color:#64748b !important;
+    }
+    body.theme-x3-light .snapshot-table th,
+    body:not(.theme-x3-dark) .snapshot-table th,
+    body.theme-x3-light .snapshot-table td,
+    body:not(.theme-x3-dark) .snapshot-table td{
+      border-bottom-color:rgba(15,23,42,.095) !important;
+      color:#263447 !important;
+    }
+    body.theme-x3-light .source-chip,
+    body:not(.theme-x3-dark) .source-chip{
+      background:rgba(5,150,105,.12) !important;
+      color:#047857 !important;
+    }
+    body.theme-x3-light .rollback-note,
+    body:not(.theme-x3-dark) .rollback-note{
+      color:#8a5a16 !important;
+    }
+    body.theme-x3-light .rollback-btn,
+    body:not(.theme-x3-dark) .rollback-btn{
+      background:#fff7ed !important;
+      border-color:rgba(217,119,6,.30) !important;
+      color:#9a3412 !important;
+    }
+    @media (max-width:640px){
+      .status-action-row{width:100%;display:grid !important;grid-template-columns:1fr 1fr;gap:8px;}
+      .status-action-row form,.status-action-row .action-btn{width:100%;}
+      .status-control-row form{width:100%;display:grid !important;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;}
+      .status-control-row .field-block{min-width:0;}
+      .status-control-row .action-btn{min-width:70px;padding-left:12px;padding-right:12px;}
+      .section-header.between{align-items:flex-start;gap:10px;}
+      .snapshot-toolbar{width:100%;align-items:stretch;}
+      .snapshot-date-form{flex:1 1 100%;display:grid;grid-template-columns:auto minmax(0,1fr);}
+      .panel-toggle{justify-content:flex-end;}
+    }
+
+
+
+    /* 参数页：去掉各参数分组方框背景，只保留字段本身 */
+    .params-form .params-group-card{
+      background:transparent !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+      backdrop-filter:none !important;
+      -webkit-backdrop-filter:none !important;
+    }
+    .params-form .params-group-card .subsection-title{
+      margin-top:4px;
+    }
+
+    /* === requested light-theme refinements based on dcf_light_theme_fixed === */
+    body.theme-x3-light .params-basic-info-flat,
+    body:not(.theme-x3-dark) .params-basic-info-flat{
+      background:transparent !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+    }
+    body.theme-x3-light .symbols-current-card .selected-symbol-select,
+    body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-select,
+    body.theme-x3-light .symbols-current-card .selected-symbol-pending,
+    body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-pending,
+    body.theme-x3-light .symbol-editor-form input,
+    body:not(.theme-x3-dark) .symbol-editor-form input,
+    body.theme-x3-light form[action*="backtest"] input,
+    body:not(.theme-x3-dark) form[action*="backtest"] input{
+      background:#fbfdfc !important;
+    }
+
+
+    /* 参数页最终覆盖：参数分组不再使用卡片背景/边框/阴影 */
+    body .params-form .params-group-card,
+    body.theme-x3-dark .params-form .params-group-card,
+    body.theme-x3-light .params-form .params-group-card,
+    body:not(.theme-x3-dark) .params-form .params-group-card{
+      background:transparent !important;
+      background-image:none !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+      margin:0 0 18px !important;
+      backdrop-filter:none !important;
+      -webkit-backdrop-filter:none !important;
+    }
+
+
+    /* === light theme expandable panels: match dark theme, remove extra white box === */
+    body.theme-x3-light .raw-output,
+    body:not(.theme-x3-dark) .raw-output{
+      background:transparent !important;
+      background-image:none !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+      color:#263447 !important;
+      backdrop-filter:none !important;
+      -webkit-backdrop-filter:none !important;
+    }
+    body.theme-x3-light .raw-output summary,
+    body:not(.theme-x3-dark) .raw-output summary{
+      color:#dbeafe !important;
+      background:rgba(8,16,29,.72) !important;
+      border:1px solid rgba(103,125,155,.28) !important;
+      border-radius:14px !important;
+      padding:10px 12px !important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 10px 22px rgba(15,23,42,.12) !important;
+    }
+    body.theme-x3-light .raw-output[open] summary,
+    body:not(.theme-x3-dark) .raw-output[open] summary{
+      margin-bottom:10px !important;
+    }
+    body.theme-x3-light .output-box,
+    body:not(.theme-x3-dark) .output-box,
+    body.theme-x3-light .status-box,
+    body:not(.theme-x3-dark) .status-box{
+      background:rgba(8,16,29,.64) !important;
+      border:1px solid rgba(103,125,155,.26) !important;
+      color:#e5edf7 !important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 12px 28px rgba(15,23,42,.14) !important;
+    }
+    body.theme-x3-light .output-box pre,
+    body:not(.theme-x3-dark) .output-box pre,
+    body.theme-x3-light .status-box pre,
+    body:not(.theme-x3-dark) .status-box pre{
+      color:#dbeafe !important;
+      opacity:1 !important;
+      text-shadow:none !important;
+    }
+    body.theme-x3-light details.snapshot-details,
+    body:not(.theme-x3-dark) details.snapshot-details{
+      background:rgba(8,16,29,.50) !important;
+      border:1px solid rgba(103,125,155,.26) !important;
+      color:#e5edf7 !important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 12px 28px rgba(15,23,42,.13) !important;
+    }
+    body.theme-x3-light details.snapshot-details > summary,
+    body:not(.theme-x3-dark) details.snapshot-details > summary{
+      color:#dbeafe !important;
+      text-shadow:none !important;
+    }
+    body.theme-x3-light .help-panel,
+    body:not(.theme-x3-dark) .help-panel,
+    body.theme-x3-light .return-help-panel,
+    body:not(.theme-x3-dark) .return-help-panel{
+      background:linear-gradient(180deg, rgba(18,31,49,.92), rgba(12,27,43,.86)) !important;
+      border-color:rgba(91,113,143,.26) !important;
+      color:rgba(226,236,248,.92) !important;
+      box-shadow:0 18px 40px rgba(15,23,42,.18), inset 0 1px 0 rgba(255,255,255,.06) !important;
+    }
+    body.theme-x3-light .help-panel pre,
+    body:not(.theme-x3-dark) .help-panel pre,
+    body.theme-x3-light .return-help-panel,
+    body:not(.theme-x3-dark) .return-help-panel{
+      color:#dbeafe !important;
+    }
+    body.theme-x3-light .return-help-panel h3,
+    body:not(.theme-x3-dark) .return-help-panel h3,
+    body.theme-x3-light .return-help-panel h4,
+    body:not(.theme-x3-dark) .return-help-panel h4{
+      color:#ccfbf1 !important;
+    }
+    body.theme-x3-light .return-help-panel code,
+    body:not(.theme-x3-dark) .return-help-panel code{
+      background:rgba(8,16,29,.58) !important;
+      color:#e0f2fe !important;
+    }
+
   </style>
 </head>
 <body class="dash-body theme-x3-dark" data-selected="{{ selected }}">
@@ -694,9 +1022,9 @@
               <input type="hidden" name="symbol_key" value="{{ selected }}">
               <button type="submit" class="primary-btn action-btn">刷新</button>
             </form>
-            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认清除当前标的的行情错误、旧价格校验和行情源观察状态，并按最新数据刷新一次？本次只监控，不触发交易。');">
+            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认重置当前标的的运行状态，并清除行情错误、旧价格校验和行情源观察状态？仅影响当前标的，其他标的不受影响；随后会按最新数据刷新一次，本次只监控不触发交易。');">
               <input type="hidden" name="symbol_key" value="{{ selected }}">
-              <button type="submit" class="secondary-btn action-btn">清除</button>
+              <button type="submit" class="secondary-btn action-btn">重置</button>
             </form>
           </div>
         </div>
@@ -759,7 +1087,7 @@
             {% endfor %}
           </div>
         {% else %}
-          <p class="section-note">点击标题右侧“刷新”后立即计算系统页当前选定的回测/策略数据源指标。</p>
+          <p class="section-note">点击“刷新”计算当前数据源指标。</p>
         {% endif %}
       </section>
 
@@ -767,7 +1095,7 @@
         <div class="section-header between">
           <div>
             <h2>策略快照</h2>
-            <p class="section-note">记录每轮策略判断依据；打开开关后显示当前标的最近 1 条，可展开查看最近 10 条。</p>
+            <p class="section-note">显示当前标的最近策略快照，可展开查看近 10 条。</p>
           </div>
           <div class="snapshot-toolbar">
             <form method="get" action="{{ url_for('status_page') }}" class="snapshot-date-form">
@@ -843,7 +1171,7 @@
         <div class="section-header between">
           <div>
             <h2>交易前状态回滚点</h2>
-            <p class="section-note">每次真正触发 TRADE 前自动记录当前标的状态，最多保留最近 10 次。误触发后可选择恢复到任意一次交易前状态。</p>
+            <p class="section-note">保留真实交易前状态，误触发时可回滚。</p>
           </div>
           <label class="panel-toggle" title="显示或隐藏交易前状态回滚点">
             <span class="panel-toggle-text">显示回滚点</span>
@@ -880,7 +1208,7 @@
               </tbody>
             </table>
           </div>
-          <p class="rollback-note">恢复会同步写入 dcf_monitor_state.json，并把 dcf.yaml 的 current_units / current_avg_cost 恢复到交易前口径；运行中的主程序会在下一轮自动加载该回滚状态。</p>
+          <p class="rollback-note">恢复会同步状态文件，主程序下一轮自动加载。</p>
         {% else %}
           <p class="snapshot-empty">暂无当前标的的交易前状态回滚点。只有真实 TRADE 触发前才会自动生成。</p>
         {% endif %}
@@ -891,7 +1219,7 @@
         <div class="section-header between">
           <div>
             <h2>行情源成功率统计</h2>
-            <p class="section-note">按 {{ selected_snapshot_date }} 的策略快照统计，成功率 = OK 次数 / 总次数。</p>
+            <p class="section-note">按 {{ selected_snapshot_date }} 快照统计行情源成功率。</p>
           </div>
           <label class="panel-toggle" title="显示或隐藏行情源成功率统计">
             <span class="panel-toggle-text">显示统计</span>
@@ -938,8 +1266,10 @@
           </div>
           <section class="page-card-group compact-group">
             {% for group in grouped_fields %}
-              <div class="config-card">
-                <div class="subsection-title">{{ group['title'] }}</div>
+              <div class="params-group-card params-group-{{ group['id'] }}{% if group['title'] == '基础信息' %} params-basic-info-flat{% endif %}">
+                {% if group['title'] != '基础信息' %}
+                  <div class="subsection-title">{{ group['title'] }}</div>
+                {% endif %}
                 <div class="form-grid">
                   {% for field in group['items'] %}
                     <div class="field-block readonly-block">

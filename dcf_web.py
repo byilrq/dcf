@@ -46,6 +46,19 @@ from push import (
     send_push_test,
 )
 
+try:
+    from market_data import (
+        get_all_source_options as market_get_all_source_options,
+        get_source_options as market_get_source_options,
+        get_source_display_name as market_get_source_display_name,
+        normalize_system_source_value as market_normalize_system_source_value,
+    )
+except Exception:
+    market_get_all_source_options = None
+    market_get_source_options = None
+    market_get_source_display_name = None
+    market_normalize_system_source_value = None
+
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "dcf.yaml"
 STATE_FILE = BASE_DIR / "dcf_monitor_state.json"
@@ -87,7 +100,9 @@ PARAM_HELP: Dict[str, str] = {
     "sideways_min_k150": "横盘评分很高时，动态 K150 最低可压到的值。数值越小，箱体上沿越容易下移。",
     "trend_multiple": "箱体区上沿倍数 = MA150 * trend_multiple，超过后进入趋势区。",
     "sell_multiple": "离场区触发倍数 = MA150 * sell_multiple，超过后开始倒金字塔卖出底仓。",
-    "add_box_step": "倒金字塔加仓步长。进入机会区并补到目标仓位后，价格每相对 last_add_price 下跌该比例，触发下一步加仓。",
+    "add_box_step": "旧版兼容字段。新页面会分别使用 box_add_step 和 pyramid_add_step。",
+    "box_add_step": "箱体区固定加仓步长。保留给箱体区固定回补逻辑使用，和倒金字塔加仓步长互不覆盖。",
+    "pyramid_add_step": "倒金字塔加仓步长。进入机会区并补到目标仓位后，价格每相对 last_add_price 下跌该比例，触发下一步加仓。",
     "add_box_units_percent": "旧版箱体区固定加仓比例，最新策略不再使用 BOX 区独立回补。",
     "trend_zone_step_percent": "趋势区卖出步长。价格相对 last_trade_price 上涨达到该比例时，才检查是否卖出超出目标仓位的部分。",
     "trend_zone_sell_percent": "趋势区单次卖出比例，按目标仓位计算，并且只卖出高于目标仓位的机动仓。",
@@ -95,8 +110,12 @@ PARAM_HELP: Dict[str, str] = {
     "grid_box_percent": "箱体区网格交易步长。当前回测策略不使用该参数，主要保留给实盘/后续网格逻辑。",
     "grid_box_units_percent": "箱体区网格交易比例。当前回测策略不使用该参数，主要保留给实盘/后续网格逻辑。",
     "box_grid_enabled": "箱体区网格开关。当前回测策略不使用该参数，状态栏可用于展示配置。",
-    "pyramid_steps": "倒金字塔加仓/离场步数上限，实际步数不会超过 pyramid_weights 长度。",
-    "pyramid_weights": "倒金字塔每步权重。机会区加仓按目标仓位乘以对应权重；离场区卖出也按目标仓位拆分。",
+    "pyramid_steps": "旧版兼容字段。新页面会分别使用 clear_pyramid_steps 和 pyramid_add_steps。",
+    "pyramid_weights": "旧版兼容字段。新页面会分别使用 clear_pyramid_weights 和 pyramid_add_weights。",
+    "clear_pyramid_steps": "离场区倒金字塔卖出步数上限，实际步数不会超过 clear_pyramid_weights 长度。",
+    "clear_pyramid_weights": "离场区倒金字塔每步卖出权重，按目标仓位拆分卖出。",
+    "pyramid_add_steps": "机会区/箱体区倒金字塔加仓步数上限，实际步数不会超过 pyramid_add_weights 长度。",
+    "pyramid_add_weights": "机会区/箱体区倒金字塔每步加仓权重，按目标仓位拆分加仓。",
     "pyramid_add_enabled": "倒金字塔加仓开关。auto=等待首次进入机会区后自动切到 yes；yes=机会区先补到目标仓位，再按步长和权重加仓。进入趋势区或离场区会自动切回 auto 并重置加仓步数。",
 }
 
@@ -141,36 +160,31 @@ PUSH_SELECT_OPTIONS = {
 }
 
 SYSTEM_DEFAULTS: Dict[str, str] = {
-    "A_QUOTE_SOURCE": "tencent_quote_a",
-    "HK_MARKET_SOURCE": "tencent_hk_unadjusted",
-    "A_BACKTEST_SOURCE": "tencent_a_unadjusted",
-    "HK_BACKTEST_SOURCE": "tencent_hk_unadjusted",
+    "A_QUOTE_SOURCE": "live_a1",
+    "HK_MARKET_SOURCE": "live_hk1",
+    "A_BACKTEST_SOURCE": "historical_a1",
+    "HK_BACKTEST_SOURCE": "historical_hk1",
     "XUEQIU_TOKEN": "",
     "XUEQIU_TOKEN_UPDATED_AT": "",
     "XUEQIU_TOKEN_SOURCE": "",
 }
 
-SYSTEM_SELECT_OPTIONS = {
-    # A股实时保留三源：腾讯主源，雪球/东方财富备用。
-    "A_QUOTE_SOURCE": [
-        ("tencent_quote_a", "腾讯实时 quote"),
-        ("xueqiu_quote_a", "雪球实时 quote"),
-        ("eastmoney_quote_a", "东方财富实时 quote"),
-    ],
-    # 港股实时：腾讯主源，雪球备用。
-    "HK_MARKET_SOURCE": [
-        ("tencent_hk_unadjusted", "腾讯港股"),
-        ("xueqiu_hk_quote", "雪球港股 quote"),
-    ],
-    # 回测/策略指标只保留腾讯；A股不再展示 Yahoo/东方财富/网易等源。
-    "A_BACKTEST_SOURCE": [
-        ("tencent_a_unadjusted", "腾讯A股/ETF"),
-    ],
-    # 港股回测/策略指标只保留腾讯主源。
-    "HK_BACKTEST_SOURCE": [
-        ("tencent_hk_unadjusted", "腾讯港股"),
-    ],
+SYSTEM_SELECT_OPTIONS = market_get_all_source_options() if market_get_all_source_options else {
+    "A_QUOTE_SOURCE": [("live_a1", "腾讯实时"), ("live_a2", "雪球实时"), ("live_a3", "东方财富实时")],
+    "HK_MARKET_SOURCE": [("live_hk1", "腾讯港股"), ("live_hk2", "雪球港股"), ("live_hk3", "东方财富港股")],
+    "A_BACKTEST_SOURCE": [("historical_a1", "腾讯A股/ETF日K"), ("historical_a2", "新浪A股/ETF日K")],
+    "HK_BACKTEST_SOURCE": [("historical_hk1", "腾讯港股日K"), ("historical_hk2", "Yahoo港股日K")],
 }
+
+def normalize_system_source_value(field: str, value: Any) -> str:
+    if market_normalize_system_source_value:
+        try:
+            return market_normalize_system_source_value(field, value)
+        except Exception:
+            pass
+    raw = str(value or "").strip()
+    allowed = {x[0] for x in SYSTEM_SELECT_OPTIONS.get(field, [])}
+    return raw if raw in allowed else SYSTEM_DEFAULTS.get(field, raw)
 
 
 FIELD_GROUPS: List[Dict[str, Any]] = [
@@ -217,7 +231,7 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
         "id": "box_add",
         "title": "箱体区加仓",
         "items": [
-            ("add_box_step", "加仓步长", "number"),
+            ("box_add_step", "箱体固定加仓步长", "number"),
             ("add_box_units_percent", "每次加仓比例", "number"),
         ],
     },
@@ -243,8 +257,8 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
         "title": "离场区减仓（倒金字塔）",
         "items": [
             ("clear_zone_step_percent", "减仓步长", "number"),
-            ("pyramid_steps", "倒金字塔步数", "number"),
-            ("pyramid_weights", "倒金字塔权重", "text"),
+            ("clear_pyramid_steps", "离场倒金字塔步数", "number"),
+            ("clear_pyramid_weights", "离场倒金字塔权重", "text"),
         ],
     },
     {
@@ -252,9 +266,9 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
         "title": "倒金字塔加仓（机会区+箱体区）",
         "items": [
             ("pyramid_add_enabled", "倒金字塔加仓开关", "select"),
-            ("add_box_step", "加仓步长", "number"),
-            ("pyramid_weights", "倒金字塔权重", "text"),
-            ("pyramid_steps", "倒金字塔步数", "number"),
+            ("pyramid_add_step", "倒金字塔加仓步长", "number"),
+            ("pyramid_add_weights", "加仓倒金字塔权重", "text"),
+            ("pyramid_add_steps", "加仓倒金字塔步数", "number"),
         ],
     },
 ]
@@ -686,13 +700,19 @@ def normalize_config(data: Dict[str, Any]) -> bool:
         # 确保新字段有默认值
         common.setdefault("trend_multiple", 1.2)
         common.setdefault("sell_multiple", 1.5)
-        common.setdefault("add_box_step", 0.05)
+        common.setdefault("add_box_step", 0.05)  # legacy alias
+        common.setdefault("box_add_step", common.get("add_box_step", 0.05))
+        common.setdefault("pyramid_add_step", common.get("add_box_step", 0.05))
         common.setdefault("add_box_units_percent", 0.1)
         common.setdefault("trend_zone_step_percent", 0.01)
         common.setdefault("trend_zone_sell_percent", 0.05)
         common.setdefault("clear_zone_step_percent", 0.08)
-        common.setdefault("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])
-        common.setdefault("pyramid_steps", 10)
+        common.setdefault("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])  # legacy alias
+        common.setdefault("pyramid_steps", 10)  # legacy alias
+        common.setdefault("clear_pyramid_weights", list(common.get("pyramid_weights", [])))
+        common.setdefault("clear_pyramid_steps", common.get("pyramid_steps", 10))
+        common.setdefault("pyramid_add_weights", list(common.get("pyramid_weights", [])))
+        common.setdefault("pyramid_add_steps", common.get("pyramid_steps", 10))
         common.setdefault("pyramid_add_enabled", "auto")
 
     symbol_cfg = data.get("SYMBOL_CONFIG")
@@ -718,13 +738,19 @@ def normalize_config(data: Dict[str, Any]) -> bool:
                 changed = True
             section.setdefault("trend_multiple", 1.2)
             section.setdefault("sell_multiple", 1.5)
-            section.setdefault("add_box_step", 0.05)
+            section.setdefault("add_box_step", 0.05)  # legacy alias
+            section.setdefault("box_add_step", section.get("add_box_step", 0.05))
+            section.setdefault("pyramid_add_step", section.get("add_box_step", 0.05))
             section.setdefault("add_box_units_percent", 0.1)
             section.setdefault("trend_zone_step_percent", 0.01)
             section.setdefault("trend_zone_sell_percent", 0.05)
             section.setdefault("clear_zone_step_percent", 0.08)
-            section.setdefault("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])
-            section.setdefault("pyramid_steps", 10)
+            section.setdefault("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])  # legacy alias
+            section.setdefault("pyramid_steps", 10)  # legacy alias
+            section.setdefault("clear_pyramid_weights", list(section.get("pyramid_weights", [])))
+            section.setdefault("clear_pyramid_steps", section.get("pyramid_steps", 10))
+            section.setdefault("pyramid_add_weights", list(section.get("pyramid_weights", [])))
+            section.setdefault("pyramid_add_steps", section.get("pyramid_steps", 10))
             section.setdefault("pyramid_add_enabled", "auto")
     return changed
 
@@ -1256,7 +1282,7 @@ def request_source_metrics_refresh_symbol(selected: str, symbol_code: str = "") 
 
 
 def request_clear_market_state(selected: str, symbol_code: str = "") -> int:
-    """Ask dcf.py to clear market validation/error state for one symbol and refresh it once."""
+    """Ask dcf.py to reset runtime state and clear market validation/error state for one symbol."""
     state = read_state()
     if not isinstance(state, dict):
         state = {}
@@ -1275,35 +1301,97 @@ def request_clear_market_state(selected: str, symbol_code: str = "") -> int:
     write_state(state)
     return seq
 
-def _filter_reference_prices_for_symbol(symbol_text: str, refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Drop stale reference-price cards from older versions before rendering.
+def _market_source_options(field: str) -> List[Tuple[str, str]]:
+    """Return source options from market_data.py, with local fallback only for import failure."""
+    if market_get_source_options:
+        try:
+            options = market_get_source_options(field)
+            if isinstance(options, list):
+                return [(str(k), str(v)) for k, v in options]
+        except Exception:
+            pass
+    return list(SYSTEM_SELECT_OPTIONS.get(field, []))
 
-    Older state caches may still contain Yahoo港股/yahoo_hk_quote entries even
-    after the current market_data.py no longer generates them. Filtering here
-    makes the status page reflect the current 3-source design immediately,
-    without requiring manual state-file cleanup.
+
+def _market_display_source_name(source: Any) -> str:
+    """Customer-facing source name from market_data.py; no page-level source-name hardcoding."""
+    if market_get_source_display_name:
+        try:
+            return market_get_source_display_name(str(source or ""))
+        except Exception:
+            pass
+    return str(source or "")
+
+
+def _reference_card_stable_key(field: str, item: Dict[str, Any], allowed_keys: set) -> str:
+    """Normalize a cached/reference card to the stable source key for this field."""
+    if not isinstance(item, dict):
+        return ""
+    values = [item.get("key", ""), item.get("source", ""), item.get("label", "")]
+    for value in values:
+        try:
+            key = normalize_system_source_value(field, value)
+        except Exception:
+            key = str(value or "").strip()
+        if key in allowed_keys:
+            return key
+    return ""
+
+
+def _filter_reference_prices_for_symbol(symbol_text: str, refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return one realtime-reference card per current source option.
+
+    This deliberately completes stale cached data with placeholders.  If an older
+    state file only cached two HK quote cards, the status page will still render
+    all three cards from market_data.py, and the missing card will show as待刷新
+    until the next manual/background refresh fills it.
     """
-    if not isinstance(refs, list):
-        return []
     raw = str(symbol_text or "").upper().strip()
-    if raw.startswith("HK"):
-        allowed_keys = {"tencent_hk_unadjusted", "xueqiu_hk_quote"}
-        allowed_sources = {"tencent_hk_quote", "tencent_hk_unadjusted", "xueqiu_hk_quote", "xueqiu_hk"}
-    else:
-        allowed_keys = {"tencent_quote_a", "xueqiu_quote_a", "eastmoney_quote_a"}
-        allowed_sources = {"tencent_api", "xueqiu_api", "eastmoney_api", "tencent_quote_a", "xueqiu_quote_a", "eastmoney_quote_a"}
-    out = []
-    for item in refs:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("key", "")).strip()
-        source = str(item.get("source", "")).strip()
-        label = str(item.get("label", "")).strip()
-        if key in allowed_keys or source in allowed_sources:
-            # Also explicitly drop any stale Yahoo card by label/source.
-            if "yahoo" in key.lower() or "yahoo" in source.lower() or "Yahoo" in label:
+    field = "HK_MARKET_SOURCE" if raw.startswith("HK") else "A_QUOTE_SOURCE"
+    options = _market_source_options(field)
+    if not options:
+        return []
+    allowed_keys = {str(k) for k, _ in options}
+    existing: Dict[str, Dict[str, Any]] = {}
+    if isinstance(refs, list):
+        for item in refs:
+            if not isinstance(item, dict):
                 continue
-            out.append(dict(item))
+            stable_key = _reference_card_stable_key(field, item, allowed_keys)
+            if stable_key and stable_key not in existing:
+                existing[stable_key] = dict(item)
+
+    out = []
+    try:
+        preferred_key = normalize_system_source_value(field, read_system_config().get(field, ""))
+    except Exception:
+        preferred_key = options[0][0]
+    for key, _label in options:
+        key = str(key)
+        label = _market_display_source_name(key)
+        card = existing.get(key, {})
+        if card:
+            card = dict(card)
+            card["key"] = key
+            card["label"] = label
+            card["source"] = label
+            card["primary"] = key == preferred_key
+            card.setdefault("ok", False)
+            card.setdefault("price", None)
+            card.setdefault("date", "")
+            card.setdefault("error", "")
+        else:
+            card = {
+                "key": key,
+                "label": label,
+                "price": None,
+                "source": label,
+                "date": "",
+                "ok": False,
+                "primary": key == preferred_key,
+                "error": "待刷新",
+            }
+        out.append(card)
     return out
 
 
@@ -1352,10 +1440,17 @@ def _filter_source_metrics_for_current_setting(section: Dict[str, Any], metrics:
     if not options:
         return []
     wanted_key, wanted_label = options[0]
+    wanted_display = display_source_name(wanted_key)
     for item in metrics:
-        if isinstance(item, dict) and str(item.get("key", "")) == wanted_key:
+        if not isinstance(item, dict):
+            continue
+        item_key = str(item.get("key", ""))
+        item_source = str(item.get("source", ""))
+        if item_key == wanted_key or display_source_name(item_key) == wanted_display or display_source_name(item_source) == wanted_display:
             card = dict(item)
             card.setdefault("label", wanted_label)
+            card["key"] = display_source_name(card.get("key") or wanted_key)
+            card["source"] = display_source_name(card.get("source") or wanted_key)
             return [card]
     return [{
         "key": wanted_key,
@@ -1374,6 +1469,109 @@ def _filter_source_metrics_for_current_setting(section: Dict[str, Any], metrics:
         "count": 0,
         "zone": "",
     }]
+
+
+def _source_metric_from_strategy_cache_for_status(node: Dict[str, Any], section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
+    """Fallback: show the latest strategy calculation as 回测/策略数据源指标."""
+    if not isinstance(node, dict):
+        return [], "", ""
+    cache = node.get("strategy_calc_cache") if isinstance(node.get("strategy_calc_cache"), dict) else {}
+    source = display_source_name(node.get("strategy_source") or cache.get("strategy_source") or "")
+    if not source:
+        symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+        source = "tencent_hk" if symbol.startswith("HK") else "tencent_a"
+    ma150 = safe_float(node.get("ma_short", cache.get("ma150")), 0.0)
+    current_price = safe_float(node.get("last_price", cache.get("current_price")), 0.0)
+    if ma150 <= 0 and current_price <= 0 and not node.get("strategy_error"):
+        return [], "", ""
+    ma_src = str(node.get("ma_short_source") or cache.get("ma150_source") or "")
+    dynamic_k = safe_float(node.get("dynamic_k150", cache.get("dynamic_k150")), 0.0)
+    sideways = safe_float(node.get("sideways_score", cache.get("sideways_score")), 0.0)
+    updated_at = str(node.get("strategy_calc_updated_at") or cache.get("updated_at") or node.get("status_updated_at") or "")
+    last_bar_date = str(cache.get("last_bar_date") or node.get("last_valid_bar_date") or "")
+    level = str(node.get("strategy_level") or ("INFO" if ma150 > 0 else "ERROR")).upper()
+    status = str(node.get("strategy_status") or ("OK" if ma150 > 0 else "ERROR")).upper()
+    error = str(node.get("strategy_error") or "")
+    if ma150 > 0 and ma_src and ma_src != "f" and level == "INFO":
+        level = "WARN"
+        status = "WARN"
+        error = error or f"策略数据为非完整口径: MA150来源={ma_src}"
+    zone = ""
+    try:
+        if ma150 > 0 and current_price > 0:
+            zone = _get_zone_for_metrics(current_price, ma150, section)
+    except Exception:
+        zone = ""
+    item = {
+        "key": source,
+        "label": f"{source} 策略值",
+        "ok": bool(ma150 > 0 and level != "ERROR"),
+        "level": level,
+        "status": status,
+        "source": source,
+        "date": last_bar_date,
+        "updated_at": updated_at,
+        "count": int(safe_float(cache.get("history_count", node.get("history_count", 0)), 0)),
+        "current_price": round(current_price, 4) if current_price else None,
+        "ma150": round(ma150, 4) if ma150 else None,
+        "ma150_source": ma_src,
+        "sell": round(ma150 * safe_float(section.get("trend_multiple", 1.2), 1.2), 4) if ma150 else None,
+        "clear": round(ma150 * safe_float(section.get("sell_multiple", 1.5), 1.5), 4) if ma150 else None,
+        "dynamic_k": round(dynamic_k, 4) if dynamic_k else None,
+        "sideways_score": round(sideways, 4),
+        "zone": zone,
+        "error": error,
+    }
+    return [item], updated_at, error
+
+
+class MetricDisplayDict(dict):
+    """Dictionary wrapper for Jinja templates.
+
+    Jinja dot access on a plain dict can collide with dict methods. In
+    particular, ``metric.clear`` resolves to ``dict.clear`` instead of the
+    business field named ``clear``. The status template historically uses
+    dot access, so expose a read-only attribute that returns the Clear price.
+    """
+
+    @property
+    def clear(self):
+        return self.get("clear")
+
+    @property
+    def clear_price(self):
+        return self.get("clear")
+
+
+def _metric_display_card(item: Dict[str, Any]) -> MetricDisplayDict:
+    card = MetricDisplayDict(dict(item or {}))
+    # Keep an alias for any future template that avoids the reserved dict name.
+    if "clear" in card and "clear_price" not in card:
+        card["clear_price"] = card.get("clear")
+    return card
+
+
+def _normalize_metric_cards(metrics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for item in metrics or []:
+        if not isinstance(item, dict):
+            continue
+        card = dict(item)
+        for key in ("source", "key"):
+            if card.get(key):
+                card[key] = display_source_name(card.get(key))
+        if "level" not in card:
+            card["level"] = "INFO" if card.get("ok") else "ERROR"
+        if "status" not in card:
+            card["status"] = "OK" if card.get("ok") else card.get("level", "ERROR")
+        if "clear" in card and "clear_price" not in card:
+            card["clear_price"] = card.get("clear")
+        out.append(_metric_display_card(card))
+    return out
+
+
+def _metric_display_cards(metrics: List[Dict[str, Any]]) -> List[MetricDisplayDict]:
+    return [_metric_display_card(x) for x in (metrics or []) if isinstance(x, dict)]
 
 
 def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
@@ -1399,28 +1597,30 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
         node = state.get(key, {}) if isinstance(state, dict) else {}
         metrics = node.get("source_metrics") if isinstance(node, dict) else None
         if isinstance(metrics, list) and metrics:
-            selected_metrics = _filter_source_metrics_for_current_setting(section, metrics)
+            selected_metrics = _normalize_metric_cards(_filter_source_metrics_for_current_setting(section, metrics))
             if selected_metrics:
-                return selected_metrics, str(node.get("source_metrics_updated_at", "") or ""), str(node.get("source_metrics_error", "") or "")
+                err = str(node.get("source_metrics_error", "") or "")
+                if not err:
+                    errs = [str(x.get("error", "")) for x in selected_metrics if isinstance(x, dict) and x.get("error")]
+                    err = "；".join(errs)
+                return selected_metrics, str(node.get("source_metrics_updated_at", "") or ""), err
+        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
+        if fallback:
+            return _normalize_metric_cards(fallback), updated_at, err
     return [], "", ""
 
 
 def _metric_source_options_for_symbol(symbol: str) -> List[Tuple[str, str]]:
-    """Return the single history source selected in System settings.
-
-    回测/策略指标现在只保留腾讯主源。
-    旧配置里的 Yahoo/东方财富/雪球/网易 等源会在 read_system_config() 中自动回退。
-    """
+    """Return the selected history source for Web strategy metrics."""
     raw = normalize_symbol_input(symbol)
     system_cfg = read_system_config()
     if raw.startswith("HK"):
         labels = dict(SYSTEM_SELECT_OPTIONS.get("HK_BACKTEST_SOURCE", []))
-        preferred = str(system_cfg.get("HK_BACKTEST_SOURCE", "tencent_hk_unadjusted") or "tencent_hk_unadjusted").strip()
-        if preferred not in labels:
-            preferred = "tencent_hk_unadjusted"
+        preferred = normalize_system_source_value("HK_BACKTEST_SOURCE", system_cfg.get("HK_BACKTEST_SOURCE", "historical_hk1"))
         return [(preferred, labels.get(preferred, preferred))]
-    return [("tencent_a_unadjusted", "腾讯A股/ETF")]
-
+    labels = dict(SYSTEM_SELECT_OPTIONS.get("A_BACKTEST_SOURCE", []))
+    preferred = normalize_system_source_value("A_BACKTEST_SOURCE", system_cfg.get("A_BACKTEST_SOURCE", "historical_a1"))
+    return [(preferred, labels.get(preferred, preferred))]
 
 def _compute_ma_series_for_metrics(closes: List[float], period: int) -> List[float]:
     if len(closes) < period:
@@ -1542,7 +1742,9 @@ def _calculate_single_source_metric(symbol: str, section: Dict[str, Any], source
         current_price = float(closes[-1])
         item.update({
             "ok": True,
-            "source": snap.source,
+            "level": "INFO" if ma_src == "f" else "WARN",
+            "status": "OK" if ma_src == "f" else "WARN",
+            "source": display_source_name(snap.source),
             "current_price": round(current_price, 4),
             "ma150": round(ma150, 4),
             "ma150_source": ma_src,
@@ -1553,10 +1755,10 @@ def _calculate_single_source_metric(symbol: str, section: Dict[str, Any], source
             "date": snap.last_bar_date or "",
             "count": len(closes),
             "zone": _get_zone_for_metrics(current_price, ma150, section),
-            "error": "",
+            "error": "" if ma_src == "f" else f"策略数据为非完整口径: MA150来源={ma_src}",
         })
     except Exception as e:
-        item.update({"ok": False, "error": str(e)[:260], "date": "", "count": 0})
+        item.update({"ok": False, "level": "ERROR", "status": "ERROR", "error": str(e)[:260], "date": "", "count": 0})
     return item
 
 
@@ -1564,6 +1766,10 @@ def _store_source_metrics(selected: str, symbol: str, metrics: List[Dict[str, An
     updated_at = current_time_text()
     state = read_state()
     node = state.setdefault(selected, {}) if isinstance(state, dict) else {}
+    metrics = _normalize_metric_cards(metrics)
+    if not error:
+        errs = [str(x.get("error", "")) for x in metrics if isinstance(x, dict) and (not x.get("ok") or x.get("level") in {"WARN", "ERROR"}) and x.get("error")]
+        error = "；".join(errs)
     node["source_metrics"] = metrics
     node["source_metrics_updated_at"] = updated_at
     node["source_metrics_error"] = error or ""
@@ -1618,10 +1824,16 @@ def _sanitize_hk_reference_prices(refs: List[Dict[str, Any]]) -> List[Dict[str, 
     """Protect status page from stale/wrong cached HK reference prices."""
     if not isinstance(refs, list):
         return []
+    options = _market_source_options("HK_MARKET_SOURCE")
+    primary_key = options[0][0] if options else "live_hk1"
+    primary_name = _market_display_source_name(primary_key)
     base = None
     for item in refs:
         try:
-            if str(item.get("key")) == "tencent_hk_unadjusted" and item.get("ok"):
+            key = str(item.get("key", ""))
+            label = str(item.get("label", ""))
+            source = str(item.get("source", ""))
+            if item.get("ok") and (key == primary_key or label == primary_name or _market_display_source_name(key) == primary_name or _market_display_source_name(source) == primary_name):
                 base = float(item.get("price"))
                 break
         except Exception:
@@ -1631,13 +1843,20 @@ def _sanitize_hk_reference_prices(refs: List[Dict[str, Any]]) -> List[Dict[str, 
     clean = []
     for item in refs:
         item = dict(item or {})
-        if str(item.get("key")) != "tencent_hk_unadjusted" and item.get("ok"):
+        try:
+            key = str(item.get("key", ""))
+            label = str(item.get("label", ""))
+            source = str(item.get("source", ""))
+            is_primary = key == primary_key or label == primary_name or _market_display_source_name(key) == primary_name or _market_display_source_name(source) == primary_name
+        except Exception:
+            is_primary = False
+        if not is_primary and item.get("ok"):
             try:
                 p = float(item.get("price"))
                 ratio = p / base
                 if ratio < 0.75 or ratio > 1.25:
                     item["ok"] = False
-                    item["error"] = f"参考价偏离腾讯港股过大: {p:.4f} vs {base:.4f}"
+                    item["error"] = f"参考价偏离{primary_name}过大: {p:.4f} vs {base:.4f}"
                     item["price"] = None
             except Exception:
                 item["ok"] = False
@@ -1656,14 +1875,8 @@ def read_system_config() -> Dict[str, str]:
                 cfg.update({k: "" if v is None else str(v).strip() for k, v in raw.items()})
         except Exception:
             pass
-    if cfg.get("A_QUOTE_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_QUOTE_SOURCE"]}:
-        cfg["A_QUOTE_SOURCE"] = SYSTEM_DEFAULTS["A_QUOTE_SOURCE"]
-    if cfg.get("HK_MARKET_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_MARKET_SOURCE"]}:
-        cfg["HK_MARKET_SOURCE"] = SYSTEM_DEFAULTS["HK_MARKET_SOURCE"]
-    if cfg.get("A_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_BACKTEST_SOURCE"]}:
-        cfg["A_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["A_BACKTEST_SOURCE"]
-    if cfg.get("HK_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_BACKTEST_SOURCE"]}:
-        cfg["HK_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["HK_BACKTEST_SOURCE"]
+    for _field in ("A_QUOTE_SOURCE", "HK_MARKET_SOURCE", "A_BACKTEST_SOURCE", "HK_BACKTEST_SOURCE"):
+        cfg[_field] = normalize_system_source_value(_field, cfg.get(_field, SYSTEM_DEFAULTS.get(_field, "")))
     cfg["XUEQIU_TOKEN"] = str(cfg.get("XUEQIU_TOKEN", "") or "").strip()
     cfg["XUEQIU_TOKEN_UPDATED_AT"] = str(cfg.get("XUEQIU_TOKEN_UPDATED_AT", "") or "").strip()
     cfg["XUEQIU_TOKEN_SOURCE"] = str(cfg.get("XUEQIU_TOKEN_SOURCE", "") or "").strip()
@@ -1673,14 +1886,8 @@ def read_system_config() -> Dict[str, str]:
 def write_system_config(cfg: Dict[str, Any]) -> Dict[str, str]:
     merged = dict(SYSTEM_DEFAULTS)
     merged.update({k: "" if v is None else str(v).strip() for k, v in (cfg or {}).items()})
-    if merged.get("A_QUOTE_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_QUOTE_SOURCE"]}:
-        merged["A_QUOTE_SOURCE"] = SYSTEM_DEFAULTS["A_QUOTE_SOURCE"]
-    if merged.get("HK_MARKET_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_MARKET_SOURCE"]}:
-        merged["HK_MARKET_SOURCE"] = SYSTEM_DEFAULTS["HK_MARKET_SOURCE"]
-    if merged.get("A_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["A_BACKTEST_SOURCE"]}:
-        merged["A_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["A_BACKTEST_SOURCE"]
-    if merged.get("HK_BACKTEST_SOURCE") not in {x[0] for x in SYSTEM_SELECT_OPTIONS["HK_BACKTEST_SOURCE"]}:
-        merged["HK_BACKTEST_SOURCE"] = SYSTEM_DEFAULTS["HK_BACKTEST_SOURCE"]
+    for _field in ("A_QUOTE_SOURCE", "HK_MARKET_SOURCE", "A_BACKTEST_SOURCE", "HK_BACKTEST_SOURCE"):
+        merged[_field] = normalize_system_source_value(_field, merged.get(_field, SYSTEM_DEFAULTS.get(_field, "")))
     SYSTEM_CONFIG_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
     request_runtime_system_config_reload()
     return merged
@@ -1836,11 +2043,11 @@ def convert_form_value(key: str, value: str) -> Any:
     value = value.strip()
     if key in {"symbol", "strategy_run", "box_grid_enabled", "base_units", "target_units", "current_units", "pyramid_add_enabled"}:
         return value
-    if key == "pyramid_weights":
+    if key in {"pyramid_weights", "clear_pyramid_weights", "pyramid_add_weights"}:
         if not value:
             return []
         return [float(x.strip()) for x in value.split(",") if x.strip()]
-    if key in {"sideways_window_30", "sideways_window_60", "pyramid_steps"}:
+    if key in {"sideways_window_30", "sideways_window_60", "pyramid_steps", "clear_pyramid_steps", "pyramid_add_steps"}:
         return int(float(value or 0))
     if value == "":
         return ""
@@ -2336,6 +2543,14 @@ def _save_all_params(config: Dict[str, Any], selected: str) -> None:
     section["strategy_run"] = normalize_strategy_run_value(section.get("strategy_run", "on"), "on")
     if section.get("pyramid_add_enabled") not in {"yes", "auto"}:
         section["pyramid_add_enabled"] = "auto"
+    # 兼容旧模块：旧字段仍写回，但新策略优先读取独立字段。
+    # add_box_step 作为箱体固定加仓步长的旧别名；pyramid_steps/weights 作为离场倒金字塔旧别名。
+    if "box_add_step" in section:
+        section["add_box_step"] = section.get("box_add_step")
+    if "clear_pyramid_steps" in section:
+        section["pyramid_steps"] = section.get("clear_pyramid_steps")
+    if "clear_pyramid_weights" in section:
+        section["pyramid_weights"] = section.get("clear_pyramid_weights")
     set_section(config, selected, section)
     write_yaml(config)
     request_runtime_config_reload(selected, section)
@@ -2409,9 +2624,15 @@ def status_page():
         metrics, metrics_updated_at, metrics_error = get_source_metrics_for_status(selected, section)
         if not metrics:
             metrics = build_source_metric_placeholders(section)
-        ctx["source_metrics"] = metrics
+        ctx["source_metrics"] = _metric_display_cards(metrics)
         ctx["source_metrics_updated_at"] = metrics_updated_at
         ctx["source_metrics_error"] = metrics_error
+        if metrics_error:
+            prefix = "🔴[ERROR]" if any(isinstance(x, dict) and str(x.get("level", "")).upper() == "ERROR" for x in metrics) else "🟡[WARN]"
+            alert_line = f"{prefix} 回测/策略数据源指标: {metrics_error}"
+            status_text = str(ctx.get("status_text", "") or "")
+            if alert_line not in status_text:
+                ctx["status_text"] = (status_text.rstrip() + "\n" + alert_line).strip()
     ctx.update({"page_name": "status"})
     return render_template("dashboard.html", **ctx)
 
@@ -2479,14 +2700,10 @@ def clear_market_state_page():
         selected = _selected_key(config)
     section = get_section(config, selected)
     symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
-    if not web_in_trade_session(config):
-        now_text = web_strategy_now(config).strftime("%Y-%m-%d %H:%M:%S")
-        flash(f"当前不在交易时段 {trade_session_text(config)} 内，已跳过清除并刷新行情状态。当前策略时间：{now_text}。", "warning")
-        return redirect(url_for("status_page", symbol_key=selected))
     clear_seq = request_clear_market_state(selected, symbol_code)
     refresh_seq = request_force_refresh_symbol(selected, symbol_code)
     label = selected if selected != "COMMON_BACKTEST_CONFIG" else "当前标的"
-    flash(f"已请求清除 {label} ({symbol_code}) 的行情错误/旧价格校验状态，并按当前最新数据刷新一次（clear_seq={clear_seq}, refresh_seq={refresh_seq}）。本次只监控，不触发交易。", "success")
+    flash(f"已请求重置 {label} ({symbol_code}) 的运行状态，并清除行情错误/旧价格校验状态（reset_seq={clear_seq}, refresh_seq={refresh_seq}）。仅影响当前标的；本次刷新只监控，不触发交易。", "success")
     return redirect(url_for("status_page", symbol_key=selected))
 
 @app.route("/restore-trade-state", methods=["POST"])
