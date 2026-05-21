@@ -1,0 +1,587 @@
+/*
+ * DCF light theme skin
+ * Only adjusts visual rendering for the light theme. Layout and business logic remain unchanged.
+ */
+
+body.theme-x3-light,
+body:not(.theme-x3-dark){
+  background:
+    radial-gradient(circle at 15% -10%, rgba(16,185,129,.08), transparent 34%),
+    radial-gradient(circle at 88% 4%, rgba(59,130,246,.06), transparent 30%),
+    linear-gradient(180deg,#e7eeec 0%,#eef3f1 42%,#e5ecea 100%) !important;
+  color:#243041 !important;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+
+body.theme-x3-light::before,
+body:not(.theme-x3-dark)::before{
+  opacity:.55 !important;
+  background:
+    linear-gradient(90deg, rgba(15,23,42,.018) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(15,23,42,.014) 1px, transparent 1px) !important;
+  background-size:48px 48px !important;
+}
+
+body.theme-x3-light .topbar,
+body:not(.theme-x3-dark) .topbar,
+body.theme-x3-light .page-nav,
+body:not(.theme-x3-dark) .page-nav,
+body.theme-x3-light .card,
+body:not(.theme-x3-dark) .card,
+body.theme-x3-light .page-card,
+body:not(.theme-x3-dark) .page-card,
+body.theme-x3-light .symbols-current-card,
+body:not(.theme-x3-dark) .symbols-current-card{
+  background:linear-gradient(180deg, rgba(249,251,250,.92), rgba(239,245,243,.86)) !important;
+  border-color:rgba(51,65,85,.15) !important;
+  color:#263447 !important;
+  box-shadow:
+    0 18px 38px rgba(51,65,85,.085),
+    0 1px 2px rgba(51,65,85,.055),
+    inset 0 1px 0 rgba(255,255,255,.88) !important;
+}
+
+body.theme-x3-light .topbar,
+body:not(.theme-x3-dark) .topbar,
+body.theme-x3-light .page-nav,
+body:not(.theme-x3-dark) .page-nav{
+  background:linear-gradient(135deg, rgba(247,250,249,.90), rgba(229,239,236,.86)) !important;
+}
+
+body.theme-x3-light h1,
+body:not(.theme-x3-dark) h1,
+body.theme-x3-light h2,
+body:not(.theme-x3-dark) h2,
+body.theme-x3-light h3,
+body:not(.theme-x3-dark) h3,
+body.theme-x3-light .subsection-title,
+body:not(.theme-x3-dark) .subsection-title,
+body.theme-x3-light label,
+body:not(.theme-x3-dark) label{
+  color:#1e293b !important;
+  text-shadow:none !important;
+}
+
+body.theme-x3-light .section-note,
+body:not(.theme-x3-dark) .section-note,
+body.theme-x3-light .push-field-help,
+body:not(.theme-x3-dark) .push-field-help,
+body.theme-x3-light .summary-label,
+body:not(.theme-x3-dark) .summary-label,
+body.theme-x3-light .reference-price-card .meta,
+body:not(.theme-x3-dark) .reference-price-card .meta,
+body.theme-x3-light .source-metric-card .meta,
+body:not(.theme-x3-dark) .source-metric-card .meta{
+  color:#62748a !important;
+}
+
+body.theme-x3-light input,
+body:not(.theme-x3-dark) input,
+body.theme-x3-light select,
+body:not(.theme-x3-dark) select,
+body.theme-x3-light textarea,
+body:not(.theme-x3-dark) textarea{
+  background:linear-gradient(180deg,#fbfdfc,#f4f8f6) !important;
+  border-color:rgba(51,65,85,.24) !important;
+  color:#172033 !important;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.90),
+    inset 0 1px 2px rgba(51,65,85,.045) !important;
+}
+
+body.theme-x3-light input:focus,
+body:not(.theme-x3-dark) input:focus,
+body.theme-x3-light select:focus,
+body:not(.theme-x3-dark) select:focus,
+body.theme-x3-light textarea:focus,
+body:not(.theme-x3-dark) textarea:focus{
+  border-color:rgba(5,150,105,.46) !important;
+  box-shadow:
+    0 0 0 3px rgba(5,150,105,.10),
+    inset 0 1px 2px rgba(51,65,85,.045) !important;
+  outline:none !important;
+}
+
+body.theme-x3-light input[readonly],
+body:not(.theme-x3-dark) input[readonly],
+body.theme-x3-light select:disabled,
+body:not(.theme-x3-dark) select:disabled{
+  background:#e9f0ee !important;
+  color:#516274 !important;
+  border-color:rgba(51,65,85,.16) !important;
+}
+
+body.theme-x3-light .status-box,
+body:not(.theme-x3-dark) .status-box,
+body.theme-x3-light .output-box,
+body:not(.theme-x3-dark) .output-box,
+body.theme-x3-light .raw-output,
+body:not(.theme-x3-dark) .raw-output,
+body.theme-x3-light .summary-line,
+body:not(.theme-x3-dark) .summary-line,
+body.theme-x3-light .snapshot-reason-card,
+body:not(.theme-x3-dark) .snapshot-reason-card,
+body.theme-x3-light .reference-price-card,
+body:not(.theme-x3-dark) .reference-price-card,
+body.theme-x3-light .source-metric-card,
+body:not(.theme-x3-dark) .source-metric-card,
+body.theme-x3-light .snapshot-kv,
+body:not(.theme-x3-dark) .snapshot-kv{
+  background:linear-gradient(180deg, rgba(247,250,249,.92), rgba(238,244,242,.86)) !important;
+  border-color:rgba(51,65,85,.16) !important;
+  color:#263447 !important;
+  box-shadow:
+    0 8px 18px rgba(51,65,85,.045),
+    inset 0 1px 0 rgba(255,255,255,.84) !important;
+}
+
+body.theme-x3-light .status-box pre,
+body:not(.theme-x3-dark) .status-box pre,
+body.theme-x3-light .output-box pre,
+body:not(.theme-x3-dark) .output-box pre,
+body.theme-x3-light .raw-output pre,
+body:not(.theme-x3-dark) .raw-output pre,
+body.theme-x3-light .snapshot-reason-card,
+body:not(.theme-x3-dark) .snapshot-reason-card{
+  color:#253246 !important;
+  text-shadow:none !important;
+}
+
+body.theme-x3-light .primary-btn,
+body:not(.theme-x3-dark) .primary-btn,
+body.theme-x3-light .action-btn,
+body:not(.theme-x3-dark) .action-btn,
+body.theme-x3-light .artifact-btn,
+body:not(.theme-x3-dark) .artifact-btn,
+body.theme-x3-light .secondary-btn,
+body:not(.theme-x3-dark) .secondary-btn{
+  box-shadow:0 8px 18px rgba(51,65,85,.07), inset 0 1px 0 rgba(255,255,255,.56) !important;
+}
+
+body.theme-x3-light .page-nav-link,
+body:not(.theme-x3-dark) .page-nav-link{
+  background:rgba(255,255,255,.54) !important;
+  border-color:rgba(51,65,85,.13) !important;
+  color:#334155 !important;
+}
+
+body.theme-x3-light .page-nav-link.active,
+body:not(.theme-x3-dark) .page-nav-link.active{
+  background:linear-gradient(135deg, rgba(5,150,105,.16), rgba(14,165,233,.11)) !important;
+  border-color:rgba(5,150,105,.28) !important;
+  color:#065f46 !important;
+}
+
+body.theme-x3-light .reference-price-card.primary,
+body:not(.theme-x3-dark) .reference-price-card.primary{
+  background:linear-gradient(135deg, rgba(5,150,105,.13), rgba(14,165,233,.08)) !important;
+  border-color:rgba(5,150,105,.34) !important;
+}
+
+body.theme-x3-light .reference-price-card.error,
+body:not(.theme-x3-dark) .reference-price-card.error,
+body.theme-x3-light .source-metric-card.error,
+body:not(.theme-x3-dark) .source-metric-card.error{
+  background:linear-gradient(180deg, rgba(255,247,247,.94), rgba(253,237,237,.86)) !important;
+  border-color:rgba(185,28,28,.22) !important;
+}
+
+/* Keep parameter groups flat in light theme, only the inputs/cards inside carry subtle contrast. */
+body.theme-x3-light .params-form .config-card,
+body:not(.theme-x3-dark) .params-form .config-card,
+body.theme-x3-light .params-form .page-card-group,
+body:not(.theme-x3-dark) .params-form .page-card-group,
+body.theme-x3-light .params-form .compact-group,
+body:not(.theme-x3-dark) .params-form .compact-group{
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+  padding:0 !important;
+}
+
+/* Backtest output toggle: no outer box; clearer, softer operation button. */
+body.theme-x3-light .raw-output.backtest-output-toggle,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle{
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+  padding:0 !important;
+}
+
+body.theme-x3-light .raw-output.backtest-output-toggle > summary,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary{
+  background:linear-gradient(180deg, rgba(249,251,250,.90), rgba(232,241,238,.86)) !important;
+  border-color:rgba(5,150,105,.28) !important;
+  color:#047857 !important;
+  box-shadow:0 8px 18px rgba(51,65,85,.06), inset 0 1px 0 rgba(255,255,255,.80) !important;
+}
+
+body.theme-x3-light .raw-output.backtest-output-toggle > summary:hover,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary:hover{
+  background:linear-gradient(180deg, rgba(255,255,255,.96), rgba(225,238,234,.92)) !important;
+  border-color:rgba(5,150,105,.38) !important;
+}
+
+body.theme-x3-light .push-log-item,
+body:not(.theme-x3-dark) .push-log-item,
+body.theme-x3-light .push-log-detail,
+body:not(.theme-x3-dark) .push-log-detail{
+  background:rgba(247,250,249,.86) !important;
+  border-color:rgba(51,65,85,.14) !important;
+  color:#263447 !important;
+}
+
+@media (max-width:640px){
+  body.theme-x3-light .card,
+  body:not(.theme-x3-dark) .card,
+  body.theme-x3-light .page-card,
+  body:not(.theme-x3-dark) .page-card{
+    box-shadow:0 12px 26px rgba(51,65,85,.07), inset 0 1px 0 rgba(255,255,255,.86) !important;
+  }
+}
+
+/* === Light skin consistency pass: unify visual hierarchy across all pages === */
+:root{
+  --x3-light-page:#e2e9e7;
+  --x3-light-surface:#f1f6f4;
+  --x3-light-surface-2:#f8fbfa;
+  --x3-light-field:#fbfdfc;
+  --x3-light-field-muted:#e7efec;
+  --x3-light-border:rgba(31,41,55,.18);
+  --x3-light-border-soft:rgba(31,41,55,.105);
+  --x3-light-text:#1f2a3a;
+  --x3-light-muted:#64748b;
+  --x3-light-accent:#047857;
+}
+
+body.theme-x3-light,
+body:not(.theme-x3-dark){
+  background:
+    radial-gradient(circle at 12% -12%, rgba(16,185,129,.065), transparent 32%),
+    radial-gradient(circle at 88% 0%, rgba(59,130,246,.045), transparent 30%),
+    linear-gradient(180deg,var(--x3-light-page) 0%,#eef3f1 44%,#dfe7e4 100%) !important;
+  color:var(--x3-light-text) !important;
+}
+
+/* Level 1: page-level containers */
+body.theme-x3-light .topbar,
+body:not(.theme-x3-dark) .topbar,
+body.theme-x3-light .page-nav,
+body:not(.theme-x3-dark) .page-nav,
+body.theme-x3-light .card,
+body:not(.theme-x3-dark) .card,
+body.theme-x3-light .page-card,
+body:not(.theme-x3-dark) .page-card,
+body.theme-x3-light .symbols-current-card,
+body:not(.theme-x3-dark) .symbols-current-card,
+body.theme-x3-light .push-log-card,
+body:not(.theme-x3-dark) .push-log-card,
+body.theme-x3-light .simple-modal-card,
+body:not(.theme-x3-dark) .simple-modal-card{
+  background:linear-gradient(180deg, rgba(247,251,249,.94), rgba(236,243,240,.90)) !important;
+  border:1px solid var(--x3-light-border-soft) !important;
+  color:var(--x3-light-text) !important;
+  box-shadow:
+    0 16px 36px rgba(31,41,55,.075),
+    0 1px 2px rgba(31,41,55,.045),
+    inset 0 1px 0 rgba(255,255,255,.88) !important;
+}
+
+/* Level 2: content/display boxes - stronger contrast than the page but softer than inputs */
+body.theme-x3-light .status-box,
+body:not(.theme-x3-dark) .status-box,
+body.theme-x3-light .output-box,
+body:not(.theme-x3-dark) .output-box,
+body.theme-x3-light .raw-output,
+body:not(.theme-x3-dark) .raw-output,
+body.theme-x3-light .summary-line,
+body:not(.theme-x3-dark) .summary-line,
+body.theme-x3-light .summary-list,
+body:not(.theme-x3-dark) .summary-list,
+body.theme-x3-light .backtest-summary-list,
+body:not(.theme-x3-dark) .backtest-summary-list,
+body.theme-x3-light .snapshot-reason-card,
+body:not(.theme-x3-dark) .snapshot-reason-card,
+body.theme-x3-light .reference-price-card,
+body:not(.theme-x3-dark) .reference-price-card,
+body.theme-x3-light .source-metric-card,
+body:not(.theme-x3-dark) .source-metric-card,
+body.theme-x3-light .snapshot-kv,
+body:not(.theme-x3-dark) .snapshot-kv,
+body.theme-x3-light .help-panel,
+body:not(.theme-x3-dark) .help-panel,
+body.theme-x3-light .return-help-panel,
+body:not(.theme-x3-dark) .return-help-panel,
+body.theme-x3-light .push-log-item,
+body:not(.theme-x3-dark) .push-log-item,
+body.theme-x3-light .push-log-detail,
+body:not(.theme-x3-dark) .push-log-detail,
+body.theme-x3-light .flash,
+body:not(.theme-x3-dark) .flash{
+  background:linear-gradient(180deg, rgba(242,247,245,.95), rgba(232,240,237,.90)) !important;
+  border:1px solid rgba(31,41,55,.145) !important;
+  color:var(--x3-light-text) !important;
+  box-shadow:
+    0 8px 18px rgba(31,41,55,.045),
+    inset 0 1px 0 rgba(255,255,255,.82) !important;
+}
+
+/* Level 3: input controls - crispest contrast */
+body.theme-x3-light input,
+body:not(.theme-x3-dark) input,
+body.theme-x3-light select,
+body:not(.theme-x3-dark) select,
+body.theme-x3-light textarea,
+body:not(.theme-x3-dark) textarea,
+body.theme-x3-light .selected-symbol-select,
+body:not(.theme-x3-dark) .selected-symbol-select{
+  background:linear-gradient(180deg, var(--x3-light-field), #f3f8f6) !important;
+  border:1px solid rgba(31,41,55,.245) !important;
+  color:#142033 !important;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.95),
+    inset 0 1px 2px rgba(31,41,55,.055) !important;
+}
+
+body.theme-x3-light input:focus,
+body:not(.theme-x3-dark) input:focus,
+body.theme-x3-light select:focus,
+body:not(.theme-x3-dark) select:focus,
+body.theme-x3-light textarea:focus,
+body:not(.theme-x3-dark) textarea:focus{
+  border-color:rgba(4,120,87,.56) !important;
+  box-shadow:
+    0 0 0 3px rgba(4,120,87,.105),
+    inset 0 1px 2px rgba(31,41,55,.055) !important;
+}
+
+body.theme-x3-light input[readonly],
+body:not(.theme-x3-dark) input[readonly],
+body.theme-x3-light .readonly-block input,
+body:not(.theme-x3-dark) .readonly-block input,
+body.theme-x3-light select:disabled,
+body:not(.theme-x3-dark) select:disabled{
+  background:linear-gradient(180deg, var(--x3-light-field-muted), #dfe9e6) !important;
+  border-color:rgba(31,41,55,.17) !important;
+  color:#516274 !important;
+}
+
+/* Tables and list rows should use the same surface instead of transparent white. */
+body.theme-x3-light .snapshot-table-wrap,
+body:not(.theme-x3-dark) .snapshot-table-wrap,
+body.theme-x3-light .push-log-list,
+body:not(.theme-x3-dark) .push-log-list{
+  background:linear-gradient(180deg, rgba(242,247,245,.80), rgba(232,240,237,.70)) !important;
+  border:1px solid rgba(31,41,55,.12) !important;
+  border-radius:18px !important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.80) !important;
+}
+
+body.theme-x3-light .snapshot-table th,
+body:not(.theme-x3-dark) .snapshot-table th{
+  background:rgba(225,235,231,.72) !important;
+  color:#52647a !important;
+}
+
+body.theme-x3-light .snapshot-table td,
+body:not(.theme-x3-dark) .snapshot-table td{
+  background:rgba(248,251,250,.42) !important;
+  color:#243142 !important;
+  border-bottom-color:rgba(31,41,55,.095) !important;
+}
+
+/* Keep parameter page groups flat, but make the contained fields consistent. */
+body.theme-x3-light .params-form .config-card,
+body:not(.theme-x3-dark) .params-form .config-card,
+body.theme-x3-light .params-form .page-card-group,
+body:not(.theme-x3-dark) .params-form .page-card-group,
+body.theme-x3-light .params-form .compact-group,
+body:not(.theme-x3-dark) .params-form .compact-group{
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+}
+
+body.theme-x3-light .params-form .field-block,
+body:not(.theme-x3-dark) .params-form .field-block,
+body.theme-x3-light .tool-form .field-block,
+body:not(.theme-x3-dark) .tool-form .field-block,
+body.theme-x3-light .push-field-row,
+body:not(.theme-x3-dark) .push-field-row{
+  background:transparent !important;
+  border-color:rgba(31,41,55,.095) !important;
+}
+
+/* Backtest toggle: keep no outer frame, but make expanded output match the display-box level. */
+body.theme-x3-light .raw-output.backtest-output-toggle,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle{
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+}
+
+body.theme-x3-light .raw-output.backtest-output-toggle > summary,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary{
+  background:linear-gradient(180deg, #f7fbf9, #e6f0ec) !important;
+  border:1px solid rgba(4,120,87,.26) !important;
+  color:var(--x3-light-accent) !important;
+  box-shadow:0 8px 18px rgba(31,41,55,.055), inset 0 1px 0 rgba(255,255,255,.86) !important;
+}
+
+body.theme-x3-light .raw-output.backtest-output-toggle .output-box,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle .output-box{
+  background:linear-gradient(180deg, rgba(242,247,245,.96), rgba(232,240,237,.91)) !important;
+  border:1px solid rgba(31,41,55,.145) !important;
+}
+
+/* Muted text and labels unified. */
+body.theme-x3-light .section-note,
+body:not(.theme-x3-dark) .section-note,
+body.theme-x3-light .push-field-help,
+body:not(.theme-x3-dark) .push-field-help,
+body.theme-x3-light .summary-label,
+body:not(.theme-x3-dark) .summary-label,
+body.theme-x3-light .meta,
+body:not(.theme-x3-dark) .meta,
+body.theme-x3-light .snapshot-empty,
+body:not(.theme-x3-dark) .snapshot-empty{
+  color:var(--x3-light-muted) !important;
+}
+
+body.theme-x3-light pre,
+body:not(.theme-x3-dark) pre,
+body.theme-x3-light .status-box pre,
+body:not(.theme-x3-dark) .status-box pre,
+body.theme-x3-light .output-box pre,
+body:not(.theme-x3-dark) .output-box pre,
+body.theme-x3-light .raw-output pre,
+body:not(.theme-x3-dark) .raw-output pre{
+  color:#243142 !important;
+  text-shadow:none !important;
+}
+
+/* === Light skin refinement v3: remove hint boxes and align inputs with params page === */
+body.theme-x3-light .section-note,
+body:not(.theme-x3-dark) .section-note,
+body.theme-x3-light .push-field-help,
+body:not(.theme-x3-dark) .push-field-help,
+body.theme-x3-light .field-help,
+body:not(.theme-x3-dark) .field-help,
+body.theme-x3-light .help-text,
+body:not(.theme-x3-dark) .help-text,
+body.theme-x3-light .hint,
+body:not(.theme-x3-dark) .hint,
+body.theme-x3-light .form-hint,
+body:not(.theme-x3-dark) .form-hint,
+body.theme-x3-light .muted,
+body:not(.theme-x3-dark) .muted,
+body.theme-x3-light small,
+body:not(.theme-x3-dark) small{
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+  padding-left:0 !important;
+  padding-right:0 !important;
+}
+
+/* Use the same crisp field treatment on backtest and current-symbol pages as the params page. */
+body.theme-x3-light .tool-form input,
+body:not(.theme-x3-dark) .tool-form input,
+body.theme-x3-light .tool-form select,
+body:not(.theme-x3-dark) .tool-form select,
+body.theme-x3-light .tool-form textarea,
+body:not(.theme-x3-dark) .tool-form textarea,
+body.theme-x3-light .backtest-form input,
+body:not(.theme-x3-dark) .backtest-form input,
+body.theme-x3-light .backtest-form select,
+body:not(.theme-x3-dark) .backtest-form select,
+body.theme-x3-light .backtest-form textarea,
+body:not(.theme-x3-dark) .backtest-form textarea,
+body.theme-x3-light .symbols-current-card input,
+body:not(.theme-x3-dark) .symbols-current-card input,
+body.theme-x3-light .symbols-current-card select,
+body:not(.theme-x3-dark) .symbols-current-card select,
+body.theme-x3-light .symbols-current-card textarea,
+body:not(.theme-x3-dark) .symbols-current-card textarea,
+body.theme-x3-light .current-symbol-form input,
+body:not(.theme-x3-dark) .current-symbol-form input,
+body.theme-x3-light .current-symbol-form select,
+body:not(.theme-x3-dark) .current-symbol-form select,
+body.theme-x3-light .current-symbol-form textarea,
+body:not(.theme-x3-dark) .current-symbol-form textarea,
+body.theme-x3-light .symbol-form input,
+body:not(.theme-x3-dark) .symbol-form input,
+body.theme-x3-light .symbol-form select,
+body:not(.theme-x3-dark) .symbol-form select,
+body.theme-x3-light .symbol-form textarea,
+body:not(.theme-x3-dark) .symbol-form textarea,
+body.theme-x3-light .selected-symbol-select,
+body:not(.theme-x3-dark) .selected-symbol-select{
+  background:linear-gradient(180deg,#fbfdfc 0%,#eef5f2 100%) !important;
+  border:1px solid rgba(31,41,55,.30) !important;
+  color:#132033 !important;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.96),
+    0 0 0 1px rgba(255,255,255,.34),
+    inset 0 1px 2px rgba(31,41,55,.07) !important;
+}
+
+body.theme-x3-light .tool-form input:hover,
+body:not(.theme-x3-dark) .tool-form input:hover,
+body.theme-x3-light .tool-form select:hover,
+body:not(.theme-x3-dark) .tool-form select:hover,
+body.theme-x3-light .backtest-form input:hover,
+body:not(.theme-x3-dark) .backtest-form input:hover,
+body.theme-x3-light .backtest-form select:hover,
+body:not(.theme-x3-dark) .backtest-form select:hover,
+body.theme-x3-light .symbols-current-card input:hover,
+body:not(.theme-x3-dark) .symbols-current-card input:hover,
+body.theme-x3-light .symbols-current-card select:hover,
+body:not(.theme-x3-dark) .symbols-current-card select:hover,
+body.theme-x3-light .selected-symbol-select:hover,
+body:not(.theme-x3-dark) .selected-symbol-select:hover{
+  border-color:rgba(31,41,55,.38) !important;
+  background:linear-gradient(180deg,#ffffff 0%,#eef6f3 100%) !important;
+}
+
+body.theme-x3-light .tool-form input:focus,
+body:not(.theme-x3-dark) .tool-form input:focus,
+body.theme-x3-light .tool-form select:focus,
+body:not(.theme-x3-dark) .tool-form select:focus,
+body.theme-x3-light .tool-form textarea:focus,
+body:not(.theme-x3-dark) .tool-form textarea:focus,
+body.theme-x3-light .backtest-form input:focus,
+body:not(.theme-x3-dark) .backtest-form input:focus,
+body.theme-x3-light .backtest-form select:focus,
+body:not(.theme-x3-dark) .backtest-form select:focus,
+body.theme-x3-light .backtest-form textarea:focus,
+body:not(.theme-x3-dark) .backtest-form textarea:focus,
+body.theme-x3-light .symbols-current-card input:focus,
+body:not(.theme-x3-dark) .symbols-current-card input:focus,
+body.theme-x3-light .symbols-current-card select:focus,
+body:not(.theme-x3-dark) .symbols-current-card select:focus,
+body.theme-x3-light .symbols-current-card textarea:focus,
+body:not(.theme-x3-dark) .symbols-current-card textarea:focus,
+body.theme-x3-light .selected-symbol-select:focus,
+body:not(.theme-x3-dark) .selected-symbol-select:focus{
+  border-color:rgba(4,120,87,.62) !important;
+  box-shadow:
+    0 0 0 3px rgba(4,120,87,.12),
+    inset 0 1px 2px rgba(31,41,55,.07) !important;
+  outline:none !important;
+}
+
+/* Avoid accidental white panels behind lightweight descriptive text in backtest/current-symbol sections. */
+body.theme-x3-light .backtest-form .section-note,
+body:not(.theme-x3-dark) .backtest-form .section-note,
+body.theme-x3-light .tool-form .section-note,
+body:not(.theme-x3-dark) .tool-form .section-note,
+body.theme-x3-light .symbols-current-card .section-note,
+body:not(.theme-x3-dark) .symbols-current-card .section-note,
+body.theme-x3-light .current-symbol-form .section-note,
+body:not(.theme-x3-dark) .current-symbol-form .section-note{
+  display:block;
+  color:#5f7188 !important;
+  line-height:1.6;
+}
