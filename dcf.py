@@ -42,6 +42,7 @@ TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
 SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
 STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
 STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
+PUSH_DETAIL_LOG_FILE = BASE_DIR / "data" / "push_details.jsonl"
 LOG_DIR.mkdir(exist_ok=True)
 
 # ===========================
@@ -602,7 +603,7 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
             state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], old_entry)
         else:
             state[name] = build_default_symbol_state(SYMBOL_CONFIG[name])
-        state[name]["last_status_msg"] = None
+        # Do not clear last_status_msg here. Parameter reload must not erase the last complete trading-frame status.
         logging.info(f"🔁 参数已即时刷新: {name}，已加载最新 dcf.yaml；运行状态保持不变。")
     save_state(state)
     return seq
@@ -797,6 +798,36 @@ def apply_market_state_clear_if_needed(state):
 # ===========================
 # 构建每日快照
 # ===========================
+def record_push_detail(kind: str, body: str):
+    """Record non-snapshot push body so Web push log can show real detail.
+
+    push.log itself is written by push.py and only contains delivery result;
+    this sidecar keeps the actual message body for non-snapshot pushes.
+    """
+    try:
+        kind = str(kind or "").strip() or "push"
+        body = str(body or "")
+        if not body.strip() or kind == "snapshot":
+            return
+        PUSH_DETAIL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+            "kind": kind,
+            "body": body,
+        }
+        with PUSH_DETAIL_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+        # Keep the sidecar compact; push.log itself is already trimmed elsewhere.
+        try:
+            lines = PUSH_DETAIL_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if len(lines) > 200:
+                PUSH_DETAIL_LOG_FILE.write_text("\n".join(lines[-200:]) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+    except Exception as e:
+        logging.debug(f"记录推送详情失败: {e}")
+
+
 def build_daily_snapshot(state: dict) -> str:
     lines = []
     current_time = strategy_now().strftime("%Y.%m.%d.%H:%M")
@@ -2454,6 +2485,7 @@ def main_loop():
             logging.info("=" * 60)
             logging.info(body)
             try:
+                record_push_detail("trade", body)
                 send_notification(body)
                 logging.info("✅ 买卖信号推送成功")
             except Exception:
@@ -2467,6 +2499,7 @@ def main_loop():
             logging.info("=" * 60)
             logging.info(body)
             try:
+                record_push_detail("market_error", body)
                 send_notification(body)
                 logging.info("✅ 行情错误推送成功")
             except Exception:

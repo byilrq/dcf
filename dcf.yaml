@@ -83,7 +83,7 @@ SYMBOL_CONFIG:
     sell_multiple: 1.5
     add_box_step: 0.05
     add_box_units_percent: 0.1
-    box_grid_enabled: 'no'
+    box_grid_enabled: 'yes'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
     trend_zone_step_percent: 0.01
@@ -101,7 +101,7 @@ SYMBOL_CONFIG:
     - 0.17
     - 0.23
     box_add_step: 0.05
-    pyramid_add_step: 0.05
+    pyramid_add_step: 0.01
     clear_pyramid_weights:
     - 0.05
     - 0.07
@@ -642,7 +642,7 @@ SYMBOL_CONFIG:
     base_units: 10%
     target_units: 20%
     double_target_factor: 2.0
-    current_units: 20%
+    current_units: 5%
     current_avg_cost: 483.6
     k150: 0.95
     sideways_window_30: 30
@@ -652,8 +652,8 @@ SYMBOL_CONFIG:
     trend_multiple: 1.2
     sell_multiple: 1.4
     add_box_step: 0.025
-    add_box_units_percent: 0.05
-    box_grid_enabled: 'no'
+    add_box_units_percent: 0.01
+    box_grid_enabled: 'yes'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
     trend_zone_step_percent: 0.01
@@ -671,7 +671,7 @@ SYMBOL_CONFIG:
     - 0.17
     - 0.23
     box_add_step: 0.025
-    pyramid_add_step: 0.025
+    pyramid_add_step: 0.01
     clear_pyramid_weights:
     - 0.05
     - 0.07
@@ -693,13 +693,13 @@ SYMBOL_CONFIG:
     - 0.23
     pyramid_add_steps: 8
   紫金:
-    name: 通用回测参数
+    symbol: SH601899
     strategy_run: 'on'
     price_scale: 1.0
     base_units: 2.5%
     target_units: 10%
     double_target_factor: 2.0
-    current_units: 10%
+    current_units: 5%
     current_avg_cost: 30.325
     k150: 0.95
     sideways_window_30: 30
@@ -727,9 +727,8 @@ SYMBOL_CONFIG:
     - 0.15
     - 0.17
     - 0.23
-    symbol: SH601899
     box_add_step: 0.05
-    pyramid_add_step: 0.05
+    pyramid_add_step: 0.01
     clear_pyramid_weights:
     - 0.05
     - 0.07
@@ -751,7 +750,7 @@ SYMBOL_CONFIG:
     - 0.23
     pyramid_add_steps: 8
   铺子:
-    name: 通用回测参数
+    symbol: SZ002847
     strategy_run: 'on'
     price_scale: 1.0
     base_units: 2.5%
@@ -785,7 +784,63 @@ SYMBOL_CONFIG:
     - 0.15
     - 0.17
     - 0.23
-    symbol: SZ002847
+    box_add_step: 0.05
+    pyramid_add_step: 0.05
+    clear_pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    clear_pyramid_steps: 8
+    pyramid_add_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
+    pyramid_add_steps: 8
+  陕煤:
+    symbol: SH601225
+    strategy_run: 'on'
+    price_scale: 1.0
+    base_units: 2.5%
+    target_units: 5%
+    double_target_factor: 2.0
+    current_units: 2.5%
+    current_avg_cost: 0.0
+    k150: 0.95
+    sideways_window_30: 30
+    sideways_window_60: 20
+    sideways_weight_60: 0.7
+    sideways_min_k150: 0.85
+    trend_multiple: 1.2
+    sell_multiple: 1.5
+    add_box_step: 0.05
+    add_box_units_percent: 0.1
+    box_grid_enabled: 'no'
+    grid_box_percent: 0.01
+    grid_box_units_percent: 0.05
+    trend_zone_step_percent: 0.01
+    trend_zone_sell_percent: 0.05
+    clear_zone_step_percent: 0.08
+    pyramid_add_enabled: auto
+    pyramid_steps: 8
+    pyramid_weights:
+    - 0.05
+    - 0.07
+    - 0.09
+    - 0.11
+    - 0.13
+    - 0.15
+    - 0.17
+    - 0.23
     box_add_step: 0.05
     pyramid_add_step: 0.05
     clear_pyramid_weights:

@@ -51,11 +51,13 @@ try:
         get_all_source_options as market_get_all_source_options,
         get_source_options as market_get_source_options,
         get_source_display_name as market_get_source_display_name,
+        get_reference_price_by_source as market_get_reference_price_by_source,
         normalize_system_source_value as market_normalize_system_source_value,
     )
 except Exception:
     market_get_all_source_options = None
     market_get_source_options = None
+    market_get_reference_price_by_source = None
     market_get_source_display_name = None
     market_normalize_system_source_value = None
 
@@ -70,6 +72,7 @@ SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
 STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
 STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
 SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
+PUSH_DETAIL_LOG_FILE = BASE_DIR / "data" / "push_details.jsonl"
 
 yaml = YAML()
 yaml.preserve_quotes = True
@@ -174,6 +177,30 @@ SYSTEM_SELECT_OPTIONS = market_get_all_source_options() if market_get_all_source
     "HK_MARKET_SOURCE": [("live_hk1", "腾讯港股"), ("live_hk2", "雪球港股"), ("live_hk3", "东方财富港股")],
     "A_BACKTEST_SOURCE": [("historical_a1", "腾讯A股/ETF日K"), ("historical_a2", "新浪A股/ETF日K")],
     "HK_BACKTEST_SOURCE": [("historical_hk1", "腾讯港股日K"), ("historical_hk2", "Yahoo港股日K")],
+}
+
+STRATEGY_FIELDS: List[Dict[str, str]] = [
+    {"key": "loop_interval", "label": "循环间隔（秒）", "type": "number", "help": "后台策略循环间隔。保存后下一轮循环开始生效。"},
+    {"key": "fetch_history_days", "label": "历史K线天数", "type": "number", "help": "策略与指标计算拉取的历史交易日数量。"},
+    {"key": "ma_period_short", "label": "短均线周期", "type": "number", "help": "当前策略使用的 MA 周期，默认 150。"},
+    {"key": "ma_period_long", "label": "长均线周期", "type": "number", "help": "保留参数，默认 300。"},
+    {"key": "session_start", "label": "交易开始时间", "type": "text", "help": "格式 HH:MM，例如 09:25。"},
+    {"key": "session_end", "label": "交易结束时间", "type": "text", "help": "格式 HH:MM，例如 23:00。"},
+    {"key": "daily_push_time", "label": "每日快照时间", "type": "text", "help": "格式 HH:MM。"},
+    {"key": "log_rotate_time", "label": "日志轮转时间", "type": "text", "help": "格式 HH:MM。"},
+    {"key": "timezone", "label": "策略时区", "type": "text", "help": "例如 Asia/Shanghai。"},
+]
+
+STRATEGY_DEFAULTS: Dict[str, Any] = {
+    "loop_interval": 60,
+    "fetch_history_days": 400,
+    "ma_period_short": 150,
+    "ma_period_long": 300,
+    "session_start": "09:25",
+    "session_end": "23:00",
+    "daily_push_time": "08:00",
+    "log_rotate_time": "08:00",
+    "timezone": "Asia/Shanghai",
 }
 
 def normalize_system_source_value(field: str, value: Any) -> str:
@@ -768,10 +795,20 @@ def read_yaml() -> Dict[str, Any]:
         write_yaml(data)
     return data
 
+def _clone_yaml_plain(value):
+    """Return a structure without shared list/dict references, so YAML has no &id/*id anchors."""
+    if isinstance(value, dict):
+        return {k: _clone_yaml_plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clone_yaml_plain(v) for v in value]
+    return value
+
+
 def write_yaml(data: Dict[str, Any]) -> None:
     normalize_config(data)
+    clean_data = _clone_yaml_plain(data)
     with CONFIG_FILE.open("w", encoding="utf-8") as f:
-        yaml.dump(data, f)
+        yaml.dump(clean_data, f)
 
 def read_state() -> Dict[str, Any]:
     if not STATE_FILE.exists():
@@ -1213,6 +1250,50 @@ def refresh_reference_prices_now(selected: str, section: Dict[str, Any]) -> Tupl
             node["reference_prices_error"] = error
     write_state(state)
     return refs, error
+
+
+def refresh_reference_price_source_now(selected: str, section: Dict[str, Any], source_key: str) -> Tuple[Dict[str, Any], str]:
+    """Synchronously refresh exactly one realtime quote card, without touching status text."""
+    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    source_key = str(source_key or "").strip()
+    if not symbol:
+        return {}, "未找到标的代码"
+    try:
+        if not market_get_reference_price_by_source:
+            raise RuntimeError("market_data.get_reference_price_by_source 不可用")
+        ref = market_get_reference_price_by_source(symbol, source_key, price_scale=safe_float(section.get("price_scale", 1.0), 1.0))
+        error = "" if ref else "参考价返回为空"
+    except Exception as e:
+        ref, error = {}, str(e)[:300]
+    state = read_state()
+    if not isinstance(state, dict):
+        state = {}
+    updated_at = current_time_text()
+    if isinstance(ref, dict) and ref:
+        ref["updated_at"] = updated_at
+    for key in [selected, symbol]:
+        if not key:
+            continue
+        node = state.setdefault(key, {})
+        if not isinstance(node, dict):
+            continue
+        node["symbol"] = symbol
+        existing = node.get("reference_prices") if isinstance(node.get("reference_prices"), list) else []
+        by_key = {str(x.get("key", "")): dict(x) for x in existing if isinstance(x, dict)}
+        if ref:
+            by_key[source_key] = ref
+        # Keep all configured cards present and in configured order. Missing cards stay as 待刷新.
+        merged = []
+        for opt_key, opt_label in reference_source_options_for_symbol(symbol):
+            item = by_key.get(opt_key)
+            if not item:
+                item = {"key": opt_key, "label": opt_label, "price": None, "source": opt_label, "date": "", "updated_at": "", "ok": False, "primary": False, "error": "待刷新"}
+            merged.append(item)
+        node["reference_prices"] = merged
+        node["reference_prices_updated_at"] = updated_at
+        node["reference_prices_error"] = error
+    write_state(state)
+    return ref, error
 
 
 def refresh_status_snapshot_now(selected: str, section: Dict[str, Any]) -> Tuple[bool, str]:
@@ -1947,6 +2028,132 @@ def save_system_config_from_form() -> Dict[str, str]:
     return write_system_config(cfg)
 
 
+def read_strategy_settings(config: Dict[str, Any] = None) -> Dict[str, Any]:
+    config = config if isinstance(config, dict) else read_yaml()
+    raw = config.get("STRATEGY", {}) if isinstance(config, dict) else {}
+    settings = dict(STRATEGY_DEFAULTS)
+    if isinstance(raw, dict):
+        settings.update(raw)
+    return settings
+
+
+def _convert_strategy_form_value(key: str, value: str) -> Any:
+    value = str(value or "").strip()
+    if key in {"loop_interval", "fetch_history_days", "ma_period_short", "ma_period_long"}:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(STRATEGY_DEFAULTS.get(key, 0))
+    return value
+
+
+def save_strategy_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
+    strategy = dict(config.get("STRATEGY", {}) or {})
+    for item in STRATEGY_FIELDS:
+        key = item["key"]
+        if key in request.form:
+            strategy[key] = _convert_strategy_form_value(key, request.form.get(key, ""))
+    # basic guardrails
+    strategy["loop_interval"] = max(1, int(strategy.get("loop_interval", 60) or 60))
+    strategy["fetch_history_days"] = max(2, int(strategy.get("fetch_history_days", 400) or 400))
+    strategy["ma_period_short"] = max(5, int(strategy.get("ma_period_short", 150) or 150))
+    strategy["ma_period_long"] = max(strategy["ma_period_short"], int(strategy.get("ma_period_long", 300) or 300))
+    for tkey in ("session_start", "session_end", "daily_push_time", "log_rotate_time"):
+        h, m = _parse_hm_web(strategy.get(tkey, STRATEGY_DEFAULTS.get(tkey, "09:30")))
+        strategy[tkey] = f"{h:02d}:{m:02d}"
+    strategy["timezone"] = str(strategy.get("timezone", "Asia/Shanghai") or "Asia/Shanghai").strip()
+    config["STRATEGY"] = strategy
+    write_yaml(config)
+    # dcf.py reloads dcf.yaml every loop; nudge it so sleep wakes early.
+    try:
+        state = read_state()
+        meta = state.setdefault("_meta", {})
+        meta["config_reload_seq"] = int(meta.get("config_reload_seq", 0) or 0) + 1
+        meta["config_reload_symbols"] = ["__ALL__"]
+        meta["strategy_config_updated_at"] = current_time_text()
+        write_state(state)
+    except Exception:
+        pass
+    return strategy
+
+
+def _parse_push_log_time(text: str):
+    try:
+        m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", str(text or ""))
+        if not m:
+            return None
+        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _read_push_detail_records(limit: int = 300) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    try:
+        if not PUSH_DETAIL_LOG_FILE.exists():
+            return records
+        lines = PUSH_DETAIL_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        for line in lines[-max(1, int(limit or 300)):]:
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    records.append(obj)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return records
+
+
+def _find_push_detail_for_log(compact: str, detail_records: List[Dict[str, Any]]) -> str:
+    """Return pushed message body for one push.log line when available.
+
+    push.log historically only recorded delivery status/bytes, not the payload.
+    Newer dcf.py writes data/push_details.jsonl before sending non-snapshot pushes;
+    this helper pairs records by timestamp and falls back to a clear note for old logs.
+    """
+    ts = _parse_push_log_time(compact)
+    if ts and detail_records:
+        best = None
+        best_delta = 999999
+        for rec in detail_records:
+            try:
+                rec_time = datetime.strptime(str(rec.get("time", ""))[:19], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            delta = abs((rec_time - ts).total_seconds())
+            if delta < best_delta:
+                best_delta = delta
+                best = rec
+        if best and best_delta <= 5:
+            body = str(best.get("body", "") or "").strip()
+            if body:
+                return body
+    if "bytes=" in compact or "成功" in compact or "失败" in compact:
+        return compact + "\n\n该条旧日志只记录了推送结果，没有记录推送正文；新的非快照推送会记录并可在这里查看详情。"
+    return compact
+
+
+def build_push_log_entries(lines: List[str]) -> List[Dict[str, Any]]:
+    entries = []
+    detail_records = _read_push_detail_records()
+    for idx, line in enumerate(lines or []):
+        text = str(line or "")
+        compact = text.replace("\r", "").strip()
+        is_snapshot = ("每日快照" in compact) or ("快照推送" in compact)
+        first_line = compact.splitlines()[0] if compact else ""
+        summary = first_line[:120] + ("…" if len(first_line) > 120 else "")
+        detail = _find_push_detail_for_log(compact, detail_records) if compact and not is_snapshot else compact
+        entries.append({
+            "id": f"push-log-{idx}",
+            "summary": summary or compact[:120],
+            "detail": detail,
+            "is_snapshot": is_snapshot,
+            "can_view": bool(compact) and not is_snapshot,
+        })
+    return entries
+
+
 def save_push_config_from_form() -> Dict[str, str]:
     cfg = read_push_config()
     for item in PUSH_FIELDS:
@@ -2080,7 +2287,10 @@ def latest_status_for(selected: str, state: Dict[str, Any]) -> str:
     if selected == "COMMON_BACKTEST_CONFIG":
         return "通用回测参数无实时状态。"
     item = state.get(selected, {}) if isinstance(state, dict) else {}
-    txt = str(item.get("last_status_msg", "暂无最新状态。")).strip()
+    raw = item.get("last_status_msg") if isinstance(item, dict) else None
+    if raw in (None, "", "None"):
+        return "暂无最新状态。"
+    txt = str(raw).strip()
     if txt.lower().startswith("last_status_msg"):
         txt = txt.split(":", 1)[-1].strip()
     return txt or "暂无最新状态。"
@@ -2139,14 +2349,19 @@ def build_grouped_fields(section: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def build_new_symbol_section(config: Dict[str, Any], symbol: str) -> Dict[str, Any]:
     common = deepcopy(config.get("COMMON_BACKTEST_CONFIG", {}) or {})
+    common.pop("name", None)
     normalize_config({"COMMON_BACKTEST_CONFIG": common})
-    common["symbol"] = symbol
+    common.pop("name", None)
     common["strategy_run"] = "on"
     common["box_grid_enabled"] = "no"
     common["pyramid_add_enabled"] = "auto"
     common.setdefault("current_units", common.get("base_units", ""))
     common.setdefault("current_avg_cost", 0.0)
-    return common
+    ordered = {"symbol": symbol}
+    for k, v in common.items():
+        if k != "symbol" and k != "name":
+            ordered[k] = v
+    return ordered
 
 def _artifact_url(path: Path) -> str:
     return url_for("download_artifact", path=str(path))
@@ -2643,7 +2858,7 @@ def home_redirect():
 @app.route("/symbols", methods=["GET", "POST"])
 def symbols_page():
     config = read_yaml()
-    selected = _selected_key(config)
+    selected = _selected_key(config, prefer_real_symbol=True)
     if request.method == "POST":
         redirect_resp = _handle_symbol_actions(config, selected)
         if redirect_resp is not None:
@@ -2651,6 +2866,7 @@ def symbols_page():
         config = read_yaml()
         selected = _selected_key(config)
     ctx = _base_context(config, selected)
+    ctx["symbol_cards"] = build_symbol_cards(config, selected, include_common=False)
     ctx.update({"page_name": "symbols"})
     return render_template("dashboard.html", **ctx)
 
@@ -2695,21 +2911,31 @@ def refresh_status_page():
         selected = _selected_key(config)
     section = get_section(config, selected)
     symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
-    if not web_in_trade_session(config):
-        now_text = web_strategy_now(config).strftime("%Y-%m-%d %H:%M:%S")
-        flash(f"当前不在交易时段 {trade_session_text(config)} 内，已跳过状态刷新。当前策略时间：{now_text}。", "warning")
-        return redirect(url_for("status_page", symbol_key=selected))
     refs, ref_error = refresh_reference_prices_now(selected, section)
-    immediate_ok, immediate_detail = refresh_status_snapshot_now(selected, section)
-    seq = request_force_refresh_symbol(selected, symbol_code)
     label = selected if selected != "COMMON_BACKTEST_CONFIG" else "当前标的"
-    ref_msg = f"3 个实时行情源已更新 {sum(1 for x in refs if isinstance(x, dict) and x.get('ok'))}/{len(refs) or 3}" if refs else f"3 源参考价待后台刷新：{ref_error or '暂无返回'}"
-    if immediate_ok:
-        flash(f"已手动刷新 {label} ({symbol_code}) 的状态；{ref_msg}。后台也已收到兜底刷新请求（seq={seq}），本次只监控，不触发交易。", "success")
-    else:
-        flash(f"已请求刷新 {label} ({symbol_code}) 的行情/状态；{ref_msg}。后台下一轮会补刷状态（seq={seq}）。原因：{immediate_detail}", "success")
+    ref_msg = f"3 个实时行情源已更新 {sum(1 for x in refs if isinstance(x, dict) and x.get('ok'))}/{len(refs) or 3}" if refs else f"3 源参考价刷新失败：{ref_error or '暂无返回'}"
+    flash(f"已刷新 {label} ({symbol_code}) 的实时参考价；{ref_msg}。状态正文保持最后一帧，不触发交易。", "success")
     return redirect(url_for("status_page", symbol_key=selected))
 
+
+
+@app.route("/refresh-reference-price", methods=["POST"])
+def refresh_reference_price_page():
+    config = read_yaml()
+    selected = (request.form.get("symbol_key", "") or "").strip()
+    source_key = (request.form.get("source_key", "") or "").strip()
+    allowed = {key for key, _ in symbol_options(config)}
+    if selected not in allowed or selected == "COMMON_BACKTEST_CONFIG":
+        selected = _selected_key(config, prefer_real_symbol=True)
+    section = get_section(config, selected)
+    symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    ref, err = refresh_reference_price_source_now(selected, section, source_key)
+    label = (ref or {}).get("label") or source_key or "实时源"
+    if ref and ref.get("ok"):
+        flash(f"已刷新 {selected} ({symbol_code}) 的 {label}: {fmt_snapshot_value(ref.get('price'))}。状态正文保持最后一帧。", "success")
+    else:
+        flash(f"刷新 {selected} ({symbol_code}) 的 {label} 失败：{err or (ref or {}).get('error') or '未知错误'}", "error")
+    return redirect(url_for("status_page", symbol_key=selected))
 
 
 @app.route("/refresh-source-metrics", methods=["POST"])
@@ -2750,9 +2976,8 @@ def clear_market_state_page():
     section = get_section(config, selected)
     symbol_code = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
     clear_seq = request_clear_market_state(selected, symbol_code)
-    refresh_seq = request_force_refresh_symbol(selected, symbol_code)
     label = selected if selected != "COMMON_BACKTEST_CONFIG" else "当前标的"
-    flash(f"已请求重置 {label} ({symbol_code}) 的运行状态，并清除行情错误/旧价格校验状态（reset_seq={clear_seq}, refresh_seq={refresh_seq}）。仅影响当前标的；本次刷新只监控，不触发交易。", "success")
+    flash(f"已请求重置 {label} ({symbol_code}) 的运行状态（last_price/last_trade_price/last_add_price/步进等恢复初始），仅影响当前标的。", "success")
     return redirect(url_for("status_page", symbol_key=selected))
 
 @app.route("/restore-trade-state", methods=["POST"])
@@ -2889,7 +3114,12 @@ def push_page():
         action = request.form.get("action", "")
         if action == "save_system":
             save_system_config_from_form()
-            flash("系统配置已保存，行情源设置已通知主程序即时生效。", "success")
+            flash("行情源设置已保存，并通知主程序即时生效。", "success")
+            return redirect(url_for("push_page"))
+        if action == "save_strategy":
+            config = read_yaml()
+            save_strategy_settings_from_form(config)
+            flash("系统运行设置已保存到 dcf.yaml，主程序将即时读取生效。", "success")
             return redirect(url_for("push_page"))
         if action == "save_push":
             cfg = save_push_config_from_form()
@@ -2898,6 +3128,16 @@ def push_page():
         if action == "test_push":
             ok, detail = send_push_test(cfg)
             flash(detail, "success" if ok else "error")
+            return redirect(url_for("push_page"))
+        if action == "clear_push_log":
+            try:
+                PUSH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                PUSH_LOG_FILE.write_text("", encoding="utf-8")
+                if PUSH_DETAIL_LOG_FILE.exists():
+                    PUSH_DETAIL_LOG_FILE.write_text("", encoding="utf-8")
+                flash("推送日志已清空。", "success")
+            except Exception as e:
+                flash(f"清空推送日志失败: {e}", "error")
             return redirect(url_for("push_page"))
     config = read_yaml()
     selected = _selected_key(config)
@@ -2913,6 +3153,9 @@ def push_page():
         "push_fields": PUSH_FIELDS,
         "push_select_options": PUSH_SELECT_OPTIONS,
         "push_logs": read_push_logs(PUSH_LOG_KEEP_LINES),
+        "push_log_entries": build_push_log_entries(read_push_logs(PUSH_LOG_KEEP_LINES)),
+        "strategy_fields": STRATEGY_FIELDS,
+        "strategy_settings": read_strategy_settings(config),
     })
     return render_template("dashboard.html", **ctx)
 

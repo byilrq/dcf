@@ -733,35 +733,48 @@ def get_market_snapshot(symbol: str, days: int = 400, price_scale: float = 1.0) 
         return _read_cache(raw, days, price_scale, f"行情数据源失败: {e}")
 
 
+def _realtime_source_functions_for_symbol(symbol: str):
+    raw = str(symbol or "").upper().strip()
+    if _is_hk(raw):
+        return [
+            ("live_hk1", _fetch_tencent_hk_realtime_price),
+            ("live_hk2", _fetch_xueqiu_realtime_price),
+            ("live_hk3", _fetch_eastmoney_hk_realtime_price),
+        ], "HK_MARKET_SOURCE"
+    return [
+        ("live_a1", _fetch_tencent_a_realtime_price),
+        ("live_a2", _fetch_xueqiu_realtime_price),
+        ("live_a3", _fetch_eastmoney_a_realtime_price),
+    ], "A_QUOTE_SOURCE"
+
+
+def get_reference_price_by_source(symbol: str, source_key: str, price_scale: float = 1.0) -> dict:
+    """Refresh exactly one realtime source and return the status-card payload."""
+    raw = str(symbol or "").upper().strip()
+    key = str(source_key or "").strip()
+    if not raw:
+        raise ValueError("未找到标的代码")
+    sources, field = _realtime_source_functions_for_symbol(raw)
+    source_map = dict(sources)
+    if key not in source_map:
+        raise ValueError(f"不支持的实时源: {key}")
+    cfg = _load_system_config()
+    preferred = cfg.get(field, sources[0][0])
+    label = get_source_display_name(key)
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        price, date = source_map[key](raw, price_scale)
+        return {"key": key, "label": label, "price": price, "source": label, "date": date or "", "updated_at": updated_at, "ok": True, "primary": key == preferred, "error": ""}
+    except Exception as e:
+        return {"key": key, "label": label, "price": None, "source": label, "date": "", "updated_at": updated_at, "ok": False, "primary": key == preferred, "error": str(e)[:180]}
+
+
 def get_reference_prices(symbol: str, price_scale: float = 1.0) -> List[dict]:
     raw = str(symbol or "").upper().strip()
     if not raw:
         return []
-    cfg = _load_system_config()
-    if _is_hk(raw):
-        preferred = cfg.get("HK_MARKET_SOURCE", "live_hk1")
-        sources = [
-            ("live_hk1", _fetch_tencent_hk_realtime_price),
-            ("live_hk2", _fetch_xueqiu_realtime_price),
-            ("live_hk3", _fetch_eastmoney_hk_realtime_price),
-        ]
-    else:
-        preferred = cfg.get("A_QUOTE_SOURCE", "live_a1")
-        sources = [
-            ("live_a1", _fetch_tencent_a_realtime_price),
-            ("live_a2", _fetch_xueqiu_realtime_price),
-            ("live_a3", _fetch_eastmoney_a_realtime_price),
-        ]
-    result = []
-    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for key, fn in sources:
-        label = get_source_display_name(key)
-        try:
-            price, date = fn(raw, price_scale)
-            result.append({"key": key, "label": label, "price": price, "source": label, "date": date or "", "updated_at": updated_at, "ok": True, "primary": key == preferred, "error": ""})
-        except Exception as e:
-            result.append({"key": key, "label": label, "price": None, "source": label, "date": "", "updated_at": updated_at, "ok": False, "primary": key == preferred, "error": str(e)[:180]})
-    return result
+    sources, _field = _realtime_source_functions_for_symbol(raw)
+    return [get_reference_price_by_source(raw, key, price_scale) for key, _fn in sources]
 
 
 def get_price_from_api(symbol: str, price_scale: float = 1.0, last_known_price=None) -> float:
