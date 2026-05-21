@@ -456,9 +456,18 @@
     .help-btn.large,.help-btn.return-help-style,.backtest-run-help-btn{width:34px !important;height:34px !important;min-width:34px !important;min-height:34px !important;padding:0 !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;border-radius:50% !important;font-weight:800 !important;font-size:16px !important;line-height:1 !important;}
     body:not(.theme-x3-dark) .help-btn.large,body:not(.theme-x3-dark) .help-btn.return-help-style,body:not(.theme-x3-dark) .backtest-run-help-btn{background:rgba(255,255,255,.78) !important;color:#047857 !important;border:1px solid rgba(5,150,105,.28) !important;box-shadow:0 8px 18px rgba(15,23,42,.07), inset 0 1px 0 rgba(255,255,255,.78) !important;}
     body.theme-x3-dark .help-btn.large,body.theme-x3-dark .help-btn.return-help-style,body.theme-x3-dark .backtest-run-help-btn{background:linear-gradient(135deg, rgba(15,118,110,.42), rgba(30,41,59,.44)) !important;color:rgba(236,254,255,.96) !important;border:1px solid rgba(45,212,191,.34) !important;box-shadow:0 10px 22px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.12) !important;}
-    body:not(.theme-x3-dark) .return-help-panel,body:not(.theme-x3-dark) .help-panel{background:rgba(255,255,255,.88) !important;color:#334155 !important;border-color:rgba(15,23,42,.08) !important;box-shadow:0 12px 28px rgba(15,23,42,.07) !important;}
-    body:not(.theme-x3-dark) .return-help-panel h3,body:not(.theme-x3-dark) .return-help-panel h4{color:#047857 !important;}
-    body:not(.theme-x3-dark) .return-help-panel code{background:rgba(15,23,42,.06) !important;color:#0f172a !important;}
+    /* 回测页展开/收起说明面板：亮色主题也沿用暗色主题面板质感 */
+    body:not(.theme-x3-dark) .return-help-panel,
+    body:not(.theme-x3-dark) .help-panel{
+      background:linear-gradient(180deg, rgba(18,31,49,.94), rgba(12,27,43,.88)) !important;
+      color:rgba(226,236,248,.94) !important;
+      border:1px solid rgba(91,113,143,.28) !important;
+      box-shadow:0 18px 40px rgba(15,23,42,.18), inset 0 1px 0 rgba(255,255,255,.07) !important;
+    }
+    body:not(.theme-x3-dark) .return-help-panel h3,
+    body:not(.theme-x3-dark) .return-help-panel h4{color:#ccfbf1 !important;}
+    body:not(.theme-x3-dark) .return-help-panel code{background:rgba(8,16,29,.58) !important;color:#e0f2fe !important;}
+    body:not(.theme-x3-dark) .help-panel pre{color:#e5edf7 !important;}
     @media (max-width:640px){.theme-switch-label{display:none}.theme-switch{padding:6px}.theme-slider{width:42px}.backtest-run-actions{grid-template-columns:1fr auto}.backtest-run-actions .primary-btn{grid-column:1}.backtest-run-actions .backtest-run-help-btn{grid-column:2}}
 
 
@@ -835,7 +844,140 @@
       background:#fbfdfc !important;
     }
 
+
+
+    /* 参数页：亮色主题下移除关键参数分组背后的方框，参考暗色主题的扁平展示 */
+    body.theme-x3-light .params-form .config-card.param-group-position,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-position,
+    body.theme-x3-light .params-form .config-card.param-group-zones,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-zones,
+    body.theme-x3-light .params-form .config-card.param-group-trend_zone,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-trend_zone,
+    body.theme-x3-light .params-form .config-card.param-group-clear_zone,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-clear_zone,
+    body.theme-x3-light .params-form .config-card.param-group-pyramid_add,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-pyramid_add{
+      background:transparent !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+    }
+    body.theme-x3-light .params-form .config-card.param-group-position + .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-position + .config-card,
+    body.theme-x3-light .params-form .config-card.param-group-zones + .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-zones + .config-card,
+    body.theme-x3-light .params-form .config-card.param-group-trend_zone + .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-trend_zone + .config-card,
+    body.theme-x3-light .params-form .config-card.param-group-clear_zone + .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-clear_zone + .config-card,
+    body.theme-x3-light .params-form .config-card.param-group-pyramid_add + .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-pyramid_add + .config-card{
+      margin-top:18px;
+    }
+    body.theme-x3-light .params-form .config-card.param-group-position .subsection-title,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-position .subsection-title,
+    body.theme-x3-light .params-form .config-card.param-group-zones .subsection-title,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-zones .subsection-title,
+    body.theme-x3-light .params-form .config-card.param-group-trend_zone .subsection-title,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-trend_zone .subsection-title,
+    body.theme-x3-light .params-form .config-card.param-group-clear_zone .subsection-title,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-clear_zone .subsection-title,
+    body.theme-x3-light .params-form .config-card.param-group-pyramid_add .subsection-title,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-pyramid_add .subsection-title{
+      margin-top:2px !important;
+      margin-bottom:12px !important;
+    }
   
+
+    /* === light-theme params/backtest cleanup v2: remove remaining group panels === */
+    body.theme-x3-light .params-form .page-card-group,
+    body:not(.theme-x3-dark) .params-form .page-card-group,
+    body.theme-x3-light .params-form .compact-group,
+    body:not(.theme-x3-dark) .params-form .compact-group{
+      background:transparent !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+    }
+    body.theme-x3-light .params-form .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card,
+    body.theme-x3-light .params-form .config-card.param-group-position,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-position,
+    body.theme-x3-light .params-form .config-card.param-group-sideways,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-sideways,
+    body.theme-x3-light .params-form .config-card.param-group-zones,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-zones,
+    body.theme-x3-light .params-form .config-card.param-group-box_add,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-box_add,
+    body.theme-x3-light .params-form .config-card.param-group-box_grid,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-box_grid,
+    body.theme-x3-light .params-form .config-card.param-group-trend_zone,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-trend_zone,
+    body.theme-x3-light .params-form .config-card.param-group-clear_zone,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-clear_zone,
+    body.theme-x3-light .params-form .config-card.param-group-pyramid_add,
+    body:not(.theme-x3-dark) .params-form .config-card.param-group-pyramid_add{
+      background:transparent !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+    }
+    body.theme-x3-light .params-form .config-card + .config-card,
+    body:not(.theme-x3-dark) .params-form .config-card + .config-card{
+      margin-top:18px !important;
+    }
+    body.theme-x3-light .params-form .subsection-title,
+    body:not(.theme-x3-dark) .params-form .subsection-title{
+      margin-top:2px !important;
+      margin-bottom:12px !important;
+    }
+
+    /* 回测页：亮色主题去掉 details 外层方框，改成轻量按钮式展开/收起 */
+    body.theme-x3-light .raw-output.backtest-output-toggle,
+    body:not(.theme-x3-dark) .raw-output.backtest-output-toggle{
+      background:transparent !important;
+      border:0 !important;
+      box-shadow:none !important;
+      padding:0 !important;
+      margin-top:14px !important;
+      color:#263447 !important;
+    }
+    body.theme-x3-light .raw-output.backtest-output-toggle > summary,
+    body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary{
+      list-style:none !important;
+      display:inline-flex !important;
+      align-items:center !important;
+      gap:8px !important;
+      width:auto !important;
+      cursor:pointer !important;
+      user-select:none !important;
+      padding:9px 14px !important;
+      border-radius:999px !important;
+      border:1px solid rgba(5,150,105,.24) !important;
+      background:rgba(255,255,255,.62) !important;
+      color:#047857 !important;
+      font-weight:800 !important;
+      box-shadow:0 8px 18px rgba(15,23,42,.055), inset 0 1px 0 rgba(255,255,255,.86) !important;
+    }
+    body.theme-x3-light .raw-output.backtest-output-toggle > summary::-webkit-details-marker,
+    body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary::-webkit-details-marker{display:none !important;}
+    body.theme-x3-light .raw-output.backtest-output-toggle > summary::before,
+    body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary::before{
+      content:"▾";
+      font-size:12px;
+      transform:rotate(-90deg);
+      transition:transform .18s ease;
+    }
+    body.theme-x3-light .raw-output.backtest-output-toggle[open] > summary::before,
+    body:not(.theme-x3-dark) .raw-output.backtest-output-toggle[open] > summary::before{transform:rotate(0deg);}
+    .backtest-output-toggle .toggle-close-label{display:none;}
+    .backtest-output-toggle[open] .toggle-open-label{display:none;}
+    .backtest-output-toggle[open] .toggle-close-label{display:inline;}
+    body.theme-x3-light .raw-output.backtest-output-toggle .output-box,
+    body:not(.theme-x3-dark) .raw-output.backtest-output-toggle .output-box{
+      margin-top:10px !important;
+    }
+
 .reference-card-button { width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:0; cursor:pointer; font:inherit; }
 .reference-price-card { display:block; }
 </style>
@@ -1159,7 +1301,7 @@
           </div>
           <section class="page-card-group compact-group">
             {% for group in grouped_fields %}
-              <div class="config-card{% if group['title'] == '基础信息' %} params-basic-info-flat{% endif %}">
+              <div class="config-card param-group-{{ group['id'] }}{% if group['title'] == '基础信息' %} params-basic-info-flat{% endif %}">
                 {% if group['title'] != '基础信息' %}
                   <div class="subsection-title">{{ group['title'] }}</div>
                 {% endif %}
@@ -1265,8 +1407,8 @@
           <button type="button" class="help-btn large" aria-label="说明" onclick="toggleBacktestHelp()">?</button>
         </div>
         <div id="backtest-help" class="help-panel hidden"><pre>{{ backtest_help_text }}</pre></div>
-        <details class="raw-output" {% if backtest_output %}open{% endif %}>
-          <summary>展开 / 收起</summary>
+        <details class="raw-output backtest-output-toggle" {% if backtest_output %}open{% endif %}>
+          <summary><span class="toggle-open-label">查看回测输出</span><span class="toggle-close-label">收起回测输出</span></summary>
           <div class="output-box"><pre>{{ backtest_output or '这里会显示回测输出。' }}</pre></div>
         </details>
       </section>
