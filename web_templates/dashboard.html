@@ -571,8 +571,17 @@
     .push-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:18px;}
     .push-test-inline{display:inline-flex;margin:0;}
     .push-log-card{margin-top:18px;}
-    .push-log-list{display:grid;gap:8px;margin-top:12px;}
-    .push-log-item{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(148,163,184,.14);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;}
+    .push-log-list{display:grid;gap:8px;margin-top:12px;min-width:0;max-width:100%;}
+    .push-log-item{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(148,163,184,.14);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;box-sizing:border-box;min-width:0;max-width:100%;overflow:hidden;}
+    .push-log-summary-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;max-width:100%;}
+    .push-log-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .push-log-view-btn{border:1px solid rgba(99,102,241,.35);background:rgba(99,102,241,.12);color:#c7d2fe;border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap;flex:0 0 auto;}
+    body:not(.theme-x3-dark) .push-log-view-btn{background:rgba(79,70,229,.08);color:#4338ca;border-color:rgba(79,70,229,.24);}
+    .push-log-clear-btn{border:1px solid rgba(248,113,113,.35);background:rgba(248,113,113,.10);color:#fecaca;border-radius:999px;padding:7px 12px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap;}
+    body:not(.theme-x3-dark) .push-log-clear-btn{background:rgba(220,38,38,.06);color:#b91c1c;border-color:rgba(220,38,38,.22);}
+    .push-log-detail{display:block;margin:10px 0 0;padding:12px;border-radius:12px;background:rgba(15,23,42,.38);border:1px solid rgba(148,163,184,.14);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;max-height:420px;overflow:auto;box-sizing:border-box;}
+    body:not(.theme-x3-dark) .push-log-detail{background:rgba(15,23,42,.045);border-color:rgba(15,23,42,.08);color:#334155;}
+    .strategy-settings-card{margin-top:18px;}
     .push-log-empty{margin-top:12px;color:rgba(203,213,225,.70);}
     .panel-toggle{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;white-space:nowrap;}
     .panel-toggle input{position:absolute;opacity:0;pointer-events:none;}
@@ -817,7 +826,10 @@
       background:#fbfdfc !important;
     }
 
-  </style>
+  
+.reference-card-button { width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:0; cursor:pointer; font:inherit; }
+.reference-price-card { display:block; }
+</style>
 </head>
 <body class="dash-body theme-x3-dark" data-selected="{{ selected }}">
   <header class="topbar">
@@ -891,7 +903,7 @@
             </div>
             <div class="field-block">
               <label>股票代码</label>
-              <input type="text" name="new_symbol" placeholder="如 SH600660 / HK00700 / 600660">
+              <input type="text" name="new_symbol" placeholder="如SH600660/HK00700/SZ159696">
             </div>
           </div>
           <div class="symbol-action-row one-btn-row">
@@ -906,13 +918,9 @@
         <div class="section-header between">
           <h2>状态</h2>
           <div class="status-action-row">
-            <form method="post" action="{{ url_for('refresh_status_page') }}" onsubmit="return confirm('确认请求刷新当前标的行情/状态与备用源参考价？本次刷新只监控，不触发交易。');">
+            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认重置当前标的运行状态？last_price、last_trade_price、last_add_price、步进步数等会恢复初始，仅影响当前标的。');">
               <input type="hidden" name="symbol_key" value="{{ selected }}">
-              <button type="submit" class="primary-btn action-btn">刷新</button>
-            </form>
-            <form method="post" action="{{ url_for('clear_market_state_page') }}" onsubmit="return confirm('确认清除当前标的的行情错误、旧价格校验和行情源观察状态，并按最新数据刷新一次？本次只监控，不触发交易。');">
-              <input type="hidden" name="symbol_key" value="{{ selected }}">
-              <button type="submit" class="secondary-btn action-btn">清除</button>
+              <button type="submit" class="secondary-btn action-btn">重置</button>
             </form>
           </div>
         </div>
@@ -936,12 +944,16 @@
         {% if reference_prices %}
           <div class="reference-price-grid">
             {% for ref in reference_prices %}
-              <div class="reference-price-card {% if ref.primary %}primary{% endif %} {% if not ref.ok %}error{% endif %}">
-                <div class="name">{{ ref.label }}{% if ref.primary %}<span class="source-chip">当前优先</span>{% endif %}</div>
-                <div class="price">{% if ref.ok %}{{ fmt_snapshot_value(ref.price) }}{% else %}-{% endif %}</div>
-                <div class="meta">{{ ref.source }}{% if ref.updated_at %} · {{ ref.updated_at }}{% elif ref.date %} · {{ ref.date }}{% endif %}</div>
-                {% if not ref.ok and ref.error %}<div class="meta">{{ ref.error }}</div>{% endif %}
-              </div>
+              <form method="post" action="{{ url_for('refresh_reference_price_page') }}" class="reference-price-card {% if ref.primary %}primary{% endif %} {% if not ref.ok %}error{% endif %}" title="点击刷新这个实时源">
+                <input type="hidden" name="symbol_key" value="{{ selected }}">
+                <input type="hidden" name="source_key" value="{{ ref.key }}">
+                <button type="submit" class="reference-card-button">
+                  <div class="name">{{ ref.label }}{% if ref.primary %}<span class="source-chip">当前优先</span>{% endif %}</div>
+                  <div class="price">{% if ref.ok %}{{ fmt_snapshot_value(ref.price) }}{% else %}-{% endif %}</div>
+                  <div class="meta">{{ ref.source }}{% if ref.updated_at %} · {{ ref.updated_at }}{% elif ref.date %} · {{ ref.date }}{% endif %}</div>
+                  {% if not ref.ok and ref.error %}<div class="meta">{{ ref.error }}</div>{% endif %}
+                </button>
+              </form>
             {% endfor %}
           </div>
         {% endif %}
@@ -1149,7 +1161,7 @@
         <form method="post" action="{{ url_for('params_page') }}" id="params-form" class="params-form">
           <input type="hidden" name="action" value="save_params">
           <div class="section-header between">
-            <h2>参数</h2>
+            <h2>参数{% if selected_label %} - {{ selected_label }}{% endif %}</h2>
             <button type="button" id="params-edit-btn" class="primary-btn action-btn" data-mode="edit" onclick="toggleParamsEdit(this)">修改</button>
           </div>
           <section class="page-card-group compact-group">
@@ -1191,13 +1203,13 @@
 
     {% if page_name == 'backtest' %}
       <section class="card page-card">
-        <div class="section-header"><h2>回测</h2></div>
+        <div class="section-header"><h2>回测{% if selected_label %} - {{ selected_label }}{% endif %}</h2></div>
         <form method="post" action="{{ url_for('backtest_page') }}" class="tool-form">
           <input type="hidden" name="action" value="run_backtest">
           <div class="form-grid compact-grid">
             <div class="field-block">
               <label>股票代码</label>
-              <input type="text" name="bt_symbol" value="{{ bt_symbol_default }}" placeholder="如 SH600660 / HK00700">
+              <input type="text" name="bt_symbol" value="{{ bt_symbol_default }}" placeholder="如SH600660/HK00700/SZ159696">
             </div>
             <div class="field-block">
               <label>回测天数</label>
@@ -1274,7 +1286,13 @@
             <h2>行情源设置</h2>
             <p class="section-note">系统配置文件：{{ system_config_path }}。选择后会作为对应市场的第一优先行情源，后续源自动作为备用。</p>
           </div>
+          <label class="panel-toggle" title="显示或隐藏行情源设置">
+            <span class="panel-toggle-text">显示配置</span>
+            <input type="checkbox" id="system-config-toggle" checked aria-label="显示或隐藏行情源设置">
+            <span class="panel-toggle-slider"></span>
+          </label>
         </div>
+        <div id="system-config-panel">
         <form method="post" action="{{ url_for('push_page') }}" class="push-config-form" id="system-config-form">
           <input type="hidden" name="action" value="save_system">
           <div class="push-config-grid">
@@ -1342,6 +1360,42 @@
             <button type="button" id="system-edit-btn" class="primary-btn action-btn" data-mode="edit" onclick="toggleSystemEdit(this)">修改</button>
           </div>
         </form>
+        </div>
+      </section>
+
+      <section class="card page-card strategy-settings-card">
+        <div class="section-header between">
+          <div>
+            <h2>系统运行设置</h2>
+            <p class="section-note">写入 dcf.yaml 的 STRATEGY 区块；保存后主程序会在下一轮循环即时读取。</p>
+          </div>
+          <label class="panel-toggle" title="显示或隐藏系统运行设置">
+            <span class="panel-toggle-text">显示配置</span>
+            <input type="checkbox" id="strategy-config-toggle" checked aria-label="显示或隐藏系统运行设置">
+            <span class="panel-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="strategy-config-panel">
+          <form method="post" action="{{ url_for('push_page') }}" class="push-config-form" id="strategy-config-form">
+            <input type="hidden" name="action" value="save_strategy">
+            <div class="push-config-grid">
+              {% for item in strategy_fields %}
+                <div class="push-field-row strategy-field-{{ item.key|lower }}">
+                  <div>
+                    <label for="STRATEGY_{{ item.key }}">{{ item.label }}</label>
+                    {% if item.help %}<div class="push-field-help">{{ item.help }}</div>{% endif %}
+                  </div>
+                  <div>
+                    <input id="STRATEGY_{{ item.key }}" name="{{ item.key }}" type="{{ item.type }}" value="{{ strategy_settings.get(item.key, '') }}" readonly data-strategy-lock="1" autocomplete="off">
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+            <div class="push-action-row">
+              <button type="button" id="strategy-edit-btn" class="primary-btn action-btn" data-mode="edit" onclick="toggleStrategyEdit(this)">修改</button>
+            </div>
+          </form>
+        </div>
       </section>
 
       <section class="card page-card">
@@ -1404,17 +1458,29 @@
             <h2>推送日志</h2>
             <p class="section-note">显示 {{ push_log_path }} 最新 30 条。</p>
           </div>
-          <label class="panel-toggle" title="显示或隐藏推送日志">
-            <span class="panel-toggle-text">显示日志</span>
-            <input type="checkbox" id="push-log-toggle" checked aria-label="显示或隐藏推送日志">
-            <span class="panel-toggle-slider"></span>
-          </label>
+          <div class="section-actions">
+            <form method="post" action="{{ url_for('push_page') }}" onsubmit="return confirm('确认清空所有推送日志记录？');">
+              <input type="hidden" name="action" value="clear_push_log">
+              <button type="submit" class="push-log-clear-btn">清除</button>
+            </form>
+            <label class="panel-toggle" title="显示或隐藏推送日志">
+              <span class="panel-toggle-text">显示日志</span>
+              <input type="checkbox" id="push-log-toggle" checked aria-label="显示或隐藏推送日志">
+              <span class="panel-toggle-slider"></span>
+            </label>
+          </div>
         </div>
         <div id="push-log-panel">
-          {% if push_logs %}
+          {% if push_log_entries %}
             <div class="push-log-list">
-              {% for line in push_logs %}
-                <div class="push-log-item">{{ line }}</div>
+              {% for item in push_log_entries %}
+                <div class="push-log-item">
+                  <div class="push-log-summary-row">
+                    <span class="push-log-summary-text">{{ item.summary }}</span>
+                    {% if item.can_view %}<button type="button" class="push-log-view-btn" onclick="togglePushLogDetail('{{ item.id }}')">查看</button>{% endif %}
+                  </div>
+                  {% if item.can_view %}<pre id="{{ item.id }}" class="push-log-detail hidden">{{ item.detail }}</pre>{% endif %}
+                </div>
               {% endfor %}
             </div>
           {% else %}
@@ -1475,6 +1541,25 @@
       }else{
         form.submit();
       }
+    }
+
+    function toggleStrategyEdit(btn){
+      const form = document.getElementById('strategy-config-form');
+      if(!form || !btn){ return; }
+      const mode = btn.dataset.mode || 'edit';
+      if(mode === 'edit'){
+        form.querySelectorAll('[data-strategy-lock="1"]').forEach(function(el){ el.removeAttribute('readonly'); el.removeAttribute('disabled'); });
+        form.classList.add('editing');
+        btn.dataset.mode = 'save';
+        btn.textContent = '保存';
+      }else{
+        form.submit();
+      }
+    }
+
+    function togglePushLogDetail(id){
+      const el = document.getElementById(id);
+      if(el){ el.classList.toggle('hidden'); }
     }
 
     function togglePushEdit(btn){
@@ -1586,6 +1671,8 @@ document.addEventListener('DOMContentLoaded', function(){
   const symbolSelect = document.getElementById('symbol-key-select');
   if(symbolSelect){ markSymbolSelectionChanged(symbolSelect); }
   refreshPushChannelFields();
+  bindPanelToggle('system-config-toggle', 'system-config-panel', 'dcf_system_config_panel');
+  bindPanelToggle('strategy-config-toggle', 'strategy-config-panel', 'dcf_strategy_config_panel');
   bindPanelToggle('push-config-toggle', 'push-config-panel', 'dcf_push_config_panel');
   bindPanelToggle('push-log-toggle', 'push-log-panel', 'dcf_push_log_panel');
   bindPanelToggle('snapshot-toggle', 'snapshot-panel', 'dcf_status_snapshot_panel_' + (document.body.dataset.selected || 'default'));
