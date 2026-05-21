@@ -138,27 +138,21 @@ BACKTEST_METRICS_HELP_TEXT = """期末持仓收益率：按股票软件常见摊
 
 PUSH_FIELDS: List[Dict[str, str]] = [
     {"key": "PUSH_ENABLED", "label": "启用推送", "type": "switch", "channel": "base", "help": "拨动后立即写入 /root/dcf/push.conf 并生效。"},
-    {"key": "PUSH_CHANNEL", "label": "推送通道", "type": "select", "channel": "base", "help": "切换后页面会自动显示对应通道的配置项。"},
-    {"key": "TELEGRAM_BOT_TOKEN", "label": "Telegram Bot Token", "type": "password", "channel": "telegram", "help": "BotFather 生成的 bot token。"},
-    {"key": "TELEGRAM_CHAT_ID", "label": "Telegram Chat ID", "type": "text", "channel": "telegram", "help": "个人、群组或频道的 chat_id。"},
-    {"key": "GOTIFY_URL", "label": "Gotify 服务地址", "type": "text", "channel": "gotify", "help": "本机 Gotify 默认：https://sharq.eu.org:2084，保存时会自动去掉末尾多余空格。"},
-    {"key": "GOTIFY_TOKEN", "label": "Gotify Application Token", "type": "password", "channel": "gotify", "help": "Gotify 网页端 Applications 里创建应用后复制的 token。"},
-    {"key": "GOTIFY_PRIORITY", "label": "Gotify 优先级", "type": "number", "channel": "gotify", "help": "默认 10。数值越高优先级越高。"},
+    {"key": "PUSH_CHANNEL", "label": "推送通道", "type": "select", "channel": "base", "help": "只保留 ntfy 和 Gotify 两种推送方式；切换后页面会自动显示对应配置项。"},
     {"key": "NTFY_URL", "label": "ntfy 服务地址", "type": "text", "channel": "ntfy", "help": "同一台服务器本机调用推荐：http://127.0.0.1:8083；外部访问默认：https://sharq.eu.org:2085。"},
     {"key": "NTFY_TOPIC", "label": "ntfy Topic", "type": "text", "channel": "ntfy", "help": "ntfy 的 Topic 相当于频道名，客户端订阅同一个 Topic 才能收到推送。"},
     {"key": "NTFY_USERNAME", "label": "ntfy 用户名", "type": "text", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写用户名；未开启认证可留空。"},
     {"key": "NTFY_PASSWORD", "label": "ntfy 密码", "type": "password", "channel": "ntfy", "help": "如果 ntfy 开启登录认证，请填写密码；未开启认证可留空。"},
-    {"key": "NTFY_PRIORITY", "label": "ntfy 优先级", "type": "number", "channel": "ntfy", "help": "ntfy 优先级范围 1-5，默认 4。"},
-    {"key": "PUSHPLUS_TOKEN", "label": "PushPlus Token", "type": "password", "channel": "pushplus", "help": "PushPlus 官网获取的 token。"},
+    {"key": "NTFY_PRIORITY", "label": "ntfy 优先级", "type": "number", "channel": "ntfy", "help": "ntfy 优先级范围 1-5，默认 3。"},
+    {"key": "GOTIFY_URL", "label": "Gotify 服务地址", "type": "text", "channel": "gotify", "help": "本机 Gotify 默认：https://sharq.eu.org:2084，保存时会自动去掉末尾多余空格。"},
+    {"key": "GOTIFY_TOKEN", "label": "Gotify Application Token", "type": "password", "channel": "gotify", "help": "Gotify 网页端 Applications 里创建应用后复制的 token。"},
+    {"key": "GOTIFY_PRIORITY", "label": "Gotify 优先级", "type": "number", "channel": "gotify", "help": "默认 10。数值越高优先级越高。"},
 ]
 
 PUSH_SELECT_OPTIONS = {
     "PUSH_CHANNEL": [
-        ("telegram", "Telegram"),
-        ("gotify", "Gotify"),
         ("ntfy", "ntfy"),
-        ("pushplus", "PushPlus"),
-        ("none", "none"),
+        ("gotify", "Gotify"),
     ],
 }
 
@@ -860,11 +854,59 @@ def _snapshot_matches(record: Dict[str, Any], selected: str, symbol_code: str) -
     return name == selected or (symbol_code and symbol == symbol_code.upper())
 
 
-def get_strategy_snapshots(selected: str, symbol_code: str, day: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+def _snapshot_action(record: Dict[str, Any]) -> str:
+    return str(record.get("action") or record.get("decision") or "").strip().upper()
+
+
+def _is_trade_snapshot(record: Dict[str, Any]) -> bool:
+    action = _snapshot_action(record)
+    side = str(record.get("side") or "").strip().upper()
+    trade_count = safe_int(record.get("trade_count", 0), 0)
+    return action in {"TRADE", "BUY", "SELL"} or side in {"BUY", "SELL"} or trade_count > 0
+
+
+def _is_strategy_decision_snapshot(record: Dict[str, Any]) -> bool:
+    """Snapshots that represent a real strategy decision for the status page.
+
+    Exclude Web/manual refresh records so REFRESH_ONLY does not replace the
+    latest in-market TRADE/NO_TRADE state. MONITOR_ONLY is also excluded from
+    the primary snapshot because it is not an executable strategy decision.
+    """
+    action = _snapshot_action(record)
+    if action in {"REFRESH_ONLY", "MONITOR_ONLY"}:
+        return False
+    reason = str(record.get("reason") or "").strip()
+    if action == "" and ("Web手动刷新" in reason or "manual refresh" in reason.lower()):
+        return False
+    return action in {"TRADE", "BUY", "SELL", "NO_TRADE"} or _is_trade_snapshot(record)
+
+
+def get_strategy_snapshots(selected: str, symbol_code: str, day: str = "") -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Return today's latest realtime strategy decision snapshots.
+
+    The status card is intentionally day-scoped so yesterday's NO_TRADE/TRADE
+    does not look like the current live state after the date changes. Historical
+    trades are handled separately by get_recent_trade_snapshots().
+    """
+    day = (day or datetime.now().strftime("%Y-%m-%d")).strip()
     records = [normalize_snapshot_source_fields(r) for r in read_snapshot_records(day, limit=5000) if _snapshot_matches(r, selected, symbol_code)]
-    recent = list(reversed(records[-10:]))
+    decision_records = [r for r in records if _is_strategy_decision_snapshot(r)]
+    recent = list(reversed(decision_records[-10:]))
     latest = recent[0] if recent else {}
     return latest, recent
+
+
+def get_recent_trade_snapshots(selected: str, symbol_code: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Return the latest real trade snapshots across all available days."""
+    rows: List[Dict[str, Any]] = []
+    for day in snapshot_dates(3650):
+        records = [normalize_snapshot_source_fields(r) for r in read_snapshot_records(day, limit=20000) if _snapshot_matches(r, selected, symbol_code)]
+        for record in reversed(records):
+            if _is_trade_snapshot(record):
+                rows.append(record)
+                if len(rows) >= limit:
+                    return rows
+    return rows
 
 
 def build_market_source_stats(selected: str, symbol_code: str, day: str) -> List[Dict[str, Any]]:
@@ -1067,10 +1109,30 @@ def write_state(data: Dict[str, Any]) -> None:
         pass
 
 def request_runtime_config_reload(selected: str, section: Dict[str, Any]) -> None:
-    """Notify the running dcf.py process to reload config and reset runtime state for the edited scope."""
+    """Notify dcf.py to reload config and let edited position fields take effect.
+
+    Only current_units/current_avg_cost are written into runtime state here. Trading
+    anchors such as last_trade_price, last_add_price, pyramid_step and clear_step
+    are intentionally preserved, so saving parameters does not behave like a manual reset.
+    """
     state = read_state()
     if not isinstance(state, dict):
         state = {}
+    if selected != "COMMON_BACKTEST_CONFIG" and isinstance(section, dict):
+        node = state.setdefault(selected, {})
+        if isinstance(node, dict):
+            mode = str(section.get("position_mode", node.get("position_mode", "percent")) or "percent").strip().lower()
+            node["symbol"] = str(section.get("symbol", node.get("symbol", "")) or "").strip().upper()
+            node["position_mode"] = mode
+            if "current_units" in section and section.get("current_units") not in (None, ""):
+                node["current_units"] = parse_runtime_position_value(section.get("current_units"))
+            if "current_avg_cost" in section and section.get("current_avg_cost") not in (None, ""):
+                node["avg_cost"] = safe_float(section.get("current_avg_cost"), node.get("avg_cost", 0.0))
+            node["param_saved_at"] = current_time_text()
+            node["param_save_notice"] = (
+                f"Web参数已保存并写入运行状态：current_units={node.get('current_units')}, "
+                f"avg_cost={node.get('avg_cost')}，等待下一轮行情重算完整状态。"
+            )
     meta = state.setdefault("_meta", {})
     try:
         seq = int(meta.get("config_reload_seq", 0) or 0) + 1
@@ -1250,6 +1312,19 @@ def refresh_reference_prices_now(selected: str, section: Dict[str, Any]) -> Tupl
             node["reference_prices_error"] = error
     write_state(state)
     return refs, error
+
+
+def reference_source_options_for_symbol(symbol_text: str) -> List[Tuple[str, str]]:
+    """Return the configured realtime quote source cards for the selected symbol.
+
+    The status page uses this when merging a single-source refresh back into the
+    cached 3-card list. Keeping it here avoids a NameError on
+    /refresh-reference-price and guarantees the cards stay in the same order as
+    market_data.py.
+    """
+    raw = str(symbol_text or "").upper().strip()
+    field = "HK_MARKET_SOURCE" if raw.startswith("HK") else "A_QUOTE_SOURCE"
+    return [(str(key), _market_display_source_name(key)) for key, _label in _market_source_options(field)]
 
 
 def refresh_reference_price_source_now(selected: str, section: Dict[str, Any], source_key: str) -> Tuple[Dict[str, Any], str]:
@@ -2109,7 +2184,7 @@ def _find_push_detail_for_log(compact: str, detail_records: List[Dict[str, Any]]
     """Return pushed message body for one push.log line when available.
 
     push.log historically only recorded delivery status/bytes, not the payload.
-    Newer dcf.py writes data/push_details.jsonl before sending non-snapshot pushes;
+    push.py/dcf.py writes data/push_details.jsonl for non-snapshot pushes;
     this helper pairs records by timestamp and falls back to a clear note for old logs.
     """
     ts = _parse_push_log_time(compact)
@@ -2125,12 +2200,12 @@ def _find_push_detail_for_log(compact: str, detail_records: List[Dict[str, Any]]
             if delta < best_delta:
                 best_delta = delta
                 best = rec
-        if best and best_delta <= 5:
+        if best and best_delta <= 120:
             body = str(best.get("body", "") or "").strip()
             if body:
                 return body
     if "bytes=" in compact or "成功" in compact or "失败" in compact:
-        return compact + "\n\n该条旧日志只记录了推送结果，没有记录推送正文；新的非快照推送会记录并可在这里查看详情。"
+        return compact + "\n\n该条日志没有匹配到推送正文详情；修复后非快照推送会在这里显示完整正文。"
     return compact
 
 
@@ -2162,12 +2237,12 @@ def save_push_config_from_form() -> Dict[str, str]:
             cfg[key] = (request.form.get(key, "") or "").strip()
     if cfg.get("PUSH_ENABLED") not in {"yes", "no"}:
         cfg["PUSH_ENABLED"] = "yes"
-    if str(cfg.get("PUSH_CHANNEL", "")).strip().lower() == "both":
-        cfg["PUSH_CHANNEL"] = "pushplus"
-    if str(cfg.get("PUSH_CHANNEL", "")).strip().lower() == "all":
-        cfg["PUSH_CHANNEL"] = "gotify"
-    if cfg.get("PUSH_CHANNEL") not in PUSH_CHANNEL_VALUES:
-        cfg["PUSH_CHANNEL"] = "gotify"
+    channel = str(cfg.get("PUSH_CHANNEL", "ntfy") or "ntfy").strip().lower()
+    if channel in {"both", "all", "telegram", "pushplus", "none", ""}:
+        channel = "ntfy"
+    if channel not in PUSH_CHANNEL_VALUES:
+        channel = "ntfy"
+    cfg["PUSH_CHANNEL"] = channel
     try:
         priority = int(float(str(cfg.get("GOTIFY_PRIORITY", "10") or "10")))
     except Exception:
@@ -2178,8 +2253,8 @@ def save_push_config_from_form() -> Dict[str, str]:
     except Exception:
         ntfy_priority = 4
     cfg["NTFY_PRIORITY"] = str(max(1, min(5, ntfy_priority)))
-    cfg["NTFY_URL"] = str(cfg.get("NTFY_URL", "")).strip().rstrip("/") or PUSH_DEFAULTS["NTFY_URL"]
-    cfg["NTFY_TOPIC"] = str(cfg.get("NTFY_TOPIC", "")).strip().strip("/") or PUSH_DEFAULTS["NTFY_TOPIC"]
+    cfg["NTFY_URL"] = str(cfg.get("NTFY_URL", "")).strip().rstrip("/") or PUSH_DEFAULTS.get("NTFY_URL", "http://127.0.0.1:8083")
+    cfg["NTFY_TOPIC"] = str(cfg.get("NTFY_TOPIC", "")).strip().strip("/") or PUSH_DEFAULTS.get("NTFY_TOPIC", "Quant")
     write_push_config(cfg)
     return cfg
 
@@ -2241,6 +2316,20 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+def parse_runtime_position_value(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    if text.endswith("%"):
+        return safe_float(text[:-1], 0.0) / 100.0
+    return safe_float(text, 0.0)
 
 def normalize_symbol_input(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace(" ", "")
@@ -2745,11 +2834,9 @@ def _base_context(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
     bt_base_default = str(section.get("base_units", common.get("base_units", "2.5%")))
     bt_target_default = str(section.get("target_units", common.get("target_units", "5%")))
     current_symbol = str(section.get("symbol", "")).strip()
-    available_snapshot_dates = snapshot_dates(30)
-    requested_snapshot_date = (request.args.get("snapshot_date", "") or "").strip()
-    default_snapshot_date = datetime.now().strftime("%Y-%m-%d")
-    selected_snapshot_date = requested_snapshot_date if requested_snapshot_date in available_snapshot_dates else (available_snapshot_dates[0] if available_snapshot_dates else default_snapshot_date)
+    selected_snapshot_date = datetime.now().strftime("%Y-%m-%d")
     latest_snapshot, recent_snapshots = get_strategy_snapshots(selected, current_symbol, selected_snapshot_date)
+    recent_trade_snapshots = get_recent_trade_snapshots(selected, current_symbol, 10)
     market_source_stats = build_market_source_stats(selected, current_symbol, selected_snapshot_date)
     trade_state_backups = get_trade_state_backups(selected, current_symbol, 10)
     return {
@@ -2774,10 +2861,11 @@ def _base_context(config: Dict[str, Any], selected: str) -> Dict[str, Any]:
         "symbol_cards": build_symbol_cards(config, selected),
         "system_config": read_system_config(),
         "system_select_options": SYSTEM_SELECT_OPTIONS,
-        "snapshot_dates": available_snapshot_dates,
+        "snapshot_dates": [],
         "selected_snapshot_date": selected_snapshot_date,
         "latest_snapshot": latest_snapshot,
         "recent_snapshots": recent_snapshots,
+        "recent_trade_snapshots": recent_trade_snapshots,
         "market_source_stats": market_source_stats,
         "trade_state_backups": trade_state_backups,
         "reference_prices": [],

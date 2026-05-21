@@ -64,12 +64,14 @@
     .snapshot-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0;}
     .snapshot-kv{border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:14px;padding:10px 12px;}
     .snapshot-kv .k{font-size:12px;color:rgba(235,245,255,.58);margin-bottom:4px;}
-    .snapshot-kv .v{font-size:15px;color:rgba(255,255,255,.92);word-break:break-all;}
+    .snapshot-kv .v{font-size:15px;color:rgba(255,255,255,.92);word-break:break-word;overflow-wrap:anywhere;white-space:normal;}
     .snapshot-table-wrap{overflow-x:auto;margin-top:12px;}
     .snapshot-table{width:100%;border-collapse:collapse;min-width:720px;font-size:13px;}
     .snapshot-table th,.snapshot-table td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.10);text-align:left;white-space:nowrap;}
+    .snapshot-table td.reason-cell{white-space:normal;word-break:break-word;overflow-wrap:anywhere;max-width:360px;min-width:220px;}
     .snapshot-table th{color:rgba(235,245,255,.62);font-weight:600;}
     .snapshot-empty{color:rgba(235,245,255,.58);font-size:14px;margin:10px 0 0;}
+.snapshot-reason-card{margin-top:12px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:rgba(255,255,255,.055);padding:14px 16px;line-height:1.75;font-size:15px;color:rgba(255,255,255,.92);white-space:normal;word-break:break-word;overflow-wrap:anywhere;}
 .status-control-row{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:0 0 16px;}
 .status-control-row .field-block{min-width:260px;flex:1 1 320px;}
 .status-control-row form{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0;}
@@ -91,7 +93,7 @@
     .rollback-note{color:rgba(255,220,180,.82);font-size:13px;line-height:1.6;margin:8px 0 0;}
     .rollback-btn{border:1px solid rgba(255,190,90,.36);background:rgba(255,160,40,.14);color:#ffe4b8;border-radius:10px;padding:7px 10px;cursor:pointer;white-space:nowrap;}
     .rollback-btn:hover{background:rgba(255,160,40,.22);}
-    @media (max-width: 640px){.snapshot-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.snapshot-kv{padding:9px 10px;}.reference-price-grid,.source-metric-grid{grid-template-columns:1fr;}}
+    @media (max-width: 640px){.snapshot-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.snapshot-kv{padding:9px 10px;}.snapshot-reason-card{margin-left:-2px;margin-right:-2px;padding:13px 14px;font-size:14px;line-height:1.8;}.reference-price-grid,.source-metric-grid{grid-template-columns:1fr;}}
     @media (max-width: 640px){
       .topbar{padding-bottom:18px;}
       .topbar h1{font-size:30px;line-height:1.12;}
@@ -659,6 +661,13 @@
     }
     body.theme-x3-light .section-note,
     body:not(.theme-x3-dark) .section-note,
+    body.theme-x3-light .snapshot-reason-card,
+    body:not(.theme-x3-dark) .snapshot-reason-card{
+      background:rgba(255,255,255,.72);
+      border-color:rgba(30,41,59,.12);
+      color:rgba(15,23,42,.88);
+    }
+
     body.theme-x3-light .snapshot-empty,
     body:not(.theme-x3-dark) .snapshot-empty,
     body.theme-x3-light .push-field-help,
@@ -936,7 +945,6 @@
                 {% endfor %}
               </select>
             </div>
-            <input type="hidden" name="snapshot_date" value="{{ selected_snapshot_date }}">
             <button type="submit" class="secondary-btn action-btn">查看</button>
           </form>
         </div>
@@ -995,77 +1003,62 @@
         <div class="section-header between">
           <div>
             <h2>策略快照</h2>
-            <p class="section-note">显示当前标的最近策略快照，可展开查看近 10 条。</p>
-          </div>
-          <div class="snapshot-toolbar">
-            <form method="get" action="{{ url_for('status_page') }}" class="snapshot-date-form">
-              <input type="hidden" name="symbol_key" value="{{ selected }}">
-              <label>日期</label>
-              <select name="snapshot_date" onchange="this.form.submit()">
-                {% if snapshot_dates %}
-                  {% for d in snapshot_dates %}
-                    <option value="{{ d }}" {% if d == selected_snapshot_date %}selected{% endif %}>{{ d }}</option>
-                  {% endfor %}
-                {% else %}
-                  <option value="{{ selected_snapshot_date }}" selected>{{ selected_snapshot_date }}</option>
-                {% endif %}
-              </select>
-            </form>
-            <label class="panel-toggle" title="显示或隐藏策略快照">
-              <span class="panel-toggle-text">显示快照</span>
-              <input type="checkbox" id="snapshot-toggle" aria-label="显示或隐藏策略快照">
-              <span class="panel-toggle-slider"></span>
-            </label>
+            <p class="section-note">只显示今日最新一次实时策略原因；手动刷新不会覆盖真实策略判断。</p>
           </div>
         </div>
 
-        <div id="snapshot-panel" class="hidden">
         {% if latest_snapshot %}
-          <div class="snapshot-grid">
-            <div class="snapshot-kv"><div class="k">时间</div><div class="v">{{ latest_snapshot.get('time', '-') }}</div></div>
-            <div class="snapshot-kv"><div class="k">行情源</div><div class="v">{{ latest_snapshot.get('market_source', '-') }}</div></div>
-            <div class="snapshot-kv"><div class="k">数据状态</div><div class="v">{{ latest_snapshot.get('market_status', latest_snapshot.get('level', '-')) }}</div></div>
-            <div class="snapshot-kv"><div class="k">当前价</div><div class="v">{{ fmt_snapshot_value(latest_snapshot.get('current_price')) }}</div></div>
-            <div class="snapshot-kv"><div class="k">MA150</div><div class="v">{{ fmt_snapshot_value(latest_snapshot.get('ma150')) }}</div></div>
-            <div class="snapshot-kv"><div class="k">区间</div><div class="v">{{ latest_snapshot.get('zone', '-') }}</div></div>
-            <div class="snapshot-kv"><div class="k">动作</div><div class="v">{{ latest_snapshot.get('action', latest_snapshot.get('decision', '-')) }}</div></div>
-            <div class="snapshot-kv"><div class="k">持仓变化</div><div class="v">{{ fmt_snapshot_value(latest_snapshot.get('current_units_before'), 4) }} → {{ fmt_snapshot_value(latest_snapshot.get('current_units_after', latest_snapshot.get('current_units')), 4) }}</div></div>
-            <div class="snapshot-kv"><div class="k">原因</div><div class="v">{{ latest_snapshot.get('reason', '-') }}</div></div>
-          </div>
-
-          <details class="snapshot-details">
-            <summary>查看最近 10 条快照</summary>
-            <div class="snapshot-table-wrap">
-              <table class="snapshot-table">
-                <thead>
-                  <tr>
-                    <th>时间</th><th>源</th><th>状态</th><th>价格</th><th>MA150</th><th>区间</th><th>动作</th><th>原因</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for item in recent_snapshots %}
-                    <tr>
-                      <td>{{ item.get('time', '-') }}</td>
-                      <td>{{ item.get('market_source', '-') }}</td>
-                      <td>{{ item.get('market_status', item.get('level', '-')) }}</td>
-                      <td>{{ fmt_snapshot_value(item.get('current_price')) }}</td>
-                      <td>{{ fmt_snapshot_value(item.get('ma150')) }}</td>
-                      <td>{{ item.get('zone', '-') }}</td>
-                      <td>{{ item.get('action', item.get('decision', '-')) }}</td>
-                      <td>{{ item.get('reason', '-') }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </details>
+          <div class="snapshot-reason-card">{{ latest_snapshot.get('reason', '-') }}</div>
         {% else %}
-          <p class="snapshot-empty">暂无 {{ selected_snapshot_date }} 的策略快照。主程序运行一轮后会自动生成。</p>
+          <p class="snapshot-empty">暂无今日实时策略状态。主程序在交易时段运行一轮后会自动生成。</p>
         {% endif %}
-        </div>
       </section>
 
 
+
+      <section class="card page-card">
+        <div class="section-header between">
+          <div>
+            <h2>最近 10 条交易快照</h2>
+            <p class="section-note">只显示真正触发交易的策略快照；NO_TRADE / REFRESH_ONLY / MONITOR_ONLY 不会进入这里。</p>
+          </div>
+          <label class="panel-toggle" title="显示或隐藏最近交易快照">
+            <span class="panel-toggle-text">显示交易快照</span>
+            <input type="checkbox" id="trade-snapshot-toggle" aria-label="显示或隐藏最近交易快照">
+            <span class="panel-toggle-slider"></span>
+          </label>
+        </div>
+        <div id="trade-snapshot-panel" class="hidden">
+        {% if recent_trade_snapshots %}
+          <div class="snapshot-table-wrap">
+            <table class="snapshot-table">
+              <thead>
+                <tr>
+                  <th>时间</th><th>源</th><th>状态</th><th>价格</th><th>MA150</th><th>区间</th><th>动作</th><th>持仓变化</th><th>原因</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in recent_trade_snapshots %}
+                  <tr>
+                    <td>{{ item.get('time', '-') }}</td>
+                    <td>{{ item.get('market_source', '-') }}</td>
+                    <td>{{ item.get('market_status', item.get('level', '-')) }}</td>
+                    <td>{{ fmt_snapshot_value(item.get('current_price')) }}</td>
+                    <td>{{ fmt_snapshot_value(item.get('ma150')) }}</td>
+                    <td>{{ item.get('zone', '-') }}</td>
+                    <td>{{ item.get('action', item.get('decision', '-')) }}</td>
+                    <td>{{ fmt_snapshot_value(item.get('current_units_before'), 4) }} → {{ fmt_snapshot_value(item.get('current_units_after', item.get('current_units')), 4) }}</td>
+                    <td class="reason-cell">{{ item.get('reason', '-') }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="snapshot-empty">暂无历史真实交易快照。</p>
+        {% endif %}
+        </div>
+      </section>
 
       <section class="card page-card">
         <div class="section-header between">
@@ -1095,9 +1088,9 @@
                     <td>{{ fmt_snapshot_value(item.get('qty'), 4) }}</td>
                     <td>{{ fmt_snapshot_value(item.get('pos_before'), 4) }} → {{ fmt_snapshot_value(item.get('pos_after'), 4) }}</td>
                     <td>{{ item.get('zone', '-') }}</td>
-                    <td>{{ item.get('reason', '-') }}</td>
+                    <td class="reason-cell">{{ item.get('reason', '-') }}</td>
                     <td>
-                      <form method="post" action="{{ url_for('restore_trade_state_page') }}" onsubmit="return confirm('确认恢复到该交易前状态？这会覆盖当前标的运行状态和 dcf.yaml 中的 current_units/current_avg_cost。');">
+                      <form method="post" action="{{ url_for('restore_trade_state_page') }}" onsubmit="return confirm('确认恢复到该交易前状态？这会覆盖当前标的运行状态和 dcf.yaml 中的 current_units/current_avg_cost；交易时段内恢复后会立即按当前价重跑一次策略，可能触发交易。');">
                         <input type="hidden" name="symbol_key" value="{{ selected }}">
                         <input type="hidden" name="backup_id" value="{{ item.get('id', '') }}">
                         <button type="submit" class="rollback-btn">恢复到此状态</button>
@@ -1108,7 +1101,7 @@
               </tbody>
             </table>
           </div>
-          <p class="rollback-note">恢复会同步状态文件，主程序下一轮自动加载。</p>
+          <p class="rollback-note">恢复会同步交易前状态；交易时段内会立即按当前价重跑一次策略，可能触发交易。</p>
         {% else %}
           <p class="snapshot-empty">暂无当前标的的交易前状态回滚点。只有真实 TRADE 触发前才会自动生成。</p>
         {% endif %}
@@ -1119,7 +1112,7 @@
         <div class="section-header between">
           <div>
             <h2>行情源成功率统计</h2>
-            <p class="section-note">按 {{ selected_snapshot_date }} 快照统计行情源成功率。</p>
+            <p class="section-note">按今日实时快照统计行情源成功率，数据每天自动切换。</p>
           </div>
           <label class="panel-toggle" title="显示或隐藏行情源成功率统计">
             <span class="panel-toggle-text">显示统计</span>
@@ -1150,7 +1143,7 @@
             </table>
           </div>
         {% else %}
-          <p class="snapshot-empty">暂无 {{ selected_snapshot_date }} 的行情源统计。</p>
+          <p class="snapshot-empty">暂无今日行情源统计。</p>
         {% endif %}
         </div>
       </section>
@@ -1587,10 +1580,8 @@
       const channel = selector ? (selector.value || 'gotify') : 'gotify';
       const visible = {
         base: true,
-        telegram: channel === 'telegram',
         gotify: channel === 'gotify',
-        ntfy: channel === 'ntfy',
-        pushplus: channel === 'pushplus'
+        ntfy: channel === 'ntfy'
       };
       document.querySelectorAll('[data-push-channel]').forEach(function(row){
         const key = row.getAttribute('data-push-channel') || 'base';
@@ -1675,7 +1666,7 @@ document.addEventListener('DOMContentLoaded', function(){
   bindPanelToggle('strategy-config-toggle', 'strategy-config-panel', 'dcf_strategy_config_panel');
   bindPanelToggle('push-config-toggle', 'push-config-panel', 'dcf_push_config_panel');
   bindPanelToggle('push-log-toggle', 'push-log-panel', 'dcf_push_log_panel');
-  bindPanelToggle('snapshot-toggle', 'snapshot-panel', 'dcf_status_snapshot_panel_' + (document.body.dataset.selected || 'default'));
+  bindPanelToggle('trade-snapshot-toggle', 'trade-snapshot-panel', 'dcf_status_trade_snapshot_panel_' + (document.body.dataset.selected || 'default'));
   bindPanelToggle('rollback-toggle', 'rollback-panel', 'dcf_status_rollback_panel_' + (document.body.dataset.selected || 'default'));
   bindPanelToggle('source-stats-toggle', 'source-stats-panel', 'dcf_status_source_stats_panel_' + (document.body.dataset.selected || 'default'));
 });

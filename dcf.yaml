@@ -614,7 +614,7 @@ SYMBOL_CONFIG:
     - 0.17
     - 0.23
     box_add_step: 0.05
-    pyramid_add_step: 0.05
+    pyramid_add_step: 0.03
     clear_pyramid_weights:
     - 0.05
     - 0.07
@@ -642,8 +642,8 @@ SYMBOL_CONFIG:
     base_units: 10%
     target_units: 20%
     double_target_factor: 2.0
-    current_units: 5%
-    current_avg_cost: 483.6
+    current_units: 20%
+    current_avg_cost: 456.3
     k150: 0.95
     sideways_window_30: 30
     sideways_window_60: 15

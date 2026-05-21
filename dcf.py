@@ -542,8 +542,48 @@ def load_state():
     return initial_state
 
 def save_state(state):
+    """Persist runtime state without clobbering a newer Web rollback request.
+
+    dcf_web.py writes rollback/config requests into dcf_monitor_state.json while
+    dcf.py may still be finishing the current strategy loop.  Without this guard,
+    the loop-end save can overwrite the freshly written state_restore_entry with
+    the old in-memory position, causing the Web params page to show the restored
+    5% position while the daemon continues to run with the previous 20% state.
+    """
+    out = state if isinstance(state, dict) else {}
+    try:
+        if STATE_FILE.exists():
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                disk_state = json.load(f)
+            if isinstance(disk_state, dict):
+                disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state.get("_meta", {}), dict) else {}
+                out_meta = out.setdefault("_meta", {})
+                disk_seq = _safe_int(disk_meta.get("config_reload_seq", 0), 0)
+                out_seq = _safe_int(out_meta.get("config_reload_seq", 0), 0)
+
+                # If Web has just written a trade rollback request that this
+                # in-memory loop has not consumed yet, preserve both the meta
+                # request and the restored symbol entry.  The next loop will
+                # apply_runtime_config_reload_if_needed() and then run the
+                # trade-enabled rerun with the restored state.
+                if disk_seq > out_seq and disk_meta.get("state_restore_kind") == "trade_backup":
+                    restore_name = str(disk_meta.get("state_restore_symbol_key", "") or "").strip()
+                    restore_entry = disk_meta.get("state_restore_entry")
+                    for key in (
+                        "config_reload_seq", "config_reload_requested_at",
+                        "config_reload_symbol_key", "config_reload_symbols",
+                        "state_restore_kind", "state_restore_symbol_key",
+                        "state_restore_backup_id", "state_restore_entry",
+                    ):
+                        if key in disk_meta:
+                            out_meta[key] = disk_meta[key]
+                    if restore_name and isinstance(restore_entry, dict):
+                        out[restore_name] = restore_entry
+    except Exception as e:
+        logging.debug(f"保存状态前合并 Web 回滚请求失败，继续保存当前状态: {e}")
+
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(out, f, ensure_ascii=False, indent=2)
 
 def read_state_raw():
     if STATE_FILE.exists():
@@ -562,7 +602,12 @@ def _safe_int(value, default=0):
         return default
 
 def apply_runtime_config_reload_if_needed(state, last_seen_seq):
-    """Apply config reload requests written by dcf_web.py without restarting dcf.py."""
+    """Apply config reload requests written by dcf_web.py without restarting dcf.py.
+
+    Trade-state rollback is handled in two phases: restore the exact
+    state_before snapshot first, then mark a restore_trade_rerun_seq so the
+    main loop immediately runs one trade-enabled calculation with current price.
+    """
     disk_state = read_state_raw()
     disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
     seq = _safe_int(disk_meta.get("config_reload_seq", 0), 0)
@@ -588,23 +633,41 @@ def apply_runtime_config_reload_if_needed(state, last_seen_seq):
         restore_backup_id = disk_meta.get("state_restore_backup_id", "")
         if restore_name in SYMBOL_CONFIG and isinstance(restore_entry, dict):
             restored = normalize_symbol_state(restore_name, SYMBOL_CONFIG[restore_name], dict(restore_entry))
-            restored["last_status_msg"] = f"已恢复到交易前状态回滚点：{restore_backup_id}"
+            restored["last_status_msg"] = (
+                f"已恢复到交易前状态回滚点：{restore_backup_id}；"
+                "下一轮将按当前实时价格重新执行策略判断。"
+            )
+            restored["restore_backup_id"] = restore_backup_id
+            restored["restore_applied_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
             state[restore_name] = restored
+            meta = state.setdefault("_meta", {})
+            meta["restore_trade_rerun_seq"] = seq
+            meta["restore_trade_rerun_symbol_key"] = restore_name
+            meta["restore_trade_rerun_symbols"] = [restore_name]
+            meta["restore_trade_rerun_backup_id"] = restore_backup_id
+            meta["restore_trade_rerun_requested_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
             for _k in ["state_restore_kind", "state_restore_symbol_key", "state_restore_backup_id", "state_restore_entry"]:
-                state.get("_meta", {}).pop(_k, None)
-            logging.info(f"↩️ 已恢复交易前状态: {restore_name}，回滚点={restore_backup_id}")
+                meta.pop(_k, None)
+            logging.info(f"↩️ 已恢复交易前状态: {restore_name}，回滚点={restore_backup_id}；将立即按当前价重跑一次策略。")
             save_state(state)
             return seq
         logging.warning(f"⚠️ 收到状态回滚请求，但内容无效: {restore_name}, backup={restore_backup_id}")
         return seq
     for name in target_names:
         old_entry = state.get(name, {}) if isinstance(state.get(name, {}), dict) else {}
+        disk_entry = disk_state.get(name, {}) if isinstance(disk_state.get(name, {}), dict) else {}
         if old_entry:
-            state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], old_entry)
+            merged_entry = dict(old_entry)
         else:
-            state[name] = build_default_symbol_state(SYMBOL_CONFIG[name])
+            merged_entry = build_default_symbol_state(SYMBOL_CONFIG[name])
+        # Web 参数页可能刚把 current_units / avg_cost 写入状态文件。
+        # 后台内存 state 不能再用旧值覆盖它，否则用户会看到“已写入”但下一轮仍按旧仓位计算。
+        for _k in ("current_units", "avg_cost", "position_mode"):
+            if _k in disk_entry and disk_entry.get(_k) not in (None, ""):
+                merged_entry[_k] = disk_entry.get(_k)
+        state[name] = normalize_symbol_state(name, SYMBOL_CONFIG[name], merged_entry)
         # Do not clear last_status_msg here. Parameter reload must not erase the last complete trading-frame status.
-        logging.info(f"🔁 参数已即时刷新: {name}，已加载最新 dcf.yaml；运行状态保持不变。")
+        logging.info(f"🔁 参数已即时刷新: {name}，已加载最新 dcf.yaml；运行仓位/成本已合并，状态正文等待下一轮行情刷新。")
     save_state(state)
     return seq
 
@@ -670,6 +733,34 @@ def read_force_refresh_request(state):
     return True, requested_seq, target_names
 
 
+def read_restore_trade_rerun_request(state):
+    """Return (is_requested, seq, target_names, backup_id) after rollback.
+
+    This is trade-enabled. It completes rollback by recalculating the selected
+    symbol with the current realtime price after state_before has been restored.
+    """
+    disk_state = read_state_raw()
+    disk_meta = disk_state.get("_meta", {}) if isinstance(disk_state, dict) else {}
+    mem_meta = state.get("_meta", {}) if isinstance(state, dict) else {}
+    requested_seq = _safe_int(disk_meta.get("restore_trade_rerun_seq", mem_meta.get("restore_trade_rerun_seq", 0)), 0)
+    done_seq = _safe_int(mem_meta.get("restore_trade_rerun_done_seq", 0), 0)
+    if requested_seq <= done_seq:
+        return False, requested_seq, [], ""
+    state.setdefault("_meta", {}).update(disk_meta)
+    requested = disk_meta.get("restore_trade_rerun_symbols") or mem_meta.get("restore_trade_rerun_symbols") or []
+    if isinstance(requested, str):
+        requested = [requested]
+    if not requested:
+        key = str(disk_meta.get("restore_trade_rerun_symbol_key", mem_meta.get("restore_trade_rerun_symbol_key", "")) or "").strip()
+        if key:
+            requested = [key]
+    target_names = [name for name in requested if name in SYMBOL_CONFIG]
+    if not target_names:
+        return False, requested_seq, [], ""
+    backup_id = str(disk_meta.get("restore_trade_rerun_backup_id", mem_meta.get("restore_trade_rerun_backup_id", "")) or "")
+    return True, requested_seq, target_names, backup_id
+
+
 def read_source_metrics_refresh_request(state):
     """Return (is_requested, seq, target_names) for Web historical-source metrics refresh.
 
@@ -723,6 +814,7 @@ def has_pending_web_refresh_request(state: dict) -> bool:
             ("force_refresh_seq", "force_refresh_done_seq"),
             ("source_metrics_refresh_seq", "source_metrics_refresh_done_seq"),
             ("clear_market_state_seq", "clear_market_state_done_seq"),
+            ("restore_trade_rerun_seq", "restore_trade_rerun_done_seq"),
         ]
         for req_key, done_key in pairs:
             if _safe_int(disk_meta.get(req_key, 0), 0) > _safe_int(mem_meta.get(done_key, 0), 0):
@@ -1674,6 +1766,204 @@ def log_trade(dcf_name, symbol, price, qty, side, reason, zone=None,
 # ===========================
 # 核心策略逻辑（调用 strategy 模块）
 # ===========================
+
+def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150, current_units,
+                          target_units, double_target, position_mode, add_reason, add_qty,
+                          clear_step, last_trade_price):
+    """Explain why a valid market frame did not trigger a BUY/SELL.
+
+    Keep the reason short and user-readable: zone + action + the one key
+    condition that blocked the trade + the next trigger price when available.
+    """
+    def pct(v):
+        try:
+            return f"{float(v) * 100:.2f}%"
+        except Exception:
+            return str(v)
+
+    def units(v):
+        return format_units_for_display(v, position_mode)
+
+    def price_text(v):
+        try:
+            return f"{float(v):.3f}"
+        except Exception:
+            return str(v)
+
+    try:
+        cu = normalize_position_amount(current_units, position_mode)
+        target = normalize_position_amount(target_units, position_mode)
+        double = normalize_position_amount(double_target, position_mode)
+
+        if zone == "CHANCE_ZONE":
+            mode = get_pyramid_add_enabled(cfg)
+            effective_mode = "yes" if mode == "auto" else mode
+            if effective_mode != "yes":
+                return (
+                    "CHANCE_ZONE 未买入：机会倒金字塔未开启，"
+                    f"当前价 {price_text(current_price)} < MA150 {price_text(ma150)}，开启后才按机会区规则加仓。"
+                )
+
+            if cu >= double - POSITION_EPSILON:
+                return (
+                    "CHANCE_ZONE 未买入：当前持仓 "
+                    f"{units(cu)} 已达到加仓上限 {units(double)}，不再继续加仓。"
+                )
+
+            if cu < target - POSITION_EPSILON:
+                need = normalize_position_amount(target - cu, position_mode)
+                if need <= POSITION_EPSILON:
+                    return (
+                        "CHANCE_ZONE 未买入：当前持仓 "
+                        f"{units(cu)} < 目标 {units(target)}，但差额太小，无法形成有效买入。"
+                    )
+                return (
+                    "CHANCE_ZONE 未买入：当前持仓 "
+                    f"{units(cu)} < 目标 {units(target)}，理论补仓 {units(need)}，"
+                    "但本轮买入数量为 0，请检查最小交易单位或仓位配置。"
+                )
+
+            target_reached_once = bool(state_dict.get("target_reached_once", False))
+            if not target_reached_once:
+                step_pct = get_pyramid_add_step(cfg)
+                anchor = state_dict.get("last_add_price", current_price) or current_price
+                if not anchor or anchor <= 0:
+                    anchor = current_price
+                trigger = anchor * (1 - step_pct)
+                return (
+                    "CHANCE_ZONE 未买入：当前持仓 "
+                    f"{units(cu)} 已达到目标仓位 {units(target)}，本轮确认倒金字塔起点；"
+                    f"需价格从 {price_text(anchor)} 再下跌 {pct(step_pct)} 至 {price_text(trigger)} 或以下，"
+                    "才触发第 1 步加仓。"
+                )
+
+            weights = get_pyramid_add_weights(cfg) or [1.0]
+            total_steps = get_pyramid_add_steps(cfg)
+            step = int(state_dict.get("pyramid_step", 0) or 0)
+            if step >= total_steps:
+                return (
+                    "CHANCE_ZONE 未买入：倒金字塔加仓步数已用完，"
+                    f"当前 {step}/{total_steps} 步。"
+                )
+
+            last_add = state_dict.get("last_add_price", current_price) or current_price
+            step_pct = get_pyramid_add_step(cfg)
+            trigger = last_add * (1 - step_pct)
+            if current_price > trigger + POSITION_EPSILON:
+                return (
+                    "CHANCE_ZONE 未买入：未跌够倒金字塔加仓步长，"
+                    f"当前价 {price_text(current_price)} > 触发价 {price_text(trigger)} "
+                    f"（上次加仓价 {price_text(last_add)}，步长 {pct(step_pct)}）。"
+                )
+
+            weight = weights[step] if step < len(weights) else 0.0
+            planned = normalize_position_amount(target * weight, position_mode)
+            max_allowed = normalize_position_amount(double - cu, position_mode)
+            if planned <= POSITION_EPSILON or max_allowed <= POSITION_EPSILON:
+                return (
+                    "CHANCE_ZONE 未买入：已到加仓价，但计划买入量不足，"
+                    f"本步计划 {units(planned)}，剩余空间 {units(max_allowed)}。"
+                )
+
+            return "CHANCE_ZONE 未买入：已接近买入条件，但本轮策略买入数量为 0。"
+
+        if zone == "BOX_ZONE":
+            chance_trigger = ma150 if ma150 and ma150 > 0 else 0.0
+            trend_trigger = ma150 * get_trend_multiple(cfg) if ma150 and ma150 > 0 else 0.0
+            if cu < target - POSITION_EPSILON:
+                if chance_trigger > 0:
+                    return (
+                        "BOX_ZONE 未交易：箱体区不主动补仓；"
+                        f"当前持仓 {units(cu)} < 目标 {units(target)}，"
+                        f"需跌破 MA150 {price_text(chance_trigger)} 进入 CHANCE_ZONE 后才判断买入。"
+                    )
+                return (
+                    "BOX_ZONE 未交易：箱体区不主动补仓；"
+                    f"当前持仓 {units(cu)} < 目标 {units(target)}，需进入 CHANCE_ZONE 后才判断买入。"
+                )
+            if cu > target + POSITION_EPSILON:
+                if trend_trigger > 0:
+                    return (
+                        "BOX_ZONE 未交易：箱体区不主动卖出；"
+                        f"当前持仓 {units(cu)} > 目标 {units(target)}，"
+                        f"需涨到 {price_text(trend_trigger)} 或以上进入 TREND_ZONE 后才判断卖出。"
+                    )
+                return (
+                    "BOX_ZONE 未交易：箱体区不主动卖出；"
+                    f"当前持仓 {units(cu)} > 目标 {units(target)}，需进入 TREND_ZONE 后才判断卖出。"
+                )
+            if chance_trigger > 0 and trend_trigger > 0:
+                return (
+                    "BOX_ZONE 未交易：箱体区不主动买卖，"
+                    f"向下跌破 MA150 {price_text(chance_trigger)} 才看买入，"
+                    f"向上涨到 {price_text(trend_trigger)} 才看卖出。"
+                )
+            return "BOX_ZONE 未交易：箱体区不主动买卖，等待进入 CHANCE_ZONE 或 TREND_ZONE。"
+
+        if zone == "TREND_ZONE":
+            step_pct = get_trend_zone_step_percent(cfg)
+            anchor = last_trade_price if last_trade_price and last_trade_price > 0 else current_price
+            trigger = anchor * (1 + step_pct)
+            excess = max(cu - target, 0.0)
+            if excess <= POSITION_EPSILON:
+                return (
+                    "TREND_ZONE 未卖出：当前持仓 "
+                    f"{units(cu)} 未超过目标 {units(target)}，没有可卖出的机动仓。"
+                )
+            if current_price < trigger - POSITION_EPSILON:
+                return (
+                    "TREND_ZONE 未卖出：未涨够趋势区卖出步长，"
+                    f"当前价 {price_text(current_price)} < 触发价 {price_text(trigger)} "
+                    f"（锚定价 {price_text(anchor)}，步长 {pct(step_pct)}）。"
+                )
+            sell_pct = get_trend_zone_sell_percent(cfg)
+            planned = normalize_position_amount(min(excess, target * sell_pct), position_mode)
+            if planned <= POSITION_EPSILON:
+                return "TREND_ZONE 未卖出：已到卖出价，但可卖数量太小，无法形成有效卖出。"
+            return "TREND_ZONE 未卖出：已接近卖出条件，但本轮策略卖出数量为 0。"
+
+        if zone == "SELL_ZONE":
+            weights = get_clear_pyramid_weights(cfg)
+            plan = calculate_pyramid_sell_plan(target_units, weights, position_mode, 100)
+            max_steps = get_clear_pyramid_steps(cfg)
+            if max_steps > 0:
+                plan = plan[:max_steps]
+            total_steps = len(plan)
+            if total_steps <= 0:
+                return "SELL_ZONE 未卖出：离场卖出计划为空，请检查清仓步数或权重配置。"
+            target_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
+            done_step = int(clear_step or 0)
+            if target_step <= done_step:
+                if target_step <= 0:
+                    return (
+                        "SELL_ZONE 未卖出：尚未达到第 1 步离场价，"
+                        f"当前应卖第 {target_step}/{total_steps} 步，已卖 {done_step}/{total_steps} 步。"
+                    )
+                return (
+                    "SELL_ZONE 未卖出：未进入新的离场卖出步，"
+                    f"当前应卖第 {target_step}/{total_steps} 步，已卖 {done_step}/{total_steps} 步。"
+                )
+            if cu <= POSITION_EPSILON:
+                return "SELL_ZONE 未卖出：当前已无持仓。"
+            return "SELL_ZONE 未卖出：已进入新的离场区间，但本轮可卖数量为 0。"
+
+        return f"{zone or 'UNKNOWN'} 未交易：当前区间没有匹配到买入或卖出规则。"
+    except Exception as e:
+        return f"未触发交易条件；原因解析失败: {e}"
+
+
+def append_strategy_issue_to_reason(reason, strategy_issue, ma150_source=None):
+    """Append short data-quality hint without making the reason verbose."""
+    reason = str(reason or "").strip() or "未触发交易。"
+    issue = str(strategy_issue or "").strip()
+    if not issue:
+        return reason
+    source = str(ma150_source or "").strip()
+    if issue.startswith("MA150=") or source and source != "f":
+        src = source or issue.split("=", 1)[-1].strip()
+        return f"{reason}（MA150={src}，触发价为估算）"
+    return f"{reason}（{issue}）"
+
 def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refresh_reference=False):
     symbol = cfg["symbol"]
     position_mode = get_position_mode(cfg)
@@ -2009,24 +2299,11 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     units_before_decision = current_units
     avg_cost_before_decision = current_avg_cost
     if not allow_trade:
-        write_strategy_snapshot({
-            "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
-            "name": name, "symbol": symbol, "level": strategy_level_for_msg,
-            "action": "REFRESH_ONLY", "decision": "REFRESH_ONLY",
-            "reason": refresh_reason or "manual refresh; monitor only", "market_status": "ok",
-            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue, "last_bar_date": snapshot.last_bar_date,
-            "history_count": len(closes), "current_price": current_price,
-            "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
-            "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
-            "zone": zone, "sell_price": sell_price, "clear_price": clear_price,
-            "current_units_before": units_before_decision, "current_units_after": current_units,
-            "avg_cost_before": avg_cost_before_decision, "avg_cost_after": current_avg_cost,
-            "target_units": target_units, "double_target": double_target,
-            "last_trade_price": last_trade_price, "last_trade_side": last_trade_side,
-            "last_add_price": dcf_state.get("last_add_price"),
-            "pyramid_step": dcf_state.get("pyramid_step"), "clear_step": dcf_state.get("clear_step"),
-            "trade_allowed": False,
-        })
+        # Web 手动刷新只更新页面状态，不写入策略快照。
+        # 否则 REFRESH_ONLY / “Web手动刷新，仅更新状态” 会覆盖最近一次真实
+        # 策略判断，导致状态页看不到交易时段内的动态 NO_TRADE/TRADE 原因。
+        dcf_state["last_refresh_only_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+        dcf_state["last_refresh_only_reason"] = refresh_reason or "manual refresh; monitor only"
         return []
     if strategy_run == "off":
         write_strategy_snapshot({
@@ -2251,9 +2528,15 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     # 交易态字段只在真实 BUY/SELL 分支内写入；普通 NO_TRADE 不回写
     # last_add_price/pyramid_step/clear_step/pyramid_active/target_reached_once。
     action = "TRADE" if messages else "NO_TRADE"
-    reason = "; ".join([line.split("🗞交易:", 1)[-1].strip() for line in messages if "🗞交易:" in line]) if messages else "未触发交易条件"
-    if strategy_issue:
-        reason = f"{reason}｜{strategy_issue}"
+    if messages:
+        reason = "; ".join([line.split("🗞交易:", 1)[-1].strip() for line in messages if "🗞交易:" in line])
+    else:
+        reason = build_no_trade_reason(
+            zone, cfg, dcf_state, state_dict, current_price, ma150, current_units,
+            target_units, double_target, position_mode, add_reason, add_qty,
+            clear_step, last_trade_price
+        )
+    reason = append_strategy_issue_to_reason(reason, strategy_issue, ma150_source)
     write_strategy_snapshot({
         "time": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
         "name": name, "symbol": symbol, "level": strategy_level_for_msg,
@@ -2356,10 +2639,12 @@ def main_loop():
         last_config_reload_seq = apply_runtime_config_reload_if_needed(state, last_config_reload_seq)
         last_system_config_seq = apply_system_config_update_if_needed(state, last_system_config_seq)
         force_refresh, force_refresh_seq, force_refresh_targets = read_force_refresh_request(state)
+        restore_rerun, restore_rerun_seq, restore_rerun_targets, restore_rerun_backup_id = read_restore_trade_rerun_request(state)
         source_metrics_refresh, source_metrics_seq, source_metrics_targets = read_source_metrics_refresh_request(state)
         apply_market_state_clear_if_needed(state)
         # clear-market-state may also be paired with a force refresh; re-read after clearing.
         force_refresh, force_refresh_seq, force_refresh_targets = read_force_refresh_request(state)
+        restore_rerun, restore_rerun_seq, restore_rerun_targets, restore_rerun_backup_id = read_restore_trade_rerun_request(state)
         now = strategy_now()
         # 日志轮转
         if should_rotate_logs(state, now):
@@ -2421,8 +2706,76 @@ def main_loop():
                     f"当前策略时间={now.strftime('%Y-%m-%d %H:%M:%S')}，"
                     f"交易时段={STRATEGY.get('session_start', '09:30')}-{STRATEGY.get('session_end', '16:00')}。"
                 )
+            if restore_rerun:
+                meta = state.setdefault("_meta", {})
+                meta["restore_trade_rerun_done_seq"] = restore_rerun_seq
+                meta["restore_trade_rerun_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+                meta["restore_trade_rerun_skip_reason"] = (
+                    f"非交易时段，已恢复回滚点但未立即执行策略；当前策略时间 {now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"交易时段 {STRATEGY.get('session_start', '09:30')}-{STRATEGY.get('session_end', '16:00')}"
+                )
+                save_state(state)
+                logging.info(
+                    f"⏸️ 非交易时段，已恢复回滚点但跳过立即重跑 seq={restore_rerun_seq}，"
+                    f"目标={','.join(restore_rerun_targets) or 'ALL'}。"
+                )
             sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
             continue
+        if restore_rerun:
+            logging.info("=" * 60)
+            logging.info(
+                f"↩️ 回滚点已恢复，立即按当前价重跑策略 seq={restore_rerun_seq}，"
+                f"回滚点={restore_rerun_backup_id}，目标={','.join(restore_rerun_targets) or 'ALL'}。"
+            )
+            logging.info("=" * 60)
+            restore_trade_msgs = []
+            restore_error_msgs = []
+            for _name in restore_rerun_targets:
+                _cfg = SYMBOL_CONFIG.get(_name)
+                if not isinstance(_cfg, dict):
+                    continue
+                try:
+                    msgs = strategy_for_dcf(
+                        _name, _cfg, state,
+                        allow_trade=True,
+                        refresh_reason="回滚后按当前价重新执行策略",
+                        refresh_reference=True,
+                    )
+                    for msg in msgs or []:
+                        text = str(msg)
+                        if "🎯[TRADE]" in text:
+                            restore_trade_msgs.append(text)
+                        elif "🎯[ERROR]" in text:
+                            restore_error_msgs.append(text)
+                        else:
+                            logging.info(f"回滚后重跑非交易消息未推送: {text[:160]}")
+                except Exception as e:
+                    logging.exception(f"{_name} 回滚后重跑策略出错: {e}")
+            meta = state.setdefault("_meta", {})
+            meta["restore_trade_rerun_done_seq"] = restore_rerun_seq
+            meta["restore_trade_rerun_done_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+            meta["restore_trade_rerun_done_backup_id"] = restore_rerun_backup_id
+            save_state(state)
+            if restore_trade_msgs:
+                body = (chr(10) * 2).join(restore_trade_msgs)
+                logging.info("=" * 60)
+                logging.info("📨 回滚后重跑触发交易推送:")
+                logging.info("=" * 60)
+                logging.info(body)
+                try:
+                    send_notification(body)
+                    logging.info("✅ 回滚后重跑交易推送成功")
+                except Exception as e:
+                    logging.error(f"❌ 回滚后重跑交易推送失败: {e}")
+            if restore_error_msgs:
+                body = (chr(10) * 2).join(restore_error_msgs)
+                try:
+                    send_notification(body)
+                except Exception as e:
+                    logging.error(f"❌ 回滚后重跑错误推送失败: {e}")
+            sleep_until_next_loop_or_web_request(state, STRATEGY.get("loop_interval", 60))
+            continue
+
         if source_metrics_refresh:
             logging.info("=" * 60)
             logging.info(f"📊 收到 Web 回测/策略数据源刷新请求 seq={source_metrics_seq}，目标={','.join(source_metrics_targets) or 'ALL'}，仅计算指标，不触发交易。")

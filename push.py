@@ -2,20 +2,19 @@
 # -*- coding: utf-8 -*-
 """DCF push notification helper.
 
-Keep push delivery isolated from strategy/web code. The ntfy sender intentionally
-keeps the old working dcf.py behavior: body bytes + Title/Priority/Markdown
-headers through requests.post.
+Only ntfy and Gotify are exposed in the Web UI, but the implementation keeps
+ntfy/Gotify behavior compatible with the previously working push.py.
 """
 
 from __future__ import annotations
 
-import base64
+import json
 import logging
-from email.header import Header
 import os
 import re
 import time
 from datetime import datetime
+from email.header import Header
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -24,15 +23,12 @@ import requests
 BASE_DIR = Path(__file__).resolve().parent
 PUSH_CONFIG_FILE = Path("/root/dcf/push.conf")
 PUSH_LOG_FILE = Path("/root/dcf/push.log")
+PUSH_DETAIL_LOG_FILE = Path("/root/dcf/data/push_details.jsonl")
 PUSH_LOG_KEEP_LINES = 30
-PUSHPLUS_URL = "http://www.pushplus.plus/send"
 
 PUSH_DEFAULTS: Dict[str, str] = {
     "PUSH_ENABLED": "yes",
-    "PUSH_CHANNEL": "gotify",
-    "PUSHPLUS_TOKEN": "",
-    "TELEGRAM_BOT_TOKEN": "",
-    "TELEGRAM_CHAT_ID": "",
+    "PUSH_CHANNEL": "ntfy",
     "GOTIFY_URL": "https://sharq.eu.org:2084",
     "GOTIFY_TOKEN": "",
     "GOTIFY_PRIORITY": "10",
@@ -43,50 +39,35 @@ PUSH_DEFAULTS: Dict[str, str] = {
     "NTFY_PRIORITY": "4",
 }
 
-PUSH_CHANNEL_VALUES = {"telegram", "gotify", "ntfy", "pushplus", "none"}
+# Web code imports this. Keep it iterable and limited to the two supported values.
+PUSH_CHANNEL_VALUES = {"gotify", "ntfy"}
 
 
 def _strip_shell_quotes(value: Any) -> str:
-    """Parse values from push.conf as literal credentials.
+    """Parse push.conf values as literal credentials.
 
-    push.conf is edited by the Web UI and read by Python directly; it is not
-    sourced by the shell.  Keep credentials as the user entered them.  This
-    parser also repairs older over-escaped values such as:
-        export NTFY_PASSWORD="Plex0819\\\\$"
-    so the runtime value becomes exactly:
-        Plex0819$
+    push.conf is read by Python directly, not sourced by shell. Repair older
+    over-escaped dollar values such as Plex0819\\$ back to Plex0819$.
     """
-    import re
-
     text = str(value or "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
         text = text[1:-1]
-
-    # Repair old shell-escaped dollar forms, including repeated saves that
-    # produced multiple backslashes before $.
     text = re.sub(r"\\+\$", "$", text)
-    return (
-        text
-        .replace('\\"', '"')
-        .replace('\\`', '`')
-        .replace('\\\\', '\\')
-    )
+    return text.replace('\\"', '"').replace('\\`', '`').replace('\\\\', '\\')
 
 
 def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, str]:
     merged = dict(PUSH_DEFAULTS)
-    merged.update({k: "" if v is None else str(v).strip() for k, v in (cfg or {}).items()})
+    merged.update({k: "" if v is None else str(v).strip() for k, v in (cfg or {}).items() if k in PUSH_DEFAULTS})
 
     enabled = str(merged.get("PUSH_ENABLED", "yes")).strip().lower()
     merged["PUSH_ENABLED"] = "no" if enabled in {"no", "false", "0", "off"} else "yes"
 
-    channel = str(merged.get("PUSH_CHANNEL", "gotify")).strip().lower()
-    if channel == "both":
-        channel = "pushplus"
-    elif channel == "all":
-        channel = "gotify"
+    channel = str(merged.get("PUSH_CHANNEL", "ntfy")).strip().lower()
+    if channel in {"both", "all", "telegram", "pushplus", "none", ""}:
+        channel = "ntfy"
     if channel not in PUSH_CHANNEL_VALUES:
-        channel = "gotify"
+        channel = "ntfy"
     merged["PUSH_CHANNEL"] = channel
 
     try:
@@ -100,13 +81,14 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, str]:
     except Exception:
         merged["NTFY_PRIORITY"] = "4"
 
+    merged["GOTIFY_URL"] = str(merged.get("GOTIFY_URL", "")).strip().rstrip("/") or PUSH_DEFAULTS["GOTIFY_URL"]
     merged["NTFY_URL"] = str(merged.get("NTFY_URL", "")).strip().rstrip("/") or PUSH_DEFAULTS["NTFY_URL"]
     merged["NTFY_TOPIC"] = str(merged.get("NTFY_TOPIC", "")).strip().strip("/") or PUSH_DEFAULTS["NTFY_TOPIC"]
     return merged
 
 
 def load_push_config() -> Dict[str, str]:
-    """Read /root/dcf/push.conf, falling back to environment variables."""
+    """Read /root/dcf/push.conf, falling back to env vars and local push.conf."""
     cfg = dict(PUSH_DEFAULTS)
     for key in cfg:
         if os.getenv(key) is not None:
@@ -135,11 +117,7 @@ def load_push_config() -> Dict[str, str]:
 
 
 def shell_quote_export(value: Any) -> str:
-    """Write values in a human-readable quoted form.
-
-    The file is parsed by Python, not sourced by bash, so do not escape `$`.
-    This keeps passwords like Plex0819$ stored exactly as entered.
-    """
+    """Write values in a readable quoted form without escaping $."""
     text = "" if value is None else str(value)
     return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
@@ -149,9 +127,6 @@ def build_push_config_text(cfg: Dict[str, Any]) -> str:
     ordered_keys = [
         "PUSH_ENABLED",
         "PUSH_CHANNEL",
-        "PUSHPLUS_TOKEN",
-        "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_CHAT_ID",
         "GOTIFY_URL",
         "GOTIFY_TOKEN",
         "GOTIFY_PRIORITY",
@@ -174,7 +149,9 @@ def build_push_config_text(cfg: Dict[str, Any]) -> str:
 
 def write_push_config(cfg: Dict[str, Any]) -> None:
     PUSH_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PUSH_CONFIG_FILE.write_text(build_push_config_text(cfg), encoding="utf-8")
+    tmp = PUSH_CONFIG_FILE.with_suffix(PUSH_CONFIG_FILE.suffix + ".tmp")
+    tmp.write_text(build_push_config_text(cfg), encoding="utf-8")
+    tmp.replace(PUSH_CONFIG_FILE)
 
 
 def prune_push_log_lines(keep_lines: int = PUSH_LOG_KEEP_LINES) -> None:
@@ -189,12 +166,59 @@ def prune_push_log_lines(keep_lines: int = PUSH_LOG_KEEP_LINES) -> None:
         logging.debug(f"清理推送日志失败: {exc}")
 
 
-def append_push_log(channel: str, success: bool, detail: str) -> None:
+
+def _is_snapshot_push_body(body: Any, title: Any = "") -> bool:
+    """Return True for daily/status snapshot pushes whose full body should not be stored."""
+    text = f"{title or ''}\n{body or ''}"
+    snapshot_markers = (
+        "每日快照",
+        "快照推送",
+        "📌每日快照",
+        "📌 每日快照",
+        "策略运行状态",
+    )
+    return any(marker in text for marker in snapshot_markers)
+
+
+def append_push_detail(kind: str, body: Any, log_time: str | None = None, title: Any = "") -> None:
+    """Store non-snapshot push body for the Web push-log detail popup.
+
+    push.log only records delivery result. The system page pairs each result line
+    with this sidecar file by timestamp, so use the same timestamp as push.log
+    whenever possible.
+    """
+    try:
+        body_text = str(body or "").strip()
+        if not body_text or _is_snapshot_push_body(body_text, title):
+            return
+        PUSH_DETAIL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "time": log_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "kind": str(kind or "push"),
+            "title": str(title or ""),
+            "body": body_text,
+        }
+        with PUSH_DETAIL_LOG_FILE.open("a", encoding="utf-8") as file_obj:
+            file_obj.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            lines = PUSH_DETAIL_LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if len(lines) > 300:
+                PUSH_DETAIL_LOG_FILE.write_text("\n".join(lines[-300:]) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+    except Exception as exc:
+        logging.debug(f"写入推送详情失败: {exc}")
+
+def append_push_log(channel: str, success: bool, detail: str, body: Any = "", title: Any = "", kind: str = "push") -> None:
     try:
         PUSH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {channel} | {'成功' if success else '失败'} | {str(detail).replace(chr(10), ' ')[:500]}\n"
+        log_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        safe_detail = str(detail).replace(chr(10), " ")[:500]
+        line = f"{log_time} | {channel} | {'成功' if success else '失败'} | {safe_detail}\n"
         with PUSH_LOG_FILE.open("a", encoding="utf-8") as file_obj:
             file_obj.write(line)
+        if body:
+            append_push_detail(kind, body, log_time=log_time, title=title)
         prune_push_log_lines(PUSH_LOG_KEEP_LINES)
     except Exception as exc:
         logging.error(f"写入推送日志失败: {exc}")
@@ -210,11 +234,6 @@ def read_push_logs(limit: int = PUSH_LOG_KEEP_LINES) -> List[str]:
         return [f"读取推送日志失败：{exc}"]
 
 
-def escape_markdown_v2(text: str) -> str:
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return ''.join(('\\' + ch) if ch in escape_chars else ch for ch in str(text or ""))
-
-
 def _truncate_msg(text: Any, limit: int = 4000) -> str:
     body = str(text or "")
     if len(body) > limit:
@@ -222,10 +241,7 @@ def _truncate_msg(text: Any, limit: int = 4000) -> str:
     return body
 
 
-
-
 def _is_symbol_status_block(block: str) -> bool:
-    """Return True if a paragraph looks like one symbol status/trade block."""
     text = str(block or "").strip()
     if not text:
         return False
@@ -245,13 +261,7 @@ def _is_symbol_status_block(block: str) -> bool:
 
 
 def _split_ntfy_symbol_batches(text: Any, batch_size: int = 8) -> List[str]:
-    """Split long DCF snapshot messages by symbol blocks.
-
-    ntfy may display oversized bodies as attachment.txt.  Instead of truncating
-    and losing information, split daily/status snapshots into multiple ntfy
-    messages, with up to `batch_size` symbols per message.  Non-snapshot
-    messages are sent unchanged.
-    """
+    """Split long DCF snapshot messages so ntfy does not turn them into attachments."""
     body = str(text or "").strip()
     if not body:
         return [""]
@@ -288,79 +298,7 @@ def _split_ntfy_symbol_batches(text: Any, batch_size: int = 8) -> List[str]:
     return chunks or [body]
 
 
-def _send_pushplus(msg: str, cfg: Dict[str, str]) -> bool:
-    token = str(cfg.get("PUSHPLUS_TOKEN", "")).strip()
-    if not token:
-        logging.info("未配置 PushPlus Token，跳过该通道推送。")
-        return False
-    payload = {
-        "token": token,
-        "title": "",
-        "content": _truncate_msg(msg, 4000),
-        "template": "txt",
-    }
-    try:
-        resp = requests.post(PUSHPLUS_URL, json=payload, timeout=10)
-        try:
-            resp_data = resp.json()
-        except Exception:
-            resp_data = {}
-        if resp.status_code != 200 or (resp_data and resp_data.get("code") not in {200, "200", None}):
-            logging.error(f"PushPlus 推送失败: {resp.text[:300]}")
-            return False
-        logging.info("✅ PushPlus 推送成功。")
-        return True
-    except Exception as exc:
-        logging.error(f"PushPlus 推送异常: {exc}")
-        return False
-
-
-def _send_telegram(msg: str, cfg: Dict[str, str]) -> bool:
-    token = str(cfg.get("TELEGRAM_BOT_TOKEN", "")).strip()
-    chat_id = str(cfg.get("TELEGRAM_CHAT_ID", "")).strip()
-    if not token or not chat_id:
-        missing = []
-        if not token:
-            missing.append("Bot Token")
-        if not chat_id:
-            missing.append("Chat ID")
-        logging.info(f"未配置 Telegram {', '.join(missing)}，跳过该通道推送。")
-        return False
-    try:
-        lines = str(msg or "").split("\n")
-        filtered_lines = [line for line in lines if "🚦策略运行状态:" not in line]
-        plain_msg = "\n".join(filtered_lines)
-        payload = {
-            "chat_id": chat_id,
-            "text": _truncate_msg(escape_markdown_v2(plain_msg), 4000),
-            "parse_mode": "MarkdownV2",
-            "disable_web_page_preview": True,
-            "disable_notification": False,
-        }
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(url, json=payload, timeout=30)
-        if resp.status_code == 200:
-            logging.info("✅ Telegram 推送成功。")
-            return True
-        try:
-            error_msg = resp.json().get("description", "未知错误")
-        except Exception:
-            error_msg = resp.text or "无返回信息"
-        logging.error(f"❌ Telegram 推送失败 (状态码{resp.status_code}): {error_msg}")
-        if resp.status_code == 400 and "can't parse entities" in error_msg:
-            payload.pop("parse_mode", None)
-            payload["text"] = _truncate_msg(plain_msg, 4000)
-            retry = requests.post(url, json=payload, timeout=30)
-            if retry.status_code == 200:
-                logging.info("✅ Telegram 纯文本推送成功。")
-                return True
-        return False
-    except Exception as exc:
-        logging.error(f"❌ Telegram 推送异常: {exc}")
-        return False
-
-
-def _send_gotify(msg: str, cfg: Dict[str, str]) -> bool:
+def _send_gotify(msg: str, cfg: Dict[str, str], title: str = "DCF 推送") -> bool:
     gotify_url = str(cfg.get("GOTIFY_URL", "")).strip().rstrip("/")
     gotify_token = str(cfg.get("GOTIFY_TOKEN", "")).strip()
     if not gotify_url or not gotify_token:
@@ -376,6 +314,7 @@ def _send_gotify(msg: str, cfg: Dict[str, str]) -> bool:
     except Exception:
         priority = 10
     payload = {
+        "title": str(title or "DCF 推送"),
         "message": _truncate_msg(msg, 6000),
         "priority": priority,
     }
@@ -392,7 +331,7 @@ def _send_gotify(msg: str, cfg: Dict[str, str]) -> bool:
 
 
 def _encode_http_header_value(value: Any) -> str:
-    """Encode non-ASCII HTTP header values exactly like the old dcf.py implementation."""
+    """Encode non-ASCII HTTP headers like the old working dcf.py/push.py."""
     text = str(value or "")
     try:
         text.encode("latin-1")
@@ -402,12 +341,12 @@ def _encode_http_header_value(value: Any) -> str:
 
 
 def _send_ntfy_detail(msg: str, cfg: Dict[str, str], title: str = "DCF 推送") -> Tuple[bool, str]:
-    """Send ntfy using the old working dcf.py behavior, but return details.
+    """Send ntfy with the previous working request shape.
 
-    This intentionally keeps the old request shape from dcf_old.py:
-    Title + Priority + Markdown, posted with
-    requests.post(data=utf8_bytes). No X-* variants and no explicit
-    Content-Type are added here.
+    Important details kept from the working version:
+    - body is explicit UTF-8 bytes via data=payload
+    - Title is encoded to an ASCII-safe RFC 2047 header when it contains Chinese
+    - headers are Title/Priority/Markdown, not X-* variants
     """
     ntfy_url = str(cfg.get("NTFY_URL", "")).strip().rstrip("/")
     topic = str(cfg.get("NTFY_TOPIC", "")).strip().strip("/")
@@ -447,13 +386,7 @@ def _send_ntfy_detail(msg: str, cfg: Dict[str, str], title: str = "DCF 推送") 
         payload = str(part or "").encode("utf-8")
         total_bytes += len(payload)
         try:
-            resp = requests.post(
-                safe_url,
-                data=payload,
-                headers=part_headers,
-                auth=auth,
-                timeout=15,
-            )
+            resp = requests.post(safe_url, data=payload, headers=part_headers, auth=auth, timeout=15)
             body = (resp.text or "")[:500].replace("\n", " ")
             if 200 <= resp.status_code < 300:
                 sent += 1
@@ -478,56 +411,38 @@ def _send_ntfy(msg: str, cfg: Dict[str, str]) -> bool:
     return ok
 
 
-def send_notification(msg: str) -> bool:
-    cfg = load_push_config()
+def send_notification(msg: str, title: str = "DCF 推送", config: Dict[str, Any] | None = None) -> bool:
+    cfg = _normalize_config(config or load_push_config())
     enabled = str(cfg.get("PUSH_ENABLED", "yes")).strip().lower()
-    channel = str(cfg.get("PUSH_CHANNEL", "gotify")).strip().lower()
-    if enabled in {"no", "false", "0", "off"} or channel == "none":
+    channel = str(cfg.get("PUSH_CHANNEL", "ntfy")).strip().lower()
+    if enabled in {"no", "false", "0", "off"}:
         logging.info("推送已关闭，跳过通知。")
         append_push_log(channel, True, "推送已关闭，跳过通知")
         return True
 
-    if channel == "telegram":
-        ok = _send_telegram(msg, cfg)
-        result = f"Telegram:{'成功' if ok else '失败'}"
-    elif channel == "gotify":
-        ok = _send_gotify(msg, cfg)
+    if channel == "gotify":
+        ok = _send_gotify(msg, cfg, title=title)
         result = f"Gotify:{'成功' if ok else '失败'}"
-    elif channel == "ntfy":
-        ok, detail = _send_ntfy_detail(msg, cfg)
-        result = f"ntfy:{'成功' if ok else '失败'} | {detail}"
-    elif channel == "pushplus":
-        ok = _send_pushplus(msg, cfg)
-        result = f"PushPlus:{'成功' if ok else '失败'}"
     else:
-        ok = False
-        result = "未执行任何推送通道"
-    append_push_log(channel, ok, result)
+        ok, detail = _send_ntfy_detail(msg, cfg, title=title)
+        result = f"ntfy:{'成功' if ok else '失败'} | {detail}"
+    append_push_log(channel, ok, result, body=msg, title=title, kind="notification")
     return ok
 
 
 def send_push_test(cfg: Dict[str, Any] | None = None) -> Tuple[bool, str]:
     test_cfg = _normalize_config(cfg or load_push_config())
-    if test_cfg.get("PUSH_ENABLED") != "yes" or test_cfg.get("PUSH_CHANNEL") == "none":
-        append_push_log(test_cfg.get("PUSH_CHANNEL", "none"), False, "测试推送：推送已关闭")
+    if test_cfg.get("PUSH_ENABLED") != "yes":
+        append_push_log(test_cfg.get("PUSH_CHANNEL", "ntfy"), False, "测试推送：推送已关闭")
         return False, "推送已关闭，请先启用推送并选择通道。"
     title = "DCF 推送测试"
     message = f"闲云量化 Web 推送配置测试成功。\n时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    channel = test_cfg.get("PUSH_CHANNEL", "gotify")
-    if channel == "telegram":
-        ok = _send_telegram(message, test_cfg)
-        detail = f"Telegram：{'成功' if ok else '失败'}"
-    elif channel == "gotify":
-        ok = _send_gotify(message, test_cfg)
+    channel = test_cfg.get("PUSH_CHANNEL", "ntfy")
+    if channel == "gotify":
+        ok = _send_gotify(message, test_cfg, title=title)
         detail = f"Gotify：{'成功' if ok else '失败'}"
-    elif channel == "ntfy":
+    else:
         ok, ntfy_detail = _send_ntfy_detail(message, test_cfg, title=title)
         detail = f"ntfy：{'成功' if ok else '失败'} | {ntfy_detail}"
-    elif channel == "pushplus":
-        ok = _send_pushplus(message, test_cfg)
-        detail = f"PushPlus：{'成功' if ok else '失败'}"
-    else:
-        ok = False
-        detail = "未执行任何推送通道"
-    append_push_log(channel, ok, f"测试推送：{detail}")
+    append_push_log(channel, ok, f"测试推送：{detail}", body=message, title=title, kind="test")
     return ok, detail
