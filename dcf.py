@@ -52,7 +52,7 @@ SNAPSHOT_RETENTION_DAYS = 30
 PUSH_LOG_KEEP_LINES = 30
 
 def prune_snapshot_files(keep_days: int = SNAPSHOT_RETENTION_DAYS):
-    """保留最近 keep_days 天策略快照，删除更早的 YYYY-MM-DD.jsonl。"""
+    """保留最近 keep_days 天策略快照，删除更早的 YYYY-MM-DD.jsonl。默认保留 30 天。"""
     try:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         today = strategy_now().date() if "strategy_now" in globals() else datetime.now().date()
@@ -90,8 +90,24 @@ def calculate_new_avg_cost(old_position, old_avg_cost, add_units, add_price):
     return total_cost_after / (old_position + add_units)
 
 def _parse_hm(s: str):
+    """Parse HH:MM time values from YAML/Web config.
+
+    PyYAML may parse unquoted values such as 16:00 as the integer 960
+    (YAML 1.1 sexagesimal).  Treat numeric values in 0..1439 as minutes
+    since midnight so 960 correctly becomes 16:00 instead of falling back
+    to 09:30 and making the daemon think it is outside trading hours.
+    """
     try:
-        h, m = s.split(":")
+        if isinstance(s, (int, float)) and not isinstance(s, bool):
+            total = int(s)
+            if 0 <= total < 24 * 60:
+                return total // 60, total % 60
+        text = str(s or "").strip()
+        if text.isdigit():
+            total = int(text)
+            if 0 <= total < 24 * 60:
+                return total // 60, total % 60
+        h, m = text.split(":", 1)
         return int(h), int(m)
     except Exception:
         return 9, 30

@@ -585,3 +585,462 @@ body:not(.theme-x3-dark) .current-symbol-form .section-note{
   color:#5f7188 !important;
   line-height:1.6;
 }
+
+/* === Silver gray premium light skin: reduce green tint, graphite/silver hierarchy === */
+:root{
+  --x3-light-page:#e3e5e8;
+  --x3-light-surface:#f1f2f4;
+  --x3-light-surface-2:#f8f9fa;
+  --x3-light-field:#fafafa;
+  --x3-light-field-muted:#e5e7eb;
+  --x3-light-border:rgba(31,41,55,.20);
+  --x3-light-border-soft:rgba(31,41,55,.12);
+  --x3-light-text:#202936;
+  --x3-light-muted:#667085;
+  --x3-light-accent:#4b5563;
+}
+
+body.theme-x3-light,
+body:not(.theme-x3-dark){
+  background:
+    radial-gradient(circle at 15% -12%, rgba(148,163,184,.18), transparent 34%),
+    radial-gradient(circle at 88% 0%, rgba(100,116,139,.12), transparent 30%),
+    linear-gradient(180deg,#dfe2e6 0%,#eceef1 44%,#d8dde3 100%) !important;
+  color:var(--x3-light-text) !important;
+}
+
+body.theme-x3-light::before,
+body:not(.theme-x3-dark)::before{
+  background:
+    linear-gradient(90deg, rgba(15,23,42,.018) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(15,23,42,.014) 1px, transparent 1px) !important;
+  opacity:.46 !important;
+}
+
+body.theme-x3-light .topbar,
+body:not(.theme-x3-dark) .topbar,
+body.theme-x3-light .page-nav,
+body:not(.theme-x3-dark) .page-nav,
+body.theme-x3-light .card,
+body:not(.theme-x3-dark) .card,
+body.theme-x3-light .page-card,
+body:not(.theme-x3-dark) .page-card,
+body.theme-x3-light .symbols-current-card,
+body:not(.theme-x3-dark) .symbols-current-card,
+body.theme-x3-light .push-log-card,
+body:not(.theme-x3-dark) .push-log-card,
+body.theme-x3-light .simple-modal-card,
+body:not(.theme-x3-dark) .simple-modal-card{
+  background:linear-gradient(180deg, rgba(248,249,250,.94), rgba(233,236,240,.90)) !important;
+  border-color:rgba(31,41,55,.13) !important;
+  color:var(--x3-light-text) !important;
+  box-shadow:
+    0 18px 38px rgba(31,41,55,.085),
+    0 1px 2px rgba(31,41,55,.055),
+    inset 0 1px 0 rgba(255,255,255,.88) !important;
+}
+
+body.theme-x3-light .status-box,
+body:not(.theme-x3-dark) .status-box,
+body.theme-x3-light .output-box,
+body:not(.theme-x3-dark) .output-box,
+body.theme-x3-light .raw-output,
+body:not(.theme-x3-dark) .raw-output,
+body.theme-x3-light .summary-line,
+body:not(.theme-x3-dark) .summary-line,
+body.theme-x3-light .summary-list,
+body:not(.theme-x3-dark) .summary-list,
+body.theme-x3-light .backtest-summary-list,
+body:not(.theme-x3-dark) .backtest-summary-list,
+body.theme-x3-light .snapshot-reason-card,
+body:not(.theme-x3-dark) .snapshot-reason-card,
+body.theme-x3-light .reference-price-card,
+body:not(.theme-x3-dark) .reference-price-card,
+body.theme-x3-light .source-metric-card,
+body:not(.theme-x3-dark) .source-metric-card,
+body.theme-x3-light .snapshot-kv,
+body:not(.theme-x3-dark) .snapshot-kv,
+body.theme-x3-light .help-panel,
+body:not(.theme-x3-dark) .help-panel,
+body.theme-x3-light .return-help-panel,
+body:not(.theme-x3-dark) .return-help-panel,
+body.theme-x3-light .push-log-item,
+body:not(.theme-x3-dark) .push-log-item,
+body.theme-x3-light .push-log-detail,
+body:not(.theme-x3-dark) .push-log-detail,
+body.theme-x3-light .flash,
+body:not(.theme-x3-dark) .flash{
+  background:linear-gradient(180deg, rgba(241,243,246,.96), rgba(226,230,235,.91)) !important;
+  border-color:rgba(31,41,55,.16) !important;
+  color:var(--x3-light-text) !important;
+  box-shadow:
+    0 8px 18px rgba(31,41,55,.055),
+    inset 0 1px 0 rgba(255,255,255,.82) !important;
+}
+
+body.theme-x3-light input,
+body:not(.theme-x3-dark) input,
+body.theme-x3-light select,
+body:not(.theme-x3-dark) select,
+body.theme-x3-light textarea,
+body:not(.theme-x3-dark) textarea,
+body.theme-x3-light .selected-symbol-select,
+body:not(.theme-x3-dark) .selected-symbol-select,
+body.theme-x3-light .tool-form input,
+body:not(.theme-x3-dark) .tool-form input,
+body.theme-x3-light .tool-form select,
+body:not(.theme-x3-dark) .tool-form select,
+body.theme-x3-light .tool-form textarea,
+body:not(.theme-x3-dark) .tool-form textarea,
+body.theme-x3-light .backtest-form input,
+body:not(.theme-x3-dark) .backtest-form input,
+body.theme-x3-light .backtest-form select,
+body:not(.theme-x3-dark) .backtest-form select,
+body.theme-x3-light .backtest-form textarea,
+body:not(.theme-x3-dark) .backtest-form textarea,
+body.theme-x3-light .symbols-current-card input,
+body:not(.theme-x3-dark) .symbols-current-card input,
+body.theme-x3-light .symbols-current-card select,
+body:not(.theme-x3-dark) .symbols-current-card select,
+body.theme-x3-light .symbols-current-card textarea,
+body:not(.theme-x3-dark) .symbols-current-card textarea,
+body.theme-x3-light .current-symbol-form input,
+body:not(.theme-x3-dark) .current-symbol-form input,
+body.theme-x3-light .current-symbol-form select,
+body:not(.theme-x3-dark) .current-symbol-form select,
+body.theme-x3-light .current-symbol-form textarea,
+body:not(.theme-x3-dark) .current-symbol-form textarea,
+body.theme-x3-light .symbol-form input,
+body:not(.theme-x3-dark) .symbol-form input,
+body.theme-x3-light .symbol-form select,
+body:not(.theme-x3-dark) .symbol-form select,
+body.theme-x3-light .symbol-form textarea,
+body:not(.theme-x3-dark) .symbol-form textarea{
+  background:linear-gradient(180deg,#fbfbfc 0%,#eef0f3 100%) !important;
+  border-color:rgba(31,41,55,.31) !important;
+  color:#172033 !important;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.96),
+    0 0 0 1px rgba(255,255,255,.34),
+    inset 0 1px 2px rgba(31,41,55,.07) !important;
+}
+
+body.theme-x3-light input:hover,
+body:not(.theme-x3-dark) input:hover,
+body.theme-x3-light select:hover,
+body:not(.theme-x3-dark) select:hover,
+body.theme-x3-light textarea:hover,
+body:not(.theme-x3-dark) textarea:hover,
+body.theme-x3-light .selected-symbol-select:hover,
+body:not(.theme-x3-dark) .selected-symbol-select:hover{
+  background:linear-gradient(180deg,#ffffff 0%,#eceff3 100%) !important;
+  border-color:rgba(31,41,55,.40) !important;
+}
+
+body.theme-x3-light input:focus,
+body:not(.theme-x3-dark) input:focus,
+body.theme-x3-light select:focus,
+body:not(.theme-x3-dark) select:focus,
+body.theme-x3-light textarea:focus,
+body:not(.theme-x3-dark) textarea:focus,
+body.theme-x3-light .selected-symbol-select:focus,
+body:not(.theme-x3-dark) .selected-symbol-select:focus{
+  border-color:rgba(71,85,105,.62) !important;
+  box-shadow:
+    0 0 0 3px rgba(100,116,139,.16),
+    inset 0 1px 2px rgba(31,41,55,.07) !important;
+  outline:none !important;
+}
+
+body.theme-x3-light input[readonly],
+body:not(.theme-x3-dark) input[readonly],
+body.theme-x3-light .readonly-block input,
+body:not(.theme-x3-dark) .readonly-block input,
+body.theme-x3-light select:disabled,
+body:not(.theme-x3-dark) select:disabled{
+  background:linear-gradient(180deg,#e7eaee,#dce1e7) !important;
+  border-color:rgba(31,41,55,.19) !important;
+  color:#596577 !important;
+}
+
+body.theme-x3-light .page-nav-link,
+body:not(.theme-x3-dark) .page-nav-link{
+  background:rgba(248,250,252,.68) !important;
+  border-color:rgba(31,41,55,.15) !important;
+  color:#374151 !important;
+}
+
+body.theme-x3-light .page-nav-link.active,
+body:not(.theme-x3-dark) .page-nav-link.active{
+  background:linear-gradient(135deg, rgba(100,116,139,.18), rgba(148,163,184,.12)) !important;
+  border-color:rgba(71,85,105,.30) !important;
+  color:#1f2937 !important;
+}
+
+body.theme-x3-light .raw-output.backtest-output-toggle > summary,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary{
+  background:linear-gradient(180deg,#f7f8fa,#e4e8ed) !important;
+  border-color:rgba(71,85,105,.30) !important;
+  color:#374151 !important;
+  box-shadow:0 8px 18px rgba(31,41,55,.065), inset 0 1px 0 rgba(255,255,255,.86) !important;
+}
+
+body.theme-x3-light .raw-output.backtest-output-toggle > summary:hover,
+body:not(.theme-x3-dark) .raw-output.backtest-output-toggle > summary:hover{
+  background:linear-gradient(180deg,#ffffff,#e6eaf0) !important;
+  border-color:rgba(31,41,55,.38) !important;
+}
+
+body.theme-x3-light .reference-price-card.primary,
+body:not(.theme-x3-dark) .reference-price-card.primary{
+  background:linear-gradient(135deg, rgba(100,116,139,.15), rgba(203,213,225,.18)) !important;
+  border-color:rgba(71,85,105,.30) !important;
+}
+
+body.theme-x3-light .primary-btn,
+body:not(.theme-x3-dark) .primary-btn,
+body.theme-x3-light .action-btn,
+body:not(.theme-x3-dark) .action-btn,
+body.theme-x3-light .artifact-btn,
+body:not(.theme-x3-dark) .artifact-btn{
+  background:linear-gradient(135deg,#4b5563,#374151) !important;
+  border-color:rgba(31,41,55,.36) !important;
+  color:#f8fafc !important;
+  box-shadow:0 10px 22px rgba(31,41,55,.16), inset 0 1px 0 rgba(255,255,255,.20) !important;
+}
+
+body.theme-x3-light .secondary-btn,
+body:not(.theme-x3-dark) .secondary-btn{
+  background:linear-gradient(180deg,#f8fafc,#e5e7eb) !important;
+  border-color:rgba(31,41,55,.22) !important;
+  color:#374151 !important;
+}
+
+body.theme-x3-light .section-note,
+body:not(.theme-x3-dark) .section-note,
+body.theme-x3-light .push-field-help,
+body:not(.theme-x3-dark) .push-field-help,
+body.theme-x3-light .field-help,
+body:not(.theme-x3-dark) .field-help,
+body.theme-x3-light .help-text,
+body:not(.theme-x3-dark) .help-text,
+body.theme-x3-light .hint,
+body:not(.theme-x3-dark) .hint,
+body.theme-x3-light .form-hint,
+body:not(.theme-x3-dark) .form-hint,
+body.theme-x3-light .muted,
+body:not(.theme-x3-dark) .muted,
+body.theme-x3-light small,
+body:not(.theme-x3-dark) small,
+body.theme-x3-light .meta,
+body:not(.theme-x3-dark) .meta,
+body.theme-x3-light .summary-label,
+body:not(.theme-x3-dark) .summary-label{
+  color:#687386 !important;
+  background:transparent !important;
+}
+
+body.theme-x3-light .snapshot-table-wrap,
+body:not(.theme-x3-dark) .snapshot-table-wrap,
+body.theme-x3-light .push-log-list,
+body:not(.theme-x3-dark) .push-log-list{
+  background:linear-gradient(180deg, rgba(241,243,246,.84), rgba(226,230,235,.74)) !important;
+  border-color:rgba(31,41,55,.13) !important;
+}
+
+body.theme-x3-light .snapshot-table th,
+body:not(.theme-x3-dark) .snapshot-table th{
+  background:rgba(218,224,231,.78) !important;
+  color:#4b5563 !important;
+}
+
+body.theme-x3-light .snapshot-table td,
+body:not(.theme-x3-dark) .snapshot-table td{
+  background:rgba(248,250,252,.46) !important;
+  color:#243142 !important;
+}
+
+/* === Champagne selected-symbol field override ===
+   The current-symbol selector had legacy green rules in dashboard.html.
+   Keep the behavior unchanged and only override its light-theme rendering here. */
+body.theme-x3-light #symbol-key-select.selected-symbol-select,
+body:not(.theme-x3-dark) #symbol-key-select.selected-symbol-select,
+body.theme-x3-light .symbols-current-card #symbol-key-select.selected-symbol-select,
+body:not(.theme-x3-dark) .symbols-current-card #symbol-key-select.selected-symbol-select{
+  background:
+    linear-gradient(135deg, rgba(245, 231, 196, .96), rgba(214, 185, 122, .58)),
+    #f8f1df !important;
+  border:2px solid rgba(174, 139, 67, .66) !important;
+  color:#4a3a1e !important;
+  font-weight:800 !important;
+  box-shadow:
+    0 0 0 4px rgba(174, 139, 67, .12),
+    0 12px 24px rgba(120, 92, 38, .12),
+    inset 0 1px 0 rgba(255,255,255,.92) !important;
+}
+
+body.theme-x3-light #symbol-key-select.selected-symbol-select:hover,
+body:not(.theme-x3-dark) #symbol-key-select.selected-symbol-select:hover,
+body.theme-x3-light .symbols-current-card #symbol-key-select.selected-symbol-select:hover,
+body:not(.theme-x3-dark) .symbols-current-card #symbol-key-select.selected-symbol-select:hover{
+  background:
+    linear-gradient(135deg, rgba(249, 238, 211, .98), rgba(222, 195, 137, .66)),
+    #fbf5e8 !important;
+  border-color:rgba(147, 111, 45, .74) !important;
+}
+
+body.theme-x3-light #symbol-key-select.selected-symbol-select:focus,
+body:not(.theme-x3-dark) #symbol-key-select.selected-symbol-select:focus,
+body.theme-x3-light .symbols-current-card #symbol-key-select.selected-symbol-select:focus,
+body:not(.theme-x3-dark) .symbols-current-card #symbol-key-select.selected-symbol-select:focus{
+  outline:none !important;
+  border-color:rgba(147, 111, 45, .86) !important;
+  box-shadow:
+    0 0 0 5px rgba(174, 139, 67, .16),
+    0 14px 28px rgba(120, 92, 38, .15),
+    inset 0 1px 0 rgba(255,255,255,.94) !important;
+}
+
+body.theme-x3-light #symbol-key-select.selected-symbol-select option,
+body:not(.theme-x3-dark) #symbol-key-select.selected-symbol-select option{
+  background:#fbf5e8 !important;
+  color:#4a3a1e !important;
+}
+
+/* === Champagne nav interaction fix ===
+   Keep light-theme main nav hover/focus/active/current states champagne-gold.
+   This removes the brief legacy green tap color and prevents the silver skin's
+   generic active state from overriding the symbol/status buttons. */
+body.theme-x3-light .page-nav-link,
+body:not(.theme-x3-dark) .page-nav-link{
+  -webkit-tap-highlight-color:rgba(214,185,122,.24) !important;
+  transition:background .14s ease, border-color .14s ease, color .14s ease, box-shadow .14s ease, transform .14s ease !important;
+}
+
+body.theme-x3-light .page-nav-link:hover,
+body:not(.theme-x3-dark) .page-nav-link:hover,
+body.theme-x3-light .page-nav-link:focus,
+body:not(.theme-x3-dark) .page-nav-link:focus,
+body.theme-x3-light .page-nav-link:focus-visible,
+body:not(.theme-x3-dark) .page-nav-link:focus-visible,
+body.theme-x3-light .page-nav-link:active,
+body:not(.theme-x3-dark) .page-nav-link:active,
+body.theme-x3-light .page-nav-link.active,
+body:not(.theme-x3-dark) .page-nav-link.active{
+  background:linear-gradient(135deg, rgba(250,239,210,.98), rgba(218,188,123,.82)) !important;
+  background-color:#ead39c !important;
+  border-color:rgba(174,139,67,.56) !important;
+  color:#4a3a1e !important;
+  box-shadow:
+    0 10px 20px rgba(120,92,38,.14),
+    0 0 0 1px rgba(255,255,255,.40),
+    inset 0 1px 0 rgba(255,255,255,.72) !important;
+  outline:none !important;
+}
+
+body.theme-x3-light .page-nav-link:active,
+body:not(.theme-x3-dark) .page-nav-link:active{
+  transform:translateY(0) !important;
+  filter:none !important;
+}
+
+
+/* === Final light-theme tap/active guard: remove legacy green flash completely === */
+html[data-dcf-theme="light"],
+html[data-dcf-theme="light"] body,
+html[data-dcf-theme="light"] a,
+html[data-dcf-theme="light"] button,
+html[data-dcf-theme="light"] input,
+html[data-dcf-theme="light"] select,
+html[data-dcf-theme="light"] textarea{
+  -webkit-tap-highlight-color:rgba(214,185,122,.16) !important;
+  accent-color:#c9a35b !important;
+}
+
+html[data-dcf-theme="light"] body .page-nav-link,
+body.theme-x3-light .page-nav-link,
+body:not(.theme-x3-dark) .page-nav-link{
+  background-clip:padding-box !important;
+}
+
+html[data-dcf-theme="light"] body .page-nav-link:hover,
+html[data-dcf-theme="light"] body .page-nav-link:focus,
+html[data-dcf-theme="light"] body .page-nav-link:focus-visible,
+html[data-dcf-theme="light"] body .page-nav-link:active,
+html[data-dcf-theme="light"] body .page-nav-link.active,
+body.theme-x3-light .page-nav-link:hover,
+body.theme-x3-light .page-nav-link:focus,
+body.theme-x3-light .page-nav-link:focus-visible,
+body.theme-x3-light .page-nav-link:active,
+body.theme-x3-light .page-nav-link.active,
+body:not(.theme-x3-dark) .page-nav-link:hover,
+body:not(.theme-x3-dark) .page-nav-link:focus,
+body:not(.theme-x3-dark) .page-nav-link:focus-visible,
+body:not(.theme-x3-dark) .page-nav-link:active,
+body:not(.theme-x3-dark) .page-nav-link.active{
+  background:linear-gradient(135deg, rgba(250,239,210,.98), rgba(218,188,123,.82)) !important;
+  background-color:#ead39c !important;
+  border-color:rgba(174,139,67,.56) !important;
+  color:#4a3a1e !important;
+  box-shadow:0 10px 20px rgba(120,92,38,.14), 0 0 0 1px rgba(255,255,255,.40), inset 0 1px 0 rgba(255,255,255,.72) !important;
+  outline:none !important;
+  filter:none !important;
+}
+
+html[data-dcf-theme="light"] body .page-nav-link:active,
+body.theme-x3-light .page-nav-link:active,
+body:not(.theme-x3-dark) .page-nav-link:active{
+  transform:translateY(0) !important;
+}
+
+/* === Symbol page button refinement ===
+   Only adjusts light-theme colors: softer champagne for "选定", red for "删除". */
+html[data-dcf-theme="light"] body .symbol-switcher-row .secondary-btn,
+body.theme-x3-light .symbol-switcher-row .secondary-btn,
+body:not(.theme-x3-dark) .symbol-switcher-row .secondary-btn{
+  background:linear-gradient(135deg,#f7ecd2,#e7d0a1) !important;
+  border-color:rgba(176,132,40,.24) !important;
+  color:#5f4a25 !important;
+  box-shadow:0 8px 18px rgba(120,92,38,.09), inset 0 1px 0 rgba(255,255,255,.62) !important;
+}
+
+html[data-dcf-theme="light"] body .symbol-switcher-row .secondary-btn:hover,
+html[data-dcf-theme="light"] body .symbol-switcher-row .secondary-btn:focus,
+html[data-dcf-theme="light"] body .symbol-switcher-row .secondary-btn:active,
+body.theme-x3-light .symbol-switcher-row .secondary-btn:hover,
+body.theme-x3-light .symbol-switcher-row .secondary-btn:focus,
+body.theme-x3-light .symbol-switcher-row .secondary-btn:active,
+body:not(.theme-x3-dark) .symbol-switcher-row .secondary-btn:hover,
+body:not(.theme-x3-dark) .symbol-switcher-row .secondary-btn:focus,
+body:not(.theme-x3-dark) .symbol-switcher-row .secondary-btn:active{
+  background:linear-gradient(135deg,#f9f0dc,#ead7ae) !important;
+  border-color:rgba(176,132,40,.32) !important;
+  color:#4d3b1d !important;
+  box-shadow:0 10px 20px rgba(120,92,38,.11), 0 0 0 3px rgba(176,132,40,.08), inset 0 1px 0 rgba(255,255,255,.70) !important;
+  filter:none !important;
+}
+
+html[data-dcf-theme="light"] body .symbol-switcher-row .danger-btn,
+body.theme-x3-light .symbol-switcher-row .danger-btn,
+body:not(.theme-x3-dark) .symbol-switcher-row .danger-btn{
+  background:linear-gradient(135deg,#ef4444,#dc2626) !important;
+  border-color:rgba(185,28,28,.42) !important;
+  color:#fff7f7 !important;
+  box-shadow:0 10px 22px rgba(220,38,38,.18), inset 0 1px 0 rgba(255,255,255,.22) !important;
+}
+
+html[data-dcf-theme="light"] body .symbol-switcher-row .danger-btn:hover,
+html[data-dcf-theme="light"] body .symbol-switcher-row .danger-btn:focus,
+html[data-dcf-theme="light"] body .symbol-switcher-row .danger-btn:active,
+body.theme-x3-light .symbol-switcher-row .danger-btn:hover,
+body.theme-x3-light .symbol-switcher-row .danger-btn:focus,
+body.theme-x3-light .symbol-switcher-row .danger-btn:active,
+body:not(.theme-x3-dark) .symbol-switcher-row .danger-btn:hover,
+body:not(.theme-x3-dark) .symbol-switcher-row .danger-btn:focus,
+body:not(.theme-x3-dark) .symbol-switcher-row .danger-btn:active{
+  background:linear-gradient(135deg,#f87171,#dc2626) !important;
+  border-color:rgba(153,27,27,.56) !important;
+  color:#ffffff !important;
+  box-shadow:0 12px 24px rgba(220,38,38,.22), 0 0 0 3px rgba(220,38,38,.10), inset 0 1px 0 rgba(255,255,255,.24) !important;
+  filter:none !important;
+}

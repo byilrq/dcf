@@ -5,8 +5,8 @@
 Only stable internal source keys are used between programs:
 - A/ETF realtime: live_a1/live_a2/live_a3
 - HK realtime: live_hk1/live_hk2/live_hk3
-- A/ETF historical: historical_a1/historical_a2
-- HK historical: historical_hk1/historical_hk2
+- A/ETF historical: historical_a1/historical_a2/historical_a3
+- HK historical: historical_hk1/historical_hk2/historical_hk3
 
 Customer-facing names, source options, normalization and concrete API logic all live here.
 """
@@ -17,16 +17,26 @@ import logging
 import random
 import time as time_module
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent
+MARKET_DATA_PATCH_VERSION = "2026-05-23-history-fallback-daily-cache-v3-retention-1d"
 SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
 CACHE_DIR = BASE_DIR / "data" / "bars"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Strategy/runtime historical K cache. This is deliberately separate from
+# the generic bar cache because realtime overlay must still refresh every loop.
+# Keyed by symbol + selected historical source + days + price_scale + calendar day.
+STRATEGY_HISTORY_CACHE_DIR = BASE_DIR / "data" / "strategy_history"
+STRATEGY_HISTORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# Keep only today's strategy-history cache files. Historical K is fetched once
+# per symbol/source/day, while realtime quotes still refresh every loop.
+STRATEGY_HISTORY_CACHE_RETENTION_DAYS = 1
 
 SYSTEM_DEFAULTS = {
     "A_QUOTE_SOURCE": "live_a1",
@@ -50,10 +60,12 @@ SOURCE_OPTIONS: Dict[str, List[Tuple[str, str]]] = {
     "A_BACKTEST_SOURCE": [
         ("historical_a1", "腾讯A股/ETF日K"),
         ("historical_a2", "新浪A股/ETF日K"),
+        ("historical_a3", "BaoStock A股含权息"),
     ],
     "HK_BACKTEST_SOURCE": [
         ("historical_hk1", "腾讯港股日K"),
         ("historical_hk2", "Yahoo港股日K"),
+        ("historical_hk3", "Yahoo港股含权息"),
     ],
 }
 
@@ -79,6 +91,12 @@ class MarketSnapshot:
     dates: Optional[List[str]] = None
     strategy_source: str = ""
     strategy_status: str = "OK"
+    # Optional total-return columns for historical backtests.
+    # closes remains the strategy/signal close series, usually adjusted close.
+    raw_closes: Optional[List[float]] = None
+    adj_closes: Optional[List[float]] = None
+    dividends: Optional[List[float]] = None
+    split_ratios: Optional[List[float]] = None
 
     @property
     def ok(self) -> bool:
@@ -174,12 +192,135 @@ def _write_cache(snapshot: MarketSnapshot) -> None:
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "dates": (snapshot.dates or [])[-800:],
         "closes": snapshot.closes[-800:],
+        "raw_closes": (snapshot.raw_closes or [])[-800:] if snapshot.raw_closes else [],
+        "adj_closes": (snapshot.adj_closes or [])[-800:] if snapshot.adj_closes else [],
+        "dividends": (snapshot.dividends or [])[-800:] if snapshot.dividends else [],
+        "split_ratios": (snapshot.split_ratios or [])[-800:] if snapshot.split_ratios else [],
     }
     try:
         _cache_path(snapshot.symbol).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logging.debug(f"写入行情缓存失败 {snapshot.symbol}: {e}")
 
+
+
+def _snapshot_to_payload(snapshot: MarketSnapshot) -> dict:
+    return {
+        "symbol": snapshot.symbol,
+        "source": snapshot.source,
+        "closes": list(snapshot.closes or []),
+        "price_scale": snapshot.price_scale,
+        "last_bar_date": snapshot.last_bar_date,
+        "error": snapshot.error,
+        "trade_allowed": bool(snapshot.trade_allowed),
+        "dates": list(snapshot.dates or []),
+        "strategy_source": snapshot.strategy_source,
+        "strategy_status": snapshot.strategy_status,
+        "raw_closes": list(snapshot.raw_closes or []),
+        "adj_closes": list(snapshot.adj_closes or []),
+        "dividends": list(snapshot.dividends or []),
+        "split_ratios": list(snapshot.split_ratios or []),
+    }
+
+
+def _snapshot_from_payload(data: dict) -> MarketSnapshot:
+    closes = [float(x) for x in (data.get("closes") or []) if x is not None]
+    return MarketSnapshot(
+        symbol=str(data.get("symbol") or "").upper(),
+        source=str(data.get("source") or ""),
+        closes=closes,
+        price_scale=float(data.get("price_scale") or 1.0),
+        last_bar_date=data.get("last_bar_date"),
+        error=str(data.get("error") or ""),
+        trade_allowed=bool(data.get("trade_allowed", True)),
+        dates=list(data.get("dates") or []),
+        strategy_source=str(data.get("strategy_source") or ""),
+        strategy_status=str(data.get("strategy_status") or "OK"),
+        raw_closes=[float(x) for x in (data.get("raw_closes") or []) if x is not None] or None,
+        adj_closes=[float(x) for x in (data.get("adj_closes") or []) if x is not None] or None,
+        dividends=[float(x) for x in (data.get("dividends") or []) if x is not None] or None,
+        split_ratios=[float(x) for x in (data.get("split_ratios") or []) if x is not None] or None,
+    )
+
+
+def _strategy_history_cache_path(symbol: str, source_key: str, days: int, price_scale: float, cache_day: str = "") -> Path:
+    raw = str(symbol or "").upper().replace("/", "_")
+    src = str(source_key or "").strip() or "default"
+    day = cache_day or date.today().isoformat()
+    scale = str(float(price_scale)).replace(".", "p")
+    return STRATEGY_HISTORY_CACHE_DIR / f"{raw}_{src}_{int(days)}_{scale}_{day}.json"
+
+
+def _prune_strategy_history_daily_cache(retention_days: int = STRATEGY_HISTORY_CACHE_RETENTION_DAYS) -> None:
+    """Delete expired strategy-history daily cache files.
+
+    With retention_days=1, only today's cache files are kept. This prevents
+    /data/strategy_history from accumulating one file per symbol per day forever.
+    """
+    try:
+        keep_days = max(1, int(retention_days or 1))
+        today = date.today()
+        cutoff = today - timedelta(days=keep_days - 1)
+        for path in STRATEGY_HISTORY_CACHE_DIR.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                raw_day = str(data.get("cache_day") or "").strip()
+                if not raw_day:
+                    # Fall back to filename suffix: *_YYYY-MM-DD.json
+                    raw_day = path.stem.rsplit("_", 1)[-1]
+                cache_day = date.fromisoformat(raw_day[:10])
+            except Exception:
+                # Remove unreadable cache files; they cannot be trusted.
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+                continue
+            if cache_day < cutoff:
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+    except Exception as e:
+        logging.debug(f"清理策略历史日缓存失败: {e}")
+
+
+def _read_strategy_history_daily_cache(symbol: str, source_key: str, days: int, price_scale: float) -> Optional[MarketSnapshot]:
+    path = _strategy_history_cache_path(symbol, source_key, days, price_scale)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("cache_day") != date.today().isoformat():
+            return None
+        snap = _snapshot_from_payload(data.get("snapshot") or {})
+        if not snap.closes or len(snap.closes) < 2:
+            return None
+        snap.source = snap.source or str(data.get("resolved_source") or source_key)
+        snap.strategy_source = snap.strategy_source or get_source_display_name(source_key)
+        return snap
+    except Exception as e:
+        logging.debug(f"读取策略历史日缓存失败 {symbol}/{source_key}: {e}")
+        return None
+
+
+def _write_strategy_history_daily_cache(symbol: str, source_key: str, days: int, price_scale: float, snapshot: MarketSnapshot) -> None:
+    if not snapshot.closes:
+        return
+    _prune_strategy_history_daily_cache()
+    path = _strategy_history_cache_path(symbol, source_key, days, price_scale)
+    payload = {
+        "cache_day": date.today().isoformat(),
+        "symbol": str(symbol or "").upper(),
+        "requested_source": source_key,
+        "resolved_source": snapshot.source,
+        "written_at": datetime.now().isoformat(timespec="seconds"),
+        "snapshot": _snapshot_to_payload(snapshot),
+    }
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.debug(f"写入策略历史日缓存失败 {symbol}/{source_key}: {e}")
 
 def _read_cache(symbol: str, days: int, price_scale: float, reason: str) -> MarketSnapshot:
     path = _cache_path(symbol)
@@ -210,6 +351,10 @@ def _read_cache(symbol: str, days: int, price_scale: float, reason: str) -> Mark
             dates=dates[-n:] if isinstance(dates, list) else [],
             strategy_source=data.get("strategy_source") or "",
             strategy_status="WARN",
+            raw_closes=(data.get("raw_closes") or [])[-n:] or None,
+            adj_closes=(data.get("adj_closes") or [])[-n:] or None,
+            dividends=(data.get("dividends") or [])[-n:] or None,
+            split_ratios=(data.get("split_ratios") or [])[-n:] or None,
         )
     except Exception as e:
         raise RuntimeError(reason + f"；读取本地缓存失败: {e}")
@@ -352,6 +497,192 @@ def _fetch_sina_a_snapshot(symbol: str, days: int, price_scale: float) -> Market
     return snap
 
 
+def _ensure_baostock_module():
+    """Import BaoStock.
+
+    BaoStock is an optional dependency for historical_a3. Install it in the
+    same Python environment that runs dcf before selecting this source:
+    python -m pip install baostock
+    """
+    try:
+        import baostock as bs
+        return bs
+    except ImportError as e:
+        raise RuntimeError("BaoStock 数据源需要先安装: python -m pip install baostock") from e
+
+
+def _baostock_a_code(symbol: str) -> str:
+    raw = str(symbol or "").upper().strip()
+    if raw.startswith("SH"):
+        return "sh." + raw[2:]
+    if raw.startswith("SZ"):
+        return "sz." + raw[2:]
+    if raw.isdigit() and len(raw) == 6:
+        return ("sh." if raw.startswith("6") else "sz.") + raw
+    raise ValueError(f"不支持的A股代码格式: {symbol}")
+
+
+def _collect_baostock_result(rs, label: str) -> List[dict]:
+    if getattr(rs, "error_code", "0") != "0":
+        raise RuntimeError(f"BaoStock {label} 查询失败: {getattr(rs, 'error_msg', '')}")
+    rows = []
+    fields = list(getattr(rs, "fields", []) or [])
+    while getattr(rs, "error_code", "0") == "0" and rs.next():
+        rows.append(dict(zip(fields, rs.get_row_data())))
+    return rows
+
+
+def _safe_float_or_zero(value) -> float:
+    try:
+        if value in (None, "", "-"):
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _first_nonempty(row: dict, keys: List[str]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _fetch_baostock_a_snapshot(symbol: str, days: int, price_scale: float) -> MarketSnapshot:
+    """Fetch A-share total-return columns from BaoStock.
+
+    raw_close: unadjusted daily close (adjustflag=3)
+    adj_close: forward-adjusted daily close for continuous MA/signal calculations (adjustflag=2)
+    dividend: cash dividend before tax per share on ex-dividend date when available
+    split_ratio: 1 + bonus-share-per-share + reserve-to-stock-per-share on ex-rights date
+    """
+    bs = _ensure_baostock_module()
+
+    raw = str(symbol or "").upper().strip()
+    bs_code = _baostock_a_code(raw)
+    n = max(int(days), 2)
+    start_dt = datetime.now() - timedelta(days=max(n * 3, 1200))
+    end_dt = datetime.now() + timedelta(days=2)
+    start_date = start_dt.strftime("%Y-%m-%d")
+    end_date = end_dt.strftime("%Y-%m-%d")
+    label = get_source_display_name("historical_a3")
+
+    login_ok = False
+    try:
+        lg = bs.login()
+        login_ok = True
+        if getattr(lg, "error_code", "0") != "0":
+            raise RuntimeError(f"BaoStock 登录失败: {getattr(lg, 'error_msg', '')}")
+
+        fields = "date,code,close,volume,amount,adjustflag,tradestatus"
+        raw_rs = bs.query_history_k_data_plus(
+            bs_code, fields,
+            start_date=start_date, end_date=end_date,
+            frequency="d", adjustflag="3",
+        )
+        adj_rs = bs.query_history_k_data_plus(
+            bs_code, fields,
+            start_date=start_date, end_date=end_date,
+            frequency="d", adjustflag="2",
+        )
+        raw_rows = _collect_baostock_result(raw_rs, "不复权日K")
+        adj_rows = _collect_baostock_result(adj_rs, "前复权日K")
+
+        raw_by_date = {}
+        for row in raw_rows:
+            date = str(row.get("date") or "")
+            close_price = _safe_float_or_zero(row.get("close")) * float(price_scale)
+            volume = _parse_volume(row.get("volume"), default=0.0)
+            tradestatus = str(row.get("tradestatus", "1") or "1")
+            if date and close_price > 0 and volume > 0 and tradestatus != "0":
+                raw_by_date[date] = round(close_price, 4)
+
+        adj_by_date = {}
+        for row in adj_rows:
+            date = str(row.get("date") or "")
+            close_price = _safe_float_or_zero(row.get("close")) * float(price_scale)
+            volume = _parse_volume(row.get("volume"), default=0.0)
+            tradestatus = str(row.get("tradestatus", "1") or "1")
+            if date and close_price > 0 and volume > 0 and tradestatus != "0":
+                adj_by_date[date] = round(close_price, 4)
+
+        dates_all = sorted(set(raw_by_date) & set(adj_by_date))
+        if len(dates_all) < 2:
+            raise RuntimeError(f"BaoStock A股含权息日K不足: {raw}, count={len(dates_all)}")
+
+        dividend_by_date: Dict[str, float] = {}
+        split_by_date: Dict[str, float] = {}
+        first_year = int(dates_all[0][:4])
+        last_year = int(dates_all[-1][:4])
+        valid_dates = dates_all
+
+        for year in range(first_year - 1, last_year + 1):
+            try:
+                div_rs = bs.query_dividend_data(code=bs_code, year=str(year), yearType="operate")
+                div_rows = _collect_baostock_result(div_rs, f"除权除息 {year}")
+            except Exception as e:
+                logging.debug(f"BaoStock 除权除息查询失败 {raw} {year}: {e}")
+                continue
+            for row in div_rows:
+                ex_date = _first_nonempty(row, [
+                    "dividOperateDate", "dividOperate_date", "operateDate",
+                    "dividDate", "dividStockMarketDate", "dividRegistDate",
+                ])
+                if not ex_date:
+                    continue
+                # Align to the first available trading day on or after the ex-rights/ex-dividend date.
+                aligned = None
+                for d in valid_dates:
+                    if d >= ex_date:
+                        aligned = d
+                        break
+                if aligned is None:
+                    continue
+                cash = _safe_float_or_zero(_first_nonempty(row, [
+                    "dividCashPsBeforeTax", "diviCashPsBeforeTax", "cashBeforeTax",
+                    "dividCashPsAfterTax", "diviCashPsAfterTax",
+                ])) * float(price_scale)
+                bonus = _safe_float_or_zero(_first_nonempty(row, [
+                    "dividStocksPs", "diviStocksPs", "bonusShareRatio", "stockBonusRatio",
+                ]))
+                transfer = _safe_float_or_zero(_first_nonempty(row, [
+                    "dividReserveToStockPs", "diviReserveToStockPs", "transferShareRatio",
+                ]))
+                ratio = 1.0 + max(0.0, bonus) + max(0.0, transfer)
+                if cash > 0:
+                    dividend_by_date[aligned] = dividend_by_date.get(aligned, 0.0) + round(cash, 6)
+                if ratio > 1.0:
+                    split_by_date[aligned] = split_by_date.get(aligned, 1.0) * ratio
+
+        dates = dates_all[-n:]
+        raw_closes = [raw_by_date[d] for d in dates]
+        adj_closes = [adj_by_date[d] for d in dates]
+        dividends = [round(dividend_by_date.get(d, 0.0), 6) for d in dates]
+        split_ratios = [round(split_by_date.get(d, 1.0), 6) for d in dates]
+        snap = MarketSnapshot(
+            raw,
+            label,
+            adj_closes,
+            price_scale,
+            dates[-1] if dates else None,
+            dates=dates,
+            strategy_source=label,
+            raw_closes=raw_closes,
+            adj_closes=adj_closes,
+            dividends=dividends,
+            split_ratios=split_ratios,
+        )
+        _write_cache(snap)
+        return snap
+    finally:
+        if login_ok:
+            try:
+                bs.logout()
+            except Exception:
+                pass
+
+
 def _fetch_tencent_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
     code = _hk_code(symbol_or_code)
     t_symbol = "hk" + code
@@ -397,6 +728,138 @@ def _fetch_tencent_hk_snapshot(symbol_or_code: str, days: int, price_scale: floa
 def _yahoo_hk_symbol(symbol_or_code: str) -> str:
     code = _hk_code(symbol_or_code)
     return f"{code[-4:].zfill(4)}.HK"
+
+
+def _safe_event_date(ts) -> str:
+    try:
+        if isinstance(ts, str):
+            s = ts.strip()
+            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                return s[:10]
+            ts = float(s)
+        return datetime.fromtimestamp(int(float(ts))).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _parse_yahoo_hk_dividend_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
+    code = _hk_code(symbol_or_code)
+    yf_symbol = _yahoo_hk_symbol(code)
+    n = max(int(days), 2)
+    years = max(2, int(n / 220) + 2)
+    period1 = int((datetime.now() - timedelta(days=years * 370)).timestamp())
+    period2 = int((datetime.now() + timedelta(days=2)).timestamp())
+    params = {
+        "period1": str(period1),
+        "period2": str(period2),
+        "interval": "1d",
+        "events": "history,div,splits",
+        "includeAdjustedClose": "true",
+    }
+    last_err = None
+    data = None
+    for host in ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]:
+        try:
+            resp = requests.get(
+                f"https://{host}/v8/finance/chart/{yf_symbol}",
+                params=params,
+                headers=_headers("https://finance.yahoo.com/"),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except Exception as e:
+            last_err = e
+            time_module.sleep(0.2)
+    if data is None:
+        raise RuntimeError(f"Yahoo港股含权息下载失败 {yf_symbol}: {last_err}")
+    chart = ((data or {}).get("chart") or {})
+    if chart.get("error"):
+        raise RuntimeError(f"Yahoo港股含权息返回错误 {yf_symbol}: {chart.get('error')}")
+    result = chart.get("result") or []
+    if not result:
+        raise RuntimeError(f"Yahoo港股含权息为空 {yf_symbol}")
+    node = result[0] or {}
+    timestamps = node.get("timestamp") or []
+    indicators = node.get("indicators") or {}
+    quote = ((indicators.get("quote") or [{}])[0] or {})
+    raw_series = quote.get("close") or []
+    volumes = quote.get("volume") or []
+    adj_series = ((indicators.get("adjclose") or [{}])[0] or {}).get("adjclose") or []
+
+    events = node.get("events") or {}
+    dividend_by_date: Dict[str, float] = {}
+    for item in (events.get("dividends") or {}).values():
+        try:
+            date = _safe_event_date(item.get("date"))
+            amount = float(item.get("amount") or 0.0) * float(price_scale)
+            if date and amount:
+                dividend_by_date[date] = dividend_by_date.get(date, 0.0) + amount
+        except Exception:
+            continue
+
+    split_by_date: Dict[str, float] = {}
+    for item in (events.get("splits") or {}).values():
+        try:
+            date = _safe_event_date(item.get("date"))
+            numerator = float(item.get("numerator") or 0.0)
+            denominator = float(item.get("denominator") or 0.0)
+            ratio = numerator / denominator if numerator > 0 and denominator > 0 else 1.0
+            if date and ratio > 0:
+                split_by_date[date] = split_by_date.get(date, 1.0) * ratio
+        except Exception:
+            continue
+
+    rows = {}
+    for i, ts in enumerate(timestamps):
+        try:
+            if i >= len(raw_series) or raw_series[i] is None:
+                continue
+            raw_close = float(raw_series[i]) * float(price_scale)
+            if raw_close <= 0:
+                continue
+            volume = _parse_volume(volumes[i] if i < len(volumes) else 1.0, default=1.0)
+            if volume <= 0:
+                continue
+            date = _safe_event_date(ts)
+            adj_close = None
+            if i < len(adj_series) and adj_series[i] is not None:
+                adj_close = float(adj_series[i]) * float(price_scale)
+            if adj_close is None or adj_close <= 0:
+                adj_close = raw_close
+            rows[date] = {
+                "raw_close": round(raw_close, 4),
+                "adj_close": round(adj_close, 4),
+                "dividend": round(float(dividend_by_date.get(date, 0.0)), 8),
+                "split_ratio": round(float(split_by_date.get(date, 1.0) or 1.0), 8),
+            }
+        except Exception:
+            continue
+
+    dates = sorted(rows.keys())[-n:]
+    if len(dates) < 2:
+        raise RuntimeError(f"Yahoo港股含权息有效交易日不足 {yf_symbol}: count={len(dates)}")
+    raw_closes = [rows[d]["raw_close"] for d in dates]
+    adj_closes = [rows[d]["adj_close"] for d in dates]
+    dividends = [rows[d]["dividend"] for d in dates]
+    split_ratios = [rows[d]["split_ratio"] for d in dates]
+    label = get_source_display_name("historical_hk3")
+    snap = MarketSnapshot(
+        "HK" + code,
+        label,
+        raw_closes,
+        price_scale,
+        dates[-1] if dates else None,
+        dates=dates,
+        strategy_source=label,
+        raw_closes=raw_closes,
+        adj_closes=adj_closes,
+        dividends=dividends,
+        split_ratios=split_ratios,
+    )
+    _write_cache(snap)
+    return snap
 
 
 def _fetch_yahoo_hk_snapshot(symbol_or_code: str, days: int, price_scale: float) -> MarketSnapshot:
@@ -681,12 +1144,47 @@ def get_history_snapshot_by_source(symbol: str, days: int = 400, price_scale: fl
             return _fetch_tencent_hk_snapshot(raw, days, price_scale)
         if key == "historical_hk2":
             return _fetch_yahoo_hk_snapshot(raw, days, price_scale)
+        if key == "historical_hk3":
+            try:
+                return _parse_yahoo_hk_dividend_snapshot(raw, days, price_scale)
+            except Exception as e:
+                logging.warning(f"Yahoo港股含权息失败 {raw}: {e}；回退腾讯港股日K")
+                snap = _fetch_tencent_hk_snapshot(raw, days, price_scale)
+                # Fallback succeeds: treat the resolved strategy source as the active source
+                # for today's strategy-history cache.  Do not carry the Yahoo 429 error into
+                # every status refresh; the warning is only logged once above.
+                snap.strategy_status = "OK"
+                snap.error = ""
+                snap.strategy_source = get_source_display_name('historical_hk1')
+                return snap
         raise ValueError(f"不支持的港股回测/策略数据源: {source or key}")
     key = normalize_system_source_value("A_BACKTEST_SOURCE", source or cfg.get("A_BACKTEST_SOURCE"))
     if key == "historical_a1":
         return _fetch_tencent_a_snapshot(raw, days, price_scale)
     if key == "historical_a2":
         return _fetch_sina_a_snapshot(raw, days, price_scale)
+    if key == "historical_a3":
+        first_error = None
+        try:
+            return _fetch_baostock_a_snapshot(raw, days, price_scale)
+        except Exception as e:
+            first_error = e
+            logging.warning(f"BaoStock A股含权息失败 {raw}: {e}；回退腾讯A股/ETF日K")
+        try:
+            snap = _fetch_tencent_a_snapshot(raw, days, price_scale)
+            # Fallback succeeds: use the resolved source as today's active strategy source.
+            snap.strategy_status = "OK"
+            snap.error = ""
+            snap.strategy_source = get_source_display_name('historical_a1')
+            return snap
+        except Exception as e2:
+            logging.warning(f"腾讯A股/ETF日K回退失败 {raw}: {e2}；继续回退新浪A股/ETF日K")
+            snap = _fetch_sina_a_snapshot(raw, days, price_scale)
+            # Fallback succeeds: use the resolved source as today's active strategy source.
+            snap.strategy_status = "OK"
+            snap.error = ""
+            snap.strategy_source = get_source_display_name('historical_a2')
+            return snap
     raise ValueError(f"不支持的A股/ETF回测/策略数据源: {source or key}")
 
 
@@ -719,18 +1217,36 @@ def _apply_realtime(snapshot: MarketSnapshot, symbol: str, price_scale: float) -
         dates=dates or snapshot.dates,
         strategy_source=snapshot.strategy_source,
         strategy_status=snapshot.strategy_status,
+        raw_closes=(list(snapshot.raw_closes[:-1]) + [round(live_price, 4)]) if snapshot.raw_closes and len(snapshot.raw_closes) == len(closes) else snapshot.raw_closes,
+        adj_closes=(list(snapshot.adj_closes[:-1]) + [round(live_price, 4)]) if snapshot.adj_closes and len(snapshot.adj_closes) == len(closes) else snapshot.adj_closes,
+        dividends=snapshot.dividends,
+        split_ratios=snapshot.split_ratios,
     )
     _write_cache(snap)
     return snap
 
 
 def get_market_snapshot(symbol: str, days: int = 400, price_scale: float = 1.0) -> MarketSnapshot:
+    """Return runtime strategy snapshot.
+
+    Historical strategy K data is fetched at most once per symbol/source/day and
+    cached before realtime overlay. Realtime price is still refreshed on every
+    call according to A_QUOTE_SOURCE / HK_MARKET_SOURCE.
+    """
     raw = str(symbol or "").upper().strip()
+    cfg = _load_system_config()
+    source_key = normalize_system_source_value(
+        "HK_BACKTEST_SOURCE" if _is_hk(raw) else "A_BACKTEST_SOURCE",
+        cfg.get("HK_BACKTEST_SOURCE" if _is_hk(raw) else "A_BACKTEST_SOURCE"),
+    )
     try:
-        snap = get_history_snapshot_by_source(raw, days, price_scale)
+        snap = _read_strategy_history_daily_cache(raw, source_key, days, price_scale)
+        if snap is None:
+            snap = get_history_snapshot_by_source(raw, days, price_scale, source_key)
+            _write_strategy_history_daily_cache(raw, source_key, days, price_scale, snap)
         return _apply_realtime(snap, raw, price_scale)
     except Exception as e:
-        return _read_cache(raw, days, price_scale, f"行情数据源失败: {e}")
+        return _read_cache(raw, days, price_scale, f"策略/历史数据源失败: {e}")
 
 
 def _realtime_source_functions_for_symbol(symbol: str):

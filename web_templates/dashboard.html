@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{{ app_name }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
+  <script>
+    (function(){
+      try{
+        var theme = localStorage.getItem('dcf_dashboard_theme') || 'dark';
+        document.documentElement.setAttribute('data-dcf-theme', theme);
+      }catch(e){
+        document.documentElement.setAttribute('data-dcf-theme', 'dark');
+      }
+    })();
+  </script>
   <style>
     .topbar h1{margin-bottom:6px;}
     .symbol-subtitle{margin:0;color:rgba(235,245,255,.68);font-size:14px;line-height:1.5;letter-spacing:.2px;}
@@ -435,7 +445,7 @@
     body:not(.theme-x3-dark) .logout-btn,body:not(.theme-x3-dark) .artifact-btn{background:rgba(255,255,255,.72) !important;color:#334155 !important;border-color:rgba(15,23,42,.10) !important;}
     body:not(.theme-x3-dark) .page-nav{background:rgba(255,255,255,.72) !important;border-color:rgba(15,23,42,.08) !important;box-shadow:0 10px 24px rgba(15,23,42,.06), inset 0 1px 0 rgba(255,255,255,.72) !important;}
     body:not(.theme-x3-dark) .page-nav-link{color:#475569 !important;background:rgba(255,255,255,.44);border-color:rgba(15,23,42,.06);}
-    body:not(.theme-x3-dark) .page-nav-link.active,body:not(.theme-x3-dark) .page-nav-link:hover{color:#fff !important;background:linear-gradient(135deg,#047857,#059669) !important;border-color:rgba(5,150,105,.28) !important;box-shadow:0 10px 20px rgba(5,150,105,.16) !important;}
+    body:not(.theme-x3-dark) .page-nav-link.active,body:not(.theme-x3-dark) .page-nav-link:hover{color:#3f2f12 !important;background:linear-gradient(135deg,#f7e7bd,#d6aa52) !important;border-color:rgba(176,132,40,.34) !important;box-shadow:0 10px 20px rgba(176,132,40,.15), inset 0 1px 0 rgba(255,255,255,.52) !important;}
     body:not(.theme-x3-dark) .card,body:not(.theme-x3-dark) .page-card,body:not(.theme-x3-dark) .symbols-current-card{background:rgba(255,255,255,.82) !important;border-color:rgba(15,23,42,.08) !important;box-shadow:0 12px 28px rgba(15,23,42,.07), inset 0 1px 0 rgba(255,255,255,.85) !important;color:#1f2937;}
     body:not(.theme-x3-dark) .section-header{border-color:rgba(15,23,42,.08) !important;}
     body:not(.theme-x3-dark) .section-header h2,body:not(.theme-x3-dark) .section-header h3,body:not(.theme-x3-dark) .subsection-title{color:#1f2937 !important;}
@@ -454,7 +464,7 @@
     .backtest-run-actions .backtest-run-help-btn{grid-column:3;justify-self:end;margin-left:auto;}
     .raw-head{display:flex !important;align-items:center !important;justify-content:space-between !important;gap:12px;}
     .help-btn.large,.help-btn.return-help-style,.backtest-run-help-btn{width:34px !important;height:34px !important;min-width:34px !important;min-height:34px !important;padding:0 !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;border-radius:50% !important;font-weight:800 !important;font-size:16px !important;line-height:1 !important;}
-    body:not(.theme-x3-dark) .help-btn.large,body:not(.theme-x3-dark) .help-btn.return-help-style,body:not(.theme-x3-dark) .backtest-run-help-btn{background:rgba(255,255,255,.78) !important;color:#047857 !important;border:1px solid rgba(5,150,105,.28) !important;box-shadow:0 8px 18px rgba(15,23,42,.07), inset 0 1px 0 rgba(255,255,255,.78) !important;}
+    body:not(.theme-x3-dark) .help-btn.large,body:not(.theme-x3-dark) .help-btn.return-help-style,body:not(.theme-x3-dark) .backtest-run-help-btn{background:rgba(255,252,244,.82) !important;color:#7a5418 !important;border:1px solid rgba(176,132,40,.30) !important;box-shadow:0 8px 18px rgba(15,23,42,.07), inset 0 1px 0 rgba(255,255,255,.80) !important;}
     body.theme-x3-dark .help-btn.large,body.theme-x3-dark .help-btn.return-help-style,body.theme-x3-dark .backtest-run-help-btn{background:linear-gradient(135deg, rgba(15,118,110,.42), rgba(30,41,59,.44)) !important;color:rgba(236,254,255,.96) !important;border:1px solid rgba(45,212,191,.34) !important;box-shadow:0 10px 22px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.12) !important;}
     /* 回测页展开/收起说明面板：亮色主题也沿用暗色主题面板质感 */
     body:not(.theme-x3-dark) .return-help-panel,
@@ -516,24 +526,24 @@
     body.theme-x3-light .symbols-current-card .selected-symbol-select,
     body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-select{
       background:
-        linear-gradient(135deg, rgba(4,120,87,.15), rgba(20,184,166,.09)),
-        rgba(255,255,255,.96) !important;
-      border:2px solid rgba(4,120,87,.64) !important;
-      color:#064e3b !important;
+        linear-gradient(135deg, rgba(232,202,128,.34), rgba(255,248,226,.46)),
+        rgba(255,253,247,.98) !important;
+      border:2px solid rgba(184,139,51,.62) !important;
+      color:#5f4317 !important;
       font-weight:800 !important;
       box-shadow:
-        0 0 0 4px rgba(5,150,105,.10),
-        0 12px 24px rgba(5,150,105,.12),
-        inset 0 1px 0 rgba(255,255,255,.95) !important;
+        0 0 0 4px rgba(184,139,51,.10),
+        0 12px 24px rgba(142,102,27,.12),
+        inset 0 1px 0 rgba(255,255,255,.96) !important;
     }
     body.theme-x3-light .symbols-current-card .selected-symbol-select:focus,
     body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-select:focus{
       outline:none !important;
-      border-color:rgba(4,120,87,.84) !important;
+      border-color:rgba(161,113,30,.82) !important;
       box-shadow:
-        0 0 0 5px rgba(5,150,105,.16),
-        0 14px 28px rgba(5,150,105,.16),
-        inset 0 1px 0 rgba(255,255,255,.95) !important;
+        0 0 0 5px rgba(184,139,51,.15),
+        0 14px 28px rgba(142,102,27,.15),
+        inset 0 1px 0 rgba(255,255,255,.96) !important;
     }
     body.theme-x3-light .symbols-current-card .selected-symbol-pending,
     body:not(.theme-x3-dark) .symbols-current-card .selected-symbol-pending{
@@ -550,10 +560,10 @@
     }
     body.theme-x3-light .symbol-switcher-row .secondary-btn,
     body:not(.theme-x3-dark) .symbol-switcher-row .secondary-btn{
-      background:linear-gradient(135deg,#047857,#059669) !important;
-      color:#fff !important;
-      border-color:rgba(5,150,105,.38) !important;
-      box-shadow:0 12px 24px rgba(5,150,105,.16), inset 0 1px 0 rgba(255,255,255,.22) !important;
+      background:linear-gradient(135deg,#f1d493,#c99637) !important;
+      color:#3f2f12 !important;
+      border-color:rgba(176,132,40,.42) !important;
+      box-shadow:0 12px 24px rgba(176,132,40,.16), inset 0 1px 0 rgba(255,255,255,.30) !important;
       font-weight:800 !important;
     }
 
@@ -799,8 +809,8 @@
     }
     body.theme-x3-light .source-chip,
     body:not(.theme-x3-dark) .source-chip{
-      background:rgba(5,150,105,.12) !important;
-      color:#047857 !important;
+      background:rgba(184,139,51,.13) !important;
+      color:#7a5418 !important;
     }
     body.theme-x3-light .rollback-note,
     body:not(.theme-x3-dark) .rollback-note{
@@ -978,12 +988,70 @@
       margin-top:10px !important;
     }
 
+
+    /* === Champagne nav interaction fix: prevent green flash in light theme === */
+    body.theme-x3-light .page-nav-link,
+    body:not(.theme-x3-dark) .page-nav-link{
+      -webkit-tap-highlight-color:rgba(214,185,122,.24) !important;
+    }
+    body.theme-x3-light .page-nav-link:hover,
+    body:not(.theme-x3-dark) .page-nav-link:hover,
+    body.theme-x3-light .page-nav-link:focus,
+    body:not(.theme-x3-dark) .page-nav-link:focus,
+    body.theme-x3-light .page-nav-link:focus-visible,
+    body:not(.theme-x3-dark) .page-nav-link:focus-visible,
+    body.theme-x3-light .page-nav-link:active,
+    body:not(.theme-x3-dark) .page-nav-link:active,
+    body.theme-x3-light .page-nav-link.active,
+    body:not(.theme-x3-dark) .page-nav-link.active{
+      background:linear-gradient(135deg, rgba(250,239,210,.98), rgba(218,188,123,.82)) !important;
+      background-color:#ead39c !important;
+      border-color:rgba(174,139,67,.56) !important;
+      color:#4a3a1e !important;
+      box-shadow:0 10px 20px rgba(120,92,38,.14), 0 0 0 1px rgba(255,255,255,.40), inset 0 1px 0 rgba(255,255,255,.72) !important;
+      outline:none !important;
+      filter:none !important;
+    }
+
 .reference-card-button { width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:0; cursor:pointer; font:inherit; }
 .reference-price-card { display:block; }
+
+
+    /* === No green flash while light theme is restored before JS swaps body class === */
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link,
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link:link,
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link:visited{
+      -webkit-tap-highlight-color:rgba(214,185,122,.18) !important;
+      caret-color:#b38a3a !important;
+    }
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link:hover,
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link:focus,
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link:focus-visible,
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link:active,
+    html[data-dcf-theme="light"] body.theme-x3-dark .page-nav-link.active{
+      background:linear-gradient(135deg, rgba(250,239,210,.98), rgba(218,188,123,.82)) !important;
+      background-color:#ead39c !important;
+      border-color:rgba(174,139,67,.56) !important;
+      color:#4a3a1e !important;
+      box-shadow:0 10px 20px rgba(120,92,38,.14), 0 0 0 1px rgba(255,255,255,.40), inset 0 1px 0 rgba(255,255,255,.72) !important;
+      outline:none !important;
+      filter:none !important;
+    }
+
 </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='light_skin.css') }}">
 </head>
 <body class="dash-body theme-x3-dark" data-selected="{{ selected }}">
+<script>
+  (function(){
+    try{
+      var theme = localStorage.getItem('dcf_dashboard_theme') || 'dark';
+      document.body.classList.toggle('theme-x3-dark', theme !== 'light');
+      document.body.classList.toggle('theme-x3-light', theme === 'light');
+      document.documentElement.setAttribute('data-dcf-theme', theme);
+    }catch(e){}
+  })();
+</script>
   <header class="topbar">
     <div class="topbar-brand">
       <img class="topbar-logo" src="{{ url_for('static', filename='login.png') }}" alt="">
@@ -1784,6 +1852,7 @@ function applyTheme(theme){
   const dark = theme !== 'light';
   document.body.classList.toggle('theme-x3-dark', dark);
   document.body.classList.toggle('theme-x3-light', !dark);
+  document.documentElement.setAttribute('data-dcf-theme', dark ? 'dark' : 'light');
   const toggle = document.getElementById('theme-toggle');
   if(toggle){ toggle.checked = dark; }
 }

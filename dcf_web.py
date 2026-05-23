@@ -31,6 +31,7 @@ from flask import (
 )
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import yaml as pyyaml
 from werkzeug.security import check_password_hash
 
@@ -697,8 +698,74 @@ def normalize_strategy_run_value(value: Any, default: str = "on") -> str:
     if s in {"on", "off"}:
         return s
     return default
+TIME_FIELD_DEFAULTS: Dict[str, str] = {
+    "session_start": "09:25",
+    "session_end": "16:00",
+    "daily_push_time": "08:00",
+    "log_rotate_time": "08:00",
+}
+
+def normalize_hhmm_value(value: Any, default: str = "09:30") -> str:
+    """Return a canonical HH:MM string for YAML time fields.
+
+    Web saves these fields as quoted strings so the daemon reads them as
+    normal text rather than YAML 1.1 sexagesimal numbers.
+    """
+    try:
+        text = str(value if value is not None else "").strip().strip("'").strip('\"')
+        h, m = text.split(":", 1)
+        h_i, m_i = int(h), int(m)
+        if 0 <= h_i <= 23 and 0 <= m_i <= 59:
+            return f"{h_i:02d}:{m_i:02d}"
+    except Exception:
+        pass
+    return default
+
+def normalize_strategy_config(strategy: Dict[str, Any]) -> bool:
+    changed = False
+    if not isinstance(strategy, dict):
+        return changed
+    int_defaults = {
+        "loop_interval": 60,
+        "fetch_history_days": 400,
+        "ma_period_short": 150,
+        "ma_period_long": 300,
+    }
+    for key, default in int_defaults.items():
+        old = strategy.get(key, default)
+        try:
+            new = int(float(old))
+        except Exception:
+            new = default
+        if key == "loop_interval":
+            new = max(1, new)
+        elif key == "fetch_history_days":
+            new = max(2, new)
+        elif key == "ma_period_short":
+            new = max(5, new)
+        elif key == "ma_period_long":
+            new = max(int(strategy.get("ma_period_short", 150) or 150), new)
+        if old != new:
+            strategy[key] = new
+            changed = True
+    for key, default in TIME_FIELD_DEFAULTS.items():
+        old = strategy.get(key, default)
+        new = DoubleQuotedScalarString(normalize_hhmm_value(old, default))
+        if str(old) != str(new) or not isinstance(old, DoubleQuotedScalarString):
+            strategy[key] = new
+            changed = True
+    tz_old = strategy.get("timezone", "Asia/Shanghai")
+    tz_new = str(tz_old or "Asia/Shanghai").strip() or "Asia/Shanghai"
+    if tz_old != tz_new:
+        strategy["timezone"] = tz_new
+        changed = True
+    return changed
+
 def normalize_config(data: Dict[str, Any]) -> bool:
     changed = False
+    strategy_section = data.setdefault("STRATEGY", {})
+    if isinstance(strategy_section, dict) and normalize_strategy_config(strategy_section):
+        changed = True
     common = data.get("COMMON_BACKTEST_CONFIG")
     if isinstance(common, dict):
         # 移除废弃字段（MA300相关及旧字段）
@@ -1156,24 +1223,121 @@ def delete_symbol_state(selected: str, symbol_code: str = "") -> None:
     if not isinstance(state, dict):
         return
     changed = False
-    if selected in state:
-        state.pop(selected, None)
-        changed = True
     code = (symbol_code or "").strip().upper()
-    if code and code in state:
-        state.pop(code, None)
+    keys_to_remove = set()
+    for key, val in list(state.items()):
+        if key == selected or (code and str(key).strip().upper() == code):
+            keys_to_remove.add(key)
+            continue
+        if isinstance(val, dict):
+            val_symbol = str(val.get("symbol", "")).strip().upper()
+            val_name = str(val.get("name", "")).strip()
+            if val_name == selected or (code and val_symbol == code):
+                keys_to_remove.add(key)
+    for key in keys_to_remove:
+        state.pop(key, None)
         changed = True
-    if code:
-        to_remove = []
-        for key, val in state.items():
-            if isinstance(val, dict) and str(val.get("symbol", "")).strip().upper() == code:
-                to_remove.append(key)
-        for key in to_remove:
-            state.pop(key, None)
-            changed = True
+
+    meta = state.get("_meta")
+    if isinstance(meta, dict):
+        for key in list(meta.keys()):
+            value = meta.get(key)
+            remove_key = False
+            if isinstance(value, str):
+                remove_key = value == selected or (code and value.strip().upper() == code)
+            elif isinstance(value, list):
+                remove_key = selected in value or (code and code in [str(x).strip().upper() for x in value])
+            elif isinstance(value, dict):
+                val_symbol = str(value.get("symbol", "")).strip().upper()
+                val_name = str(value.get("name", "")).strip()
+                remove_key = val_name == selected or (code and val_symbol == code)
+            if remove_key:
+                meta.pop(key, None)
+                changed = True
+
     if changed:
         write_state(state)
 
+
+def _symbol_record_matches_name_code(record: Any, selected: str, symbol_code: str = "") -> bool:
+    if not isinstance(record, dict):
+        return False
+    code = (symbol_code or "").strip().upper()
+    names = {selected, str(record.get("name", "") or "").strip(), str(record.get("selected", "") or "").strip()}
+    symbols = {str(record.get("symbol", "") or "").strip().upper(), str(record.get("symbol_code", "") or "").strip().upper()}
+    return bool(selected and selected in names) or bool(code and code in symbols)
+
+
+def cleanup_deleted_symbol_snapshots(selected: str, symbol_code: str = "") -> int:
+    """Remove deleted symbol records from JSONL snapshot files."""
+    removed = 0
+    if not SNAPSHOT_DIR.exists():
+        return removed
+    for path in SNAPSHOT_DIR.glob("*.jsonl"):
+        kept: List[str] = []
+        changed = False
+        try:
+            for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    kept.append(raw)
+                    continue
+                if _symbol_record_matches_name_code(obj, selected, symbol_code):
+                    removed += 1
+                    changed = True
+                else:
+                    kept.append(json.dumps(obj, ensure_ascii=False))
+            if changed:
+                if kept:
+                    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                else:
+                    path.unlink(missing_ok=True)
+        except Exception:
+            continue
+    return removed
+
+
+def cleanup_deleted_symbol_state_backups(selected: str, symbol_code: str = "") -> int:
+    """Delete rollback backup files/index entries for a removed symbol."""
+    if not STATE_BACKUP_INDEX.exists():
+        return 0
+    try:
+        items = json.loads(STATE_BACKUP_INDEX.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(items, list):
+        return 0
+    kept = []
+    removed = 0
+    base = STATE_BACKUP_DIR.resolve()
+    for item in items:
+        if _symbol_record_matches_name_code(item, selected, symbol_code):
+            removed += 1
+            try:
+                path = Path(str(item.get("path", ""))).resolve()
+                if str(path).startswith(str(base)) and path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+        else:
+            kept.append(item)
+    if removed:
+        try:
+            STATE_BACKUP_INDEX.write_text(json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    return removed
+
+
+def cleanup_deleted_symbol_runtime_files(selected: str, symbol_code: str = "") -> Dict[str, int]:
+    return {
+        "snapshots": cleanup_deleted_symbol_snapshots(selected, symbol_code),
+        "state_backups": cleanup_deleted_symbol_state_backups(selected, symbol_code),
+    }
 
 
 def request_runtime_system_config_reload() -> None:
@@ -2134,8 +2298,8 @@ def save_strategy_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
     strategy["ma_period_short"] = max(5, int(strategy.get("ma_period_short", 150) or 150))
     strategy["ma_period_long"] = max(strategy["ma_period_short"], int(strategy.get("ma_period_long", 300) or 300))
     for tkey in ("session_start", "session_end", "daily_push_time", "log_rotate_time"):
-        h, m = _parse_hm_web(strategy.get(tkey, STRATEGY_DEFAULTS.get(tkey, "09:30")))
-        strategy[tkey] = f"{h:02d}:{m:02d}"
+        default_time = TIME_FIELD_DEFAULTS.get(tkey, STRATEGY_DEFAULTS.get(tkey, "09:30"))
+        strategy[tkey] = DoubleQuotedScalarString(normalize_hhmm_value(strategy.get(tkey, default_time), default_time))
     strategy["timezone"] = str(strategy.get("timezone", "Asia/Shanghai") or "Asia/Shanghai").strip()
     config["STRATEGY"] = strategy
     write_yaml(config)
@@ -2205,7 +2369,7 @@ def _find_push_detail_for_log(compact: str, detail_records: List[Dict[str, Any]]
             if body:
                 return body
     if "bytes=" in compact or "成功" in compact or "失败" in compact:
-        return compact + "\n\n该条日志没有匹配到推送正文详情；修复后非快照推送会在这里显示完整正文。"
+        return compact + "\n\n每日快照推送！"
     return compact
 
 
@@ -2218,13 +2382,16 @@ def build_push_log_entries(lines: List[str]) -> List[Dict[str, Any]]:
         is_snapshot = ("每日快照" in compact) or ("快照推送" in compact)
         first_line = compact.splitlines()[0] if compact else ""
         summary = first_line[:120] + ("…" if len(first_line) > 120 else "")
-        detail = _find_push_detail_for_log(compact, detail_records) if compact and not is_snapshot else compact
+        if compact and is_snapshot:
+            detail = "每日快照推送！"
+        else:
+            detail = _find_push_detail_for_log(compact, detail_records) if compact else ""
         entries.append({
             "id": f"push-log-{idx}",
             "summary": summary or compact[:120],
             "detail": detail,
             "is_snapshot": is_snapshot,
-            "can_view": bool(compact) and not is_snapshot,
+            "can_view": bool(compact),
         })
     return entries
 
@@ -2262,11 +2429,10 @@ def current_time_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def _parse_hm_web(value: Any, default_h: int = 9, default_m: int = 30) -> Tuple[int, int]:
-    try:
-        h, m = str(value or "").strip().strip("'").strip('"').split(":", 1)
-        return int(h), int(m)
-    except Exception:
-        return default_h, default_m
+    default = f"{default_h:02d}:{default_m:02d}"
+    text = normalize_hhmm_value(value, default)
+    h, m = text.split(":", 1)
+    return int(h), int(m)
 
 
 def _strategy_timezone_name_from_config(config: Dict[str, Any]) -> str:
@@ -2934,7 +3100,12 @@ def _handle_symbol_actions(config: Dict[str, Any], selected: str):
                 del symbol_cfg[selected]
                 write_yaml(config)
                 delete_symbol_state(selected, symbol_code)
-                flash(f"已删除标的：{selected}", "success")
+                cleanup_stats = cleanup_deleted_symbol_runtime_files(selected, symbol_code)
+                request_runtime_config_reload("COMMON_BACKTEST_CONFIG", {})
+                flash(
+                    f"已删除标的：{selected}，并清理运行状态、回滚点 {cleanup_stats.get('state_backups', 0)} 条、快照记录 {cleanup_stats.get('snapshots', 0)} 条。",
+                    "success",
+                )
                 return redirect(url_for("symbols_page", symbol_key="COMMON_BACKTEST_CONFIG"))
             flash("未找到要删除的标的。", "error")
     return None

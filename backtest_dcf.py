@@ -362,21 +362,36 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
             snap = get_history_snapshot_by_source(symbol, days=days, price_scale=1.0, source=source)
             closes = list(snap.closes or [])[-days:]
             dates = list(snap.dates or [])[-len(closes):]
+            raw_closes = list(getattr(snap, "raw_closes", None) or [])[-len(closes):]
+            adj_closes = list(getattr(snap, "adj_closes", None) or [])[-len(closes):]
+            dividends = list(getattr(snap, "dividends", None) or [])[-len(closes):]
+            split_ratios = list(getattr(snap, "split_ratios", None) or [])[-len(closes):]
             if len(closes) < 10:
                 raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(closes)} 条")
             if not dates or len(dates) != len(closes):
                 # Fallback: synthesize dates only if the source did not expose date list.
                 end_dt = datetime.now()
                 dates = [(end_dt - timedelta(days=len(closes)-1-i)).strftime("%Y-%m-%d") for i in range(len(closes))]
+            if len(raw_closes) != len(closes):
+                raw_closes = closes
+            if len(adj_closes) != len(closes):
+                adj_closes = closes
+            if len(dividends) != len(closes):
+                dividends = [0.0] * len(closes)
+            if len(split_ratios) != len(closes):
+                split_ratios = [1.0] * len(closes)
             out = pd.DataFrame({
                 "date": dates,
-                "raw_close": closes,
-                "adj_close": closes,
-                "dividend": [0.0] * len(closes),
-                "split_ratio": [1.0] * len(closes),
+                "raw_close": raw_closes,
+                "adj_close": adj_closes,
+                "dividend": dividends,
+                "split_ratio": split_ratios,
             })
             out["raw_close"] = pd.to_numeric(out["raw_close"], errors="coerce")
             out["adj_close"] = pd.to_numeric(out["adj_close"], errors="coerce")
+            out["dividend"] = pd.to_numeric(out["dividend"], errors="coerce").fillna(0.0)
+            out["split_ratio"] = pd.to_numeric(out["split_ratio"], errors="coerce").fillna(1.0)
+            out["split_ratio"] = out["split_ratio"].apply(lambda x: x if x and x > 0 else 1.0)
             out = out.dropna(subset=["raw_close", "adj_close"]).copy()
             out = out[(out["raw_close"] > 0) & (out["adj_close"] > 0)].tail(days).reset_index(drop=True)
             if len(out) < 10:

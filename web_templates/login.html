@@ -214,6 +214,18 @@
       color: rgba(203,213,225,0.48);
     }
 
+    .input input:-webkit-autofill,
+    .input input:-webkit-autofill:hover,
+    .input input:-webkit-autofill:focus,
+    .input input:-webkit-autofill:active {
+      -webkit-text-fill-color: var(--text) !important;
+      caret-color: var(--text);
+      box-shadow: 0 0 0 1000px rgba(8,16,29,0.58) inset !important;
+      -webkit-box-shadow: 0 0 0 1000px rgba(8,16,29,0.58) inset !important;
+      border-radius: var(--radius-lg);
+      transition: background-color 9999s ease-in-out 0s;
+    }
+
     button {
       width: 100%;
       min-height: 56px;
