@@ -262,13 +262,19 @@
         width:calc(100% - 12px) !important;
       }
       .symbol-switcher-row{
-        align-items:stretch;
+        align-items:center;
+        gap:8px;
       }
       .symbol-switcher-row .grow{
         min-width:100%;
       }
       .symbol-switcher-row .action-btn{
-        flex:1 1 0;
+        flex:0 0 auto;
+        width:auto !important;
+        min-width:70px;
+        min-height:40px;
+        padding:9px 14px;
+        border-radius:12px;
       }
     }
     @media (max-width: 360px){
@@ -823,12 +829,13 @@
       color:#9a3412 !important;
     }
     @media (max-width:640px){
-      .status-action-row{width:100%;display:grid !important;grid-template-columns:1fr 1fr;gap:8px;}
-      .status-action-row form,.status-action-row .action-btn{width:100%;}
+      .status-action-row{width:auto;display:flex !important;grid-template-columns:none !important;gap:8px;align-items:center;justify-content:flex-end;}
+      .status-action-row form,.status-action-row .action-btn{width:auto;}
+      .status-action-row .action-btn{min-height:40px;min-width:70px;padding:9px 14px;border-radius:12px;font-size:14px;line-height:20px;}
       .status-control-row form{width:100%;display:grid !important;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;}
       .status-control-row .field-block{min-width:0;}
       .status-control-row .action-btn{min-width:70px;padding-left:12px;padding-right:12px;}
-      .section-header.between{align-items:flex-start;gap:10px;}
+      .section-header.between{align-items:center;gap:10px;flex-direction:row;}
       .snapshot-toolbar{width:100%;align-items:stretch;}
       .snapshot-date-form{flex:1 1 100%;display:grid;grid-template-columns:auto minmax(0,1fr);}
       .panel-toggle{justify-content:flex-end;}
@@ -1038,6 +1045,19 @@
       filter:none !important;
     }
 
+
+
+    /* === mobile-only requested button sizing/placement fixes === */
+    @media (max-width:640px){
+      .symbols-current-card .symbol-switcher-row{align-items:center !important;gap:8px !important;}
+      .symbols-current-card .symbol-switcher-row .grow{flex:1 1 100% !important;min-width:100% !important;}
+      .symbols-current-card .symbol-switcher-row .action-btn{flex:0 0 auto !important;width:auto !important;min-width:70px !important;min-height:40px !important;padding:9px 14px !important;border-radius:12px !important;font-size:14px !important;line-height:20px !important;}
+      .section-header.between{display:flex !important;align-items:center !important;justify-content:space-between !important;flex-direction:row !important;gap:10px !important;}
+      .section-header.between h2{margin:0 !important;min-width:0 !important;}
+      .status-action-row{width:auto !important;display:flex !important;grid-template-columns:none !important;align-items:center !important;justify-content:flex-end !important;gap:8px !important;flex:0 0 auto !important;}
+      .status-action-row form{width:auto !important;margin:0 !important;}
+      .status-action-row .action-btn{width:auto !important;min-width:70px !important;min-height:40px !important;padding:9px 14px !important;border-radius:12px !important;font-size:14px !important;line-height:20px !important;}
+    }
 </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='light_skin.css') }}">
 </head>
