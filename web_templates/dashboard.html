@@ -1117,13 +1117,12 @@
           <input type="hidden" name="action" id="symbol-form-action" value="set_symbol">
           <div class="field-block grow symbol-select-field">
             <label for="symbol-key-select">选择标的</label>
-            <select name="symbol_key" id="symbol-key-select" class="selected-symbol-select" data-selected="{{ selected }}" onchange="markSymbolSelectionChanged(this)">
+            <select name="symbol_key" id="symbol-key-select" class="selected-symbol-select" data-selected="{{ selected }}" onchange="submitSymbolSelection(this)">
               {% for card in symbol_cards %}
               <option value="{{ card.key }}" {% if card.active %}selected{% endif %}>{{ card.label }}{% if card.symbol %} ({{ card.symbol }}){% endif %}</option>
               {% endfor %}
             </select>
           </div>
-          <button type="submit" class="secondary-btn action-btn">选定</button>
           {% if selected != 'COMMON_BACKTEST_CONFIG' %}
             <button type="button" class="danger-btn action-btn" onclick="openSymbolDeleteDialog('{{ selected_label|e }}','{{ selected_symbol_code|e }}')">删除</button>
           {% else %}
@@ -1176,7 +1175,6 @@
                 {% endfor %}
               </select>
             </div>
-            <button type="submit" class="secondary-btn action-btn">查看</button>
           </form>
         </div>
         <div class="status-box"><pre>{{ status_text }}</pre></div>
@@ -1843,6 +1841,13 @@ function markSymbolSelectionChanged(el){
   }else{
     el.classList.add('selected-symbol-pending');
   }
+}
+function submitSymbolSelection(el){
+  if(!el || !el.form){ return; }
+  markSymbolSelectionChanged(el);
+  const action = document.getElementById('symbol-form-action');
+  if(action){ action.value = 'set_symbol'; }
+  el.form.submit();
 }
 function openSymbolDeleteDialog(label, code){
   const modal = document.getElementById('symbol-delete-modal');
