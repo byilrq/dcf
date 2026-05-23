@@ -424,7 +424,9 @@ STATUS_AUTO_REFRESH_STYLE = """
 form[action$="/refresh-status"] button,
 form[action$="/refresh-status"] input[type="submit"],
 form[action$="/refresh-source-metrics"] button,
-form[action$="/refresh-source-metrics"] input[type="submit"] {
+form[action$="/refresh-source-metrics"] input[type="submit"],
+form[action$="/clear-market-state"] button,
+form[action$="/clear-market-state"] input[type="submit"] {
   min-height: 40px !important;
   padding: 9px 14px !important;
   border-radius: 12px !important;
