@@ -509,31 +509,24 @@ STATUS_AUTO_REFRESH_SCRIPT = """
   if (window.__dcfStatusAutoRefreshInstalled) return;
   window.__dcfStatusAutoRefreshInstalled = true;
 
-  function normalizeStatusUrl(symbolKey) {
-    var url = new URL(window.location.href);
-    url.pathname = "/status";
-    if (symbolKey) url.searchParams.set("symbol_key", symbolKey);
-    return url.toString();
-  }
-
   function enhanceSymbolSelectors() {
     document.querySelectorAll('select[name="symbol_key"]').forEach(function (sel) {
       if (sel.dataset.dcfAutoBound === "1") return;
       sel.dataset.dcfAutoBound = "1";
       sel.addEventListener("change", function () {
-        var val = (sel.value || "").trim();
-        if (val) window.location.href = normalizeStatusUrl(val);
+        if (!(window.location.pathname === "/status" || window.location.pathname === "/")) return;
+        if (sel.form && sel.name === "symbol_key") {
+          sel.form.submit();
+        }
       });
     });
-    // 状态页选中标的后直接展示，不再需要“查看”按钮。保留其它页面按钮。
+
+    // 状态页下拉框自动提交，不显示额外“查看”按钮。
     if (window.location.pathname === "/status" || window.location.pathname === "/") {
-      document.querySelectorAll('button, input[type="submit"], a').forEach(function (el) {
+      document.querySelectorAll('form[action$="/status"] button, form[action$="/status"] input[type="submit"]').forEach(function (el) {
         var text = (el.innerText || el.value || "").trim();
-        if (text === "查看") {
-          var form = el.closest && el.closest('form');
-          if (form && form.querySelector('select[name="symbol_key"]')) {
-            el.style.display = "none";
-          }
+        if (text === "查看" && el.closest && el.closest('form') && el.closest('form').querySelector('select[name="symbol_key"]')) {
+          el.style.display = "none";
         }
       });
     }
