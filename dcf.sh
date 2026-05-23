@@ -380,7 +380,6 @@ update_project_files() {
 
     # 代码/模板文件：更新时覆盖，但会自动备份旧版本
     copy_project_file_overwrite "$srcdir/dcf.py" "$DCF_DIR/dcf.py"
-    copy_project_file_overwrite "$srcdir/market_data.py" "$DCF_DIR/market_data.py"
     copy_project_file_overwrite "$srcdir/strategy.py" "$DCF_DIR/strategy.py"
     copy_project_file_overwrite "$srcdir/dcf_web.py" "$DCF_DIR/dcf_web.py"
     copy_project_file_overwrite "$srcdir/backtest_dcf.py" "$DCF_DIR/backtest_dcf.py"
@@ -406,7 +405,7 @@ self_check_project_files() {
     ensure_dcf_dir
     local ok=1
     echo "=============== DCF 项目文件检查 ==============="
-    for f in dcf.py market_data.py strategy.py dcf_web.py backtest_dcf.py dcf.yaml; do
+    for f in dcf.py strategy.py dcf_web.py backtest_dcf.py dcf.yaml; do
         if [ -f "$DCF_DIR/$f" ]; then
             echo "✅ $f"
         else
@@ -516,20 +515,28 @@ update_rely() {
             return 1
         fi
     else
-        echo "   未检测到 requirements.txt，安装默认依赖（requests / pyyaml / json5 / pandas / yfinance / scipy / flask / gunicorn / ruamel.yaml / werkzeug）"
-        if ! $VPY -m pip install -U requests pyyaml json5 pandas yfinance scipy flask gunicorn ruamel.yaml werkzeug; then
+        echo "   未检测到 requirements.txt，安装默认依赖（requests / pyyaml / json5 / pandas / yfinance / scipy / flask / gunicorn / ruamel.yaml / werkzeug / baostock）"
+        if ! $VPY -m pip install -U requests pyyaml json5 pandas yfinance scipy flask gunicorn ruamel.yaml werkzeug baostock; then
             echo "❌ 依赖安装失败。"
             deactivate || true
             return 1
         fi
     fi
 
+    # ---------- BaoStock：A股含权息回测源依赖 ----------
+    echo "   安装/更新 BaoStock（A股含权息回测源）..."
+    if ! $VPY -m pip install -U baostock; then
+        echo "❌ BaoStock 安装失败。"
+        deactivate || true
+        return 1
+    fi
+
     # ---------- 自检：import 测试 ----------
-    echo "   进行依赖自检（import requests/yaml/json5/pandas/yfinance/scipy/flask/ruamel）..."
+    echo "   进行依赖自检（import requests/yaml/json5/pandas/yfinance/scipy/flask/ruamel/baostock）..."
     if ! $VPY - <<'PY'
 import sys
 ok = True
-checks = [("requests","requests"),("yaml","yaml"),("json5","json5"),("pandas","pandas"),("yfinance","yfinance"),("scipy","scipy"),("flask","flask"),("ruamel","ruamel.yaml")]
+checks = [("requests","requests"),("yaml","yaml"),("json5","json5"),("pandas","pandas"),("yfinance","yfinance"),("scipy","scipy"),("flask","flask"),("ruamel","ruamel.yaml"),("baostock","baostock")]
 for label, mod in checks:
     try:
         __import__(mod)
@@ -547,7 +554,7 @@ PY
 
     echo "已安装的关键包版本："
     "$VPY" - <<'PY'
-import yaml, json5, requests, pandas, yfinance, scipy, flask, ruamel.yaml
+import yaml, json5, requests, pandas, yfinance, scipy, flask, ruamel.yaml, baostock
 print("requests:", requests.__version__)
 print("pyyaml:  ", yaml.__version__)
 print("json5:   ", json5.__version__)
@@ -556,6 +563,7 @@ print("yfinance:", yfinance.__version__)
 print("scipy:   ", scipy.__version__)
 print("flask:   ", flask.__version__)
 print("ruamel:  ", ruamel.yaml.__version__)
+print("baostock:", getattr(baostock, "__version__", "unknown"))
 PY
 
     echo "================================="
