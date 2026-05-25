@@ -598,6 +598,8 @@
     .push-action-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:18px;}
     .push-test-inline{display:inline-flex;margin:0;}
     .push-log-card{margin-top:18px;}
+    .push-log-actions{display:inline-flex;align-items:center;gap:10px;flex-wrap:nowrap;}
+    .push-log-actions form{margin:0;display:inline-flex;}
     .push-log-list{display:grid;gap:8px;margin-top:12px;min-width:0;max-width:100%;}
     .push-log-item{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(148,163,184,.14);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;box-sizing:border-box;min-width:0;max-width:100%;overflow:hidden;}
     .push-log-summary-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;max-width:100%;}
@@ -610,6 +612,8 @@
     body:not(.theme-x3-dark) .push-log-detail{background:rgba(15,23,42,.045);border-color:rgba(15,23,42,.08);color:#334155;}
     .strategy-settings-card{margin-top:18px;}
     .push-log-empty{margin-top:12px;color:rgba(203,213,225,.70);}
+    .backtest-initial-note{margin:7px 0 0;font-size:12.5px;line-height:1.45;color:rgba(203,213,225,.68);}
+    body:not(.theme-x3-dark) .backtest-initial-note{color:#64748b;}
     .panel-toggle{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;white-space:nowrap;}
     .panel-toggle input{position:absolute;opacity:0;pointer-events:none;}
     .panel-toggle-text{font-size:13px;font-weight:800;color:rgba(226,236,248,.82);}
@@ -1439,11 +1443,8 @@
             </div>
             <div class="field-block">
               <label>初始仓位</label>
-              <input type="text" name="bt_base_units" value="{{ bt_base_default }}">
-            </div>
-            <div class="field-block">
-              <label>目标仓位</label>
-              <input type="text" name="bt_target_units" value="{{ bt_target_default }}">
+              <input type="text" name="bt_initial_units" value="{{ bt_initial_default }}">
+              <p class="backtest-initial-note">仅用于回测第一交易日的临时 current_units，默认 5%；不覆盖策略中的长期底仓、补仓初始仓位或加仓倍数。</p>
             </div>
           </div>
           <div class="inline-actions backtest-run-actions">
@@ -1680,7 +1681,7 @@
             <h2>推送日志</h2>
             <p class="section-note">显示 {{ push_log_path }} 最新 30 条。</p>
           </div>
-          <div class="section-actions">
+          <div class="section-actions push-log-actions">
             <form method="post" action="{{ url_for('push_page') }}" onsubmit="return confirm('确认清空所有推送日志记录？');">
               <input type="hidden" name="action" value="clear_push_log">
               <button type="submit" class="push-log-clear-btn">清除</button>

@@ -72,6 +72,19 @@ def get_backtest_source_for_symbol(symbol: str) -> str:
     return market_normalize_system_source_value("A_BACKTEST_SOURCE", value) if market_normalize_system_source_value else str(value or "historical_a1").strip()
 
 
+def get_backtest_source_display_name(source: str) -> str:
+    labels = {
+        "historical_a1": "腾讯A股/ETF日K",
+        "historical_a2": "新浪A股/ETF日K",
+        "historical_a3": "BaoStock含权息",
+        "historical_hk1": "腾讯港股日K",
+        "historical_hk2": "Yahoo港股日K",
+        "yfinance": "Yahoo Finance",
+    }
+    key = str(source or "").strip() or "yfinance"
+    return f"{labels.get(key, key)}（{key}）"
+
+
 # ===========================
 # 符号映射
 # ===========================
@@ -162,8 +175,8 @@ def get_target_units(cfg):
     return parse_position_value(cfg.get("target_units", 0))
 
 
-def get_double_target(cfg):
-    return get_target_units(cfg) * _safe_float(cfg.get("double_target_factor", 2.0), 2.0)
+def get_limit_units(cfg):
+    return get_target_units(cfg) * _safe_float(cfg.get("limit_target", cfg.get("double_target_factor", 2.0)), 2.0)
 
 
 def get_trend_multiple(cfg):
@@ -245,7 +258,7 @@ def write_config_section_to_report(rf, cfg: dict):
     rf.write("\n================ 标的配置参数 ================\n")
     preferred_keys = [
         "symbol", "price_scale", "strategy_run",
-        "base_units", "target_units", "double_target_factor", "current_units", "current_avg_cost",
+        "base_units", "target_units", "limit_target", "current_units", "current_avg_cost",
         "k150", "sideways_window_30", "sideways_window_60", "sideways_weight_60", "sideways_min_k150",
         "trend_multiple", "sell_multiple",
         "add_box_step", "add_box_units_percent",
@@ -288,17 +301,12 @@ def get_market_weight(units, avg_cost, price, mode):
 # MA计算 & 横盘评分
 # ===========================
 def calc_ma_with_coef(closes, length, min_coef=None, reference_ma=None):
+    # 严格均线口径：必须至少有完整 length 根K线才计算。
+    # 不再使用 length//2 半窗口估算，避免回测起始 MA150 贴近复权价。
     if len(closes) >= length:
         ma_value = sum(closes[-length:]) / length
-        return ma_value, 'p' if len(closes) < length * 2 else 'f'
-    elif len(closes) >= max(5, length // 2):
-        ma_value = sum(closes) / len(closes)
-        return ma_value, 'p'
-    elif min_coef is not None and reference_ma is not None:
-        ma_value = reference_ma * min_coef
-        return ma_value, 'c'
-    else:
-        return None, 'insufficient_data'
+        return ma_value, 'f'
+    return None, 'insufficient_data'
 
 
 def _compute_ma_series(closes, period):
@@ -396,6 +404,8 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
             out = out[(out["raw_close"] > 0) & (out["adj_close"] > 0)].tail(days).reset_index(drop=True)
             if len(out) < 10:
                 raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(out)} 条")
+            out.attrs["source_key"] = source
+            out.attrs["source_display"] = get_backtest_source_display_name(source)
             logging.info(f"回测数据源: {symbol} -> {source}, count={len(out)}")
             return out
         except Exception as e:
@@ -444,13 +454,15 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
     out = out.tail(days).reset_index(drop=True)
     if len(out) < 10:
         raise RuntimeError(f"历史数据太少：{symbol} 仅 {len(out)} 条")
+    out.attrs["source_key"] = "yfinance"
+    out.attrs["source_display"] = get_backtest_source_display_name("yfinance")
     logging.info(f"回测数据源: {symbol} -> yfinance, count={len(out)}")
     return out
 
 # ===========================
 # 回测主逻辑
 # ===========================
-def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdir: Path):
+def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdir: Path, initial_units_override: str | None = None):
     cfg = dict(cfg or {})
     # Historical backtests must not inherit the live monitor's manual pyramid switch.
     # Live monitoring may keep pyramid_add_enabled=yes, but every backtest starts from auto.
@@ -472,35 +484,56 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     fh.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(fh)
 
-    df = fetch_market_data(symbol, days)
+    ma_short_len = int(strategy.get("ma_period_short", 150))
+    # 为严格 MA150 提供预热数据：多取 ma_short_len 根K线，仅用于指标计算，不参与交易/收益统计。
+    requested_days = int(days)
+    raw_df = fetch_market_data(symbol, requested_days + ma_short_len)
+    source_key = str(raw_df.attrs.get("source_key", get_backtest_source_for_symbol(symbol)) or "")
+    source_display = str(raw_df.attrs.get("source_display", get_backtest_source_display_name(source_key)) or "")
+    if len(raw_df) > requested_days:
+        warmup_count = min(ma_short_len, len(raw_df) - requested_days)
+        df = raw_df.tail(requested_days).reset_index(drop=True)
+    else:
+        warmup_count = 0
+        df = raw_df.reset_index(drop=True)
+    full_dates = raw_df["date"].tolist()
+    full_raw_all = raw_df["raw_close"].tolist()
+    full_adj_all = raw_df["adj_close"].tolist()
+    full_div_all = raw_df["dividend"].tolist()
+    full_split_all = raw_df["split_ratio"].tolist()
+    formal_start_idx = max(0, len(raw_df) - len(df))
+
     dates = df["date"].tolist()
     raw_all = df["raw_close"].tolist()
     adj_all = df["adj_close"].tolist()
     div_all = df["dividend"].tolist()
     split_all = df["split_ratio"].tolist()
 
-    ma_short_len = int(strategy.get("ma_period_short", 150))
-
     position_mode = get_position_mode(cfg)
     target_units = get_target_units(cfg)
     base_units = get_base_units(cfg)
-    double_target = get_double_target(cfg)
+    limit_units = get_limit_units(cfg)
 
     fee_rate = _safe_float(cfg.get("fee_rate", 0.0), 0.0)
     slippage_bp = _safe_float(cfg.get("slippage_bp", 0.0), 0.0)
     initial_cash = _safe_float(cfg.get("initial_cash", 0.0), 0.0)
     lot_size = int(_safe_float(cfg.get("lot_size", 100), 100))
 
+    # 回测页面里的“初始仓位”是临时回测参数，只代表回测窗口第一交易日的 current_units。
+    # 它不覆盖策略中的 base_units / target_units / limit_target。
+    initial_units_raw = initial_units_override if initial_units_override not in (None, "") else "5%"
+    initial_units = normalize_position_amount(parse_position_value(initial_units_raw), position_mode, lot_size)
+
     if position_mode == "percent":
-        cash = initial_cash if 0.0 < initial_cash <= 1.0 else max(1.0 - base_units, 0.0)
+        cash = initial_cash if 0.0 < initial_cash <= 1.0 else max(1.0 - initial_units, 0.0)
     else:
         cash = initial_cash
 
-    units = normalize_position_amount(base_units, position_mode, lot_size)
+    units = initial_units
 
     # Backtest cost basis is independent from live monitoring cost.
     # current_avg_cost is reserved for live monitoring only and must not pollute historical backtests.
-    # For historical backtests, the initial base position is costed at the first raw price in the backtest window.
+    # For historical backtests, the initial temporary position is costed at the first raw price in the backtest window.
     initial_avg_cost = raw_all[0]
 
     avg_cost = initial_avg_cost if units > POSITION_EPSILON else 0.0
@@ -683,7 +716,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
 
     # “首次建仓”用于表示本次回测区间内初始持仓的建仓基准点，
     # 不是第一次由策略触发的加仓日期。
-    # 如果回测起点已有 base_units/current_units 等初始仓位，则首次建仓日应为
+    # 如果回测起点已有回测临时初始仓位，则首次建仓日应为
     # 当前回测数据的第一天：当回测天数短于上市历史时是回测窗口首日；
     # 当回测天数超过上市历史时自然就是上市首日。
     # 如果回测起点没有初始仓位，则仍由第一笔 BUY/SELL 交易回填。
@@ -699,8 +732,9 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     logger.info("=" * 80)
     logger.info(f"Backtest start: {symbol} ({name})")
     logger.info(
-        f"mode={position_mode} | Bars={len(df)} | base={format_units_for_display(base_units, position_mode)} | "
-        f"target={format_units_for_display(target_units, position_mode)} | upper={format_units_for_display(double_target, position_mode)} | "
+        f"mode={position_mode} | Bars={len(df)} | initial={format_units_for_display(initial_units, position_mode)} | "
+        f"base={format_units_for_display(base_units, position_mode)} | "
+        f"target={format_units_for_display(target_units, position_mode)} | upper={format_units_for_display(limit_units, position_mode)} | "
         f"trend_multiple={get_trend_multiple(cfg):.2f} | sell_multiple={get_sell_multiple(cfg):.2f}"
     )
     if position_mode == "absolute":
@@ -763,12 +797,15 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                 f"cash {serialize_numeric(cash_before)} -> {serialize_numeric(cash)}"
             )
 
-        closes_adj = adj_all[: i + 1]
+        full_i = formal_start_idx + i
+        closes_adj = full_adj_all[: full_i + 1]
 
         ma150_raw, _src150 = calc_ma_with_coef(closes_adj, ma_short_len)
         if ma150_raw is None:
-            ma150 = adj_price
-            zone = 'BOX_ZONE'
+            ma150 = None
+            zone = 'DATA_INSUFFICIENT'
+            sideways_score = 0.0
+            dynamic_k150 = 1.0
         else:
             sideways_score = float(compute_sideways_index(closes_adj, cfg))
             base_k150 = _safe_float(cfg.get("k150", 1.0), 1.0)
@@ -793,12 +830,12 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
 
         # In historical backtests, BOX_ZONE must not initiate add trades while pyramid is still auto.
         # This guard also protects the backtest if an older strategy.py still contains legacy BOX_ZONE_ADD logic.
-        if zone == "BOX_ZONE" and get_pyramid_add_enabled(cfg) != "yes":
+        if zone == "DATA_INSUFFICIENT" or (zone == "BOX_ZONE" and get_pyramid_add_enabled(cfg) != "yes"):
             add_qty, add_reason = 0.0, ""
             new_state, cfg_updates, events = state_dict.copy(), {}, []
         else:
             add_qty, add_reason, new_state, cfg_updates, events = get_add_trade_decision(
-                state_dict, cfg, target_units, double_target, raw_price, ma150, zone, position_mode, lot_size
+                state_dict, cfg, target_units, limit_units, raw_price, ma150, zone, position_mode, lot_size
             )
         for k, v in cfg_updates.items():
             cfg[k] = v
@@ -819,15 +856,15 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         sell_qty = 0.0
         if zone == "TREND_ZONE":
             sell_qty, new_state = get_trend_sell_decision(
-                state_dict, cfg, target_units, position_mode, raw_price, ma150, lot_size
+                state_dict, cfg, base_units, position_mode, raw_price, ma150, lot_size
             )
             if sell_qty > 0:
                 _exec_sell(dt, raw_price, sell_qty, zone, "TREND_ZONE_SELL",
                            raw_price, adj_price, ma150, dividend, split_ratio)
                 last_trade_price = new_state.get("last_trade_price", last_trade_price)
-        elif zone == "SELL_ZONE":
+        elif zone == "CLEAR_ZONE":
             pyramid_weights = cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])
-            sell_plan = calculate_pyramid_sell_plan(target_units, pyramid_weights, position_mode, lot_size)
+            sell_plan = calculate_pyramid_sell_plan(base_units, pyramid_weights, position_mode, lot_size)
             total_steps = len(sell_plan)
             target_step = get_pyramid_sell_target_step(raw_price, ma150, cfg, total_steps)
             if target_step > clear_step:
@@ -836,7 +873,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                     if step_units <= POSITION_EPSILON:
                         clear_step = step_info["step"]
                         continue
-                    _exec_sell(dt, raw_price, step_units, zone, f"SELL_ZONE_PYRAMID_STEP_{step_info['step']}",
+                    _exec_sell(dt, raw_price, step_units, zone, f"CLEAR_ZONE_PYRAMID_STEP_{step_info['step']}",
                                raw_price, adj_price, ma150, dividend, split_ratio)
                     clear_step = step_info["step"]
                     if units <= POSITION_EPSILON:
@@ -1016,6 +1053,17 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "name": name,
         "position_mode": position_mode,
         "bars": len(df),
+        "requested_days": requested_days,
+        "warmup_bars": warmup_count,
+        "ma_warmup_required": ma_short_len,
+        "data_source": source_display,
+        "data_source_key": source_key,
+        "data_start": dates[0] if dates else "",
+        "data_end": dates[-1] if dates else "",
+        "data_range_summary": f"{dates[0]}~{dates[-1]}｜{len(df)}/{requested_days}根" if dates else "",
+        "data_note": (f"已取满{requested_days}根。MA预热{warmup_count}/{ma_short_len}。" if len(df) >= requested_days else f"请求{requested_days}，实际{len(df)}；MA预热{warmup_count}/{ma_short_len}。"),
+        "initial_units": initial_units,
+        "initial_units_raw": str(initial_units_raw),
         "backtest_pyramid_add_start": "auto",
         "live_pyramid_add_enabled": live_pyramid_add_enabled,
         "runtime_pyramid_add_final": get_pyramid_add_enabled(cfg),
@@ -1073,6 +1121,9 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         rf.write(f"标的: {summary['symbol']} | 名称: {summary['name']}\n")
         rf.write(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}\n")
         rf.write(f"K线数量: {summary['bars']}\n")
+        rf.write(f"数据源: {summary.get('data_source', '')}\n")
+        rf.write(f"数据区间: {summary.get('data_range_summary', '')}\n")
+        rf.write(f"数据说明: {summary.get('data_note', '')}\n")
         rf.write(f"回测倒金字塔起始开关: {summary['backtest_pyramid_add_start']}\n")
         if summary.get('live_pyramid_add_enabled') != summary.get('backtest_pyramid_add_start'):
             rf.write(f"实盘倒金字塔开关: {summary['live_pyramid_add_enabled']}（回测起步已忽略）\n")
@@ -1181,9 +1232,10 @@ def main():
     ap.add_argument("--symbol", required=True, help="SH600519 / SZ000001 / HK00700")
     ap.add_argument("--days", type=int, default=800, help="history length")
     ap.add_argument("--outdir", default="backtest_out", help="output directory")
-    ap.add_argument("--base-units", default=None, help="覆盖配置中的初始仓位，如 2.5%")
-    ap.add_argument("--target-units", default=None, help="覆盖配置中的目标仓位，如 5%")
-    ap.add_argument("--double-target-factor", type=float, default=None, help="覆盖最大仓位倍数")
+    ap.add_argument("--initial-units", default=None, help="回测临时初始仓位，只作为第一交易日 current_units，默认 5%")
+    ap.add_argument("--base-units", default=None, help="覆盖策略配置中的长期底仓 base_units（兼容旧用法，不建议从 Web 回测页使用）")
+    ap.add_argument("--target-units", default=None, help="覆盖策略配置中的补仓初始仓位 target_units（兼容旧用法，不建议从 Web 回测页使用）")
+    ap.add_argument("--limit-target", type=float, default=None, help="覆盖仓位上限倍数")
     args = ap.parse_args()
 
     base_dir = Path(__file__).resolve().parent
@@ -1204,17 +1256,15 @@ def main():
     cfg = dict(cfg)
     if args.base_units is not None:
         cfg["base_units"] = args.base_units.strip()
-        if args.target_units is None:
-            cfg["target_units"] = derive_target_from_base(cfg["base_units"])
 
     if args.target_units is not None:
         cfg["target_units"] = args.target_units.strip()
 
-    if args.double_target_factor is not None:
-        cfg["double_target_factor"] = args.double_target_factor
+    if args.limit_target is not None:
+        cfg["limit_target"] = args.limit_target
 
     outdir = base_dir / args.outdir / symbol
-    summary = backtest(symbol=symbol, name=name, cfg=cfg, strategy=strategy_cfg, days=args.days, outdir=outdir)
+    summary = backtest(symbol=symbol, name=name, cfg=cfg, strategy=strategy_cfg, days=args.days, outdir=outdir, initial_units_override=args.initial_units)
 
     print("\n================ 回测结果 ================\n")
     if used_common_cfg:
@@ -1222,6 +1272,10 @@ def main():
     print(f"标的: {summary['symbol']} | 名称: {summary['name']}")
     print(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}")
     print(f"K线数量: {summary['bars']}")
+    print(f"数据源: {summary.get('data_source', '')}")
+    print(f"数据区间: {summary.get('data_range_summary', '')}")
+    print(f"数据说明: {summary.get('data_note', '')}")
+    print(f"回测初始仓位: {format_units_for_display(summary['initial_units'], summary['position_mode'])}")
     print(f"期末持仓收益率: {summary['final_holding_return_rate'] * 100:.2f}%")
     print(f"综合收益率: {summary['stock_total_return'] * 100:.2f}%")
     print(f"买入次数: {summary['buy_trades']}")
@@ -1275,11 +1329,11 @@ def main():
     print(f"每日详情: {summary['daily_details_csv']}")
     print("\n说明：")
     print("1) 价格口径：信号和区间使用 Adj Close；成交、估值、持仓成本使用 Close；分红现金入账，拆股调整仓位和成本。")
-    print("2) 区间：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；SELL=价格≥MA150*sell_multiple。")
+    print("2) 区间：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；CLEAR=价格≥MA150*sell_multiple。")
     print("3) 倒金字塔加仓：历史回测每次从 pyramid_add_enabled=auto 起步，忽略 dcf.yaml 中实盘 yes；首次进入 CHANCE_ZONE 后才切到 yes。")
     print("4) 箱体区规则：回测起步在 BOX_ZONE 时不会因实盘 yes 直接补仓；只有已由 CHANCE_ZONE 激活的倒金字塔模式，才可在 CHANCE/BOX 中继续按步长加仓。")
-    print("5) 卖出规则：TREND_ZONE 只卖出高于目标仓位的机动仓；SELL_ZONE 按 clear_zone_step_percent 推进倒金字塔卖出步数。")
-    print("6) 回测成本：历史初始持仓成本使用回测窗口第一天 Close；current_avg_cost 仅用于实盘监控，不参与回测成本初始化。")
+    print("5) 卖出规则：TREND_ZONE 只卖出高于长期底仓 base_units 的机动仓；CLEAR_ZONE 按 clear_zone_step_percent 推进倒金字塔清底仓步数。")
+    print("6) 回测成本：回测页面的初始仓位只代表第一交易日 current_units，成本使用回测窗口第一天 Close；current_avg_cost 仅用于实盘监控。")
     print("7) 收益口径：期末持仓收益率=最新价格/摊薄后持仓成本-1；综合收益率按累计投入计算。")
     print("8) 百分比模式下 qty 表示仓位比例；交易日志保留上一次成交价和上一次加仓价。")
     print("=========================================\n")

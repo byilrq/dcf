@@ -6,7 +6,61 @@ from typing import Dict, Any, Tuple, List
 POSITION_EPSILON = 1e-9
 
 
+def validate_strategy_config(cfg: Dict[str, Any], name: str = 'strategy') -> None:
+    """校验单个标的参数，提前拦截 0、负数、权重异常、目标区间倒置等配置问题。"""
+    def positive(key: str, default: Any = None) -> float:
+        value = cfg.get(key, default)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f'{name}: {key} must be a number, got {value!r}')
+        if value <= 0:
+            raise ValueError(f'{name}: {key} must be > 0, got {value}')
+        return value
+
+    base_units = float(cfg.get('base_units', 0) or 0)
+    if base_units < 0:
+        raise ValueError(f'{name}: base_units must be >= 0, got {base_units}')
+    positive('target_units', 1.0)
+    limit_target = positive('limit_target', 2.0)
+    if limit_target < 1:
+        raise ValueError(f'{name}: limit_target must be >= 1, got {limit_target}')
+
+    trend_multiple = positive('trend_multiple', 1.2)
+    sell_multiple = positive('sell_multiple', 1.5)
+    if trend_multiple >= sell_multiple:
+        raise ValueError(f'{name}: trend_multiple must be < sell_multiple')
+
+    positive('trend_zone_step_percent', 0.01)
+    positive('trend_zone_sell_percent', 0.05)
+    positive('clear_zone_step_percent', 0.08)
+    positive('pyramid_add_step', cfg.get('add_box_step', 0.05))
+    positive('box_add_step', cfg.get('add_box_step', 0.05))
+    positive('add_box_units_percent', 0.1)
+
+    weights = cfg.get('pyramid_add_weights', cfg.get('pyramid_weights'))
+    if weights is not None:
+        if not isinstance(weights, list) or not weights:
+            raise ValueError(f'{name}: pyramid_add_weights must be a non-empty list')
+        weights = [float(w) for w in weights]
+        if any(w <= 0 for w in weights):
+            raise ValueError(f'{name}: pyramid_add_weights must all be > 0')
+        if abs(sum(weights) - 1.0) > 1e-6:
+            raise ValueError(f'{name}: pyramid_add_weights must sum to 1.0')
+        steps = int(cfg.get('pyramid_add_steps', cfg.get('pyramid_steps', len(weights))))
+        if steps <= 0 or steps > len(weights):
+            raise ValueError(f'{name}: pyramid_add_steps must be in [1, len(weights)]')
+
+
+def validate_all_strategy_configs(config: Dict[str, Any]) -> None:
+    """批量校验整份配置，建议在读取 YAML 后、正式运行策略前调用。"""
+    for name, cfg in config.items():
+        if isinstance(cfg, dict):
+            validate_strategy_config(cfg, name=str(name))
+
+
 def get_zone(price: float, ma150: float, cfg: Dict[str, Any]) -> str:
+    """根据价格与 MA150 的倍数关系，返回 CHANCE/BOX/TREND/CLEAR 四个区域之一。"""
     if ma150 is None or ma150 <= 0:
         return 'BOX_ZONE'
     trend_multiple = float(cfg.get('trend_multiple', 1.2))
@@ -17,10 +71,11 @@ def get_zone(price: float, ma150: float, cfg: Dict[str, Any]) -> str:
         return 'BOX_ZONE'
     if ma150 * trend_multiple <= price < ma150 * sell_multiple:
         return 'TREND_ZONE'
-    return 'SELL_ZONE'
+    return 'CLEAR_ZONE'
 
 
 def normalize_position_amount(value: float, mode: str, lot_size: int = 100) -> float:
+    """规范化仓位数量：percent 模式保留小数，非 percent 模式按整手 lot_size 处理。"""
     value = max(value, 0.0)
     if mode == 'percent':
         return round(value, 6)
@@ -33,6 +88,7 @@ def normalize_position_amount(value: float, mode: str, lot_size: int = 100) -> f
 
 
 def calculate_pyramid_sell_plan(target_units: float, pyramid_weights: List[float], mode: str, lot_size: int = 100) -> List[Dict[str, Any]]:
+    """按权重生成分档卖出计划，最后一档自动处理剩余数量。"""
     total = max(target_units, 0.0)
     if total <= POSITION_EPSILON:
         return []
@@ -49,6 +105,7 @@ def calculate_pyramid_sell_plan(target_units: float, pyramid_weights: List[float
 
 
 def get_pyramid_sell_target_step(price: float, ma150: float, cfg: Dict[str, Any], total_steps: int) -> int:
+    """价格进入 CLEAR_ZONE 后，按 clear_zone_step_percent 计算应卖到第几档。"""
     if ma150 is None or ma150 <= 0 or total_steps <= 0:
         return 0
     sell_multiple = float(cfg.get('sell_multiple', 1.5))
@@ -56,41 +113,53 @@ def get_pyramid_sell_target_step(price: float, ma150: float, cfg: Dict[str, Any]
     if current_multiple < sell_multiple:
         return 0
     step_pct = float(cfg.get('clear_zone_step_percent', 0.08))
+    if step_pct <= 0:
+        raise ValueError('clear_zone_step_percent must be > 0')
     step = int((current_multiple - sell_multiple) / step_pct) + 1
     return min(max(step, 0), total_steps)
 
 
-def get_trend_sell_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, mode: str, current_price: float, ma150: float, lot_size: int = 100) -> Tuple[float, Dict[str, Any]]:
+def get_trend_sell_decision(state: Dict[str, Any], cfg: Dict[str, Any], base_units: float, mode: str, current_price: float, ma150: float, lot_size: int = 100) -> Tuple[float, Dict[str, Any]]:
+    """趋势区阶梯卖出；只卖出高于 base_units 的机动仓，首次进入趋势区只记录锚点。"""
+    new_state = state.copy()
     last_trade_price = state.get('last_trade_price', 0.0)
     if last_trade_price <= 0:
-        last_trade_price = current_price
+        new_state['last_trade_price'] = current_price
+        return 0.0, new_state
+
     step_pct = float(cfg.get('trend_zone_step_percent', 0.01))
     sell_pct = float(cfg.get('trend_zone_sell_percent', 0.05))
-    step_price = last_trade_price * (step_pct if step_pct > 0 else 0.01)
+    if step_pct <= 0:
+        raise ValueError('trend_zone_step_percent must be > 0')
+    if sell_pct <= 0:
+        raise ValueError('trend_zone_sell_percent must be > 0')
+
     sell_qty = 0.0
-    new_state = state.copy()
-    if step_price > 0 and current_price - last_trade_price >= step_price - POSITION_EPSILON:
-        excess = max(state.get('current_units', 0.0) - target_units, 0.0)
+    if current_price - last_trade_price >= last_trade_price * step_pct - POSITION_EPSILON:
+        current_units = state.get('current_units', 0.0)
+        excess = max(current_units - base_units, 0.0)
         if excess > POSITION_EPSILON:
-            sell_qty = normalize_position_amount(min(excess, target_units * (sell_pct if sell_pct > 0 else 0.05)), mode, lot_size)
+            sell_qty = normalize_position_amount(min(excess, current_units * sell_pct), mode, lot_size)
             if sell_qty > POSITION_EPSILON:
                 new_state['last_trade_price'] = current_price
     return sell_qty, new_state
 
 
 def get_pyramid_add_enabled(cfg: Dict[str, Any]) -> str:
+    """读取倒金字塔加仓开关；只有 yes 返回 yes，其他值统一视为 auto。"""
     value = str(cfg.get('pyramid_add_enabled', 'auto')).strip().lower()
     return 'yes' if value == 'yes' else 'auto'
 
 
 def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], current_price: float, ma150: float, zone: str, target_units: float) -> Tuple[Dict[str, Any], Dict[str, Any], List[str], str]:
+    """维护倒金字塔运行状态：机会区 auto->yes，趋势/Clear区 yes->auto 并重置步数。"""
     new_state = state.copy()
     cfg_updates: Dict[str, Any] = {}
     events: List[str] = []
     config_mode = get_pyramid_add_enabled(cfg)
     effective_mode = config_mode
 
-    if config_mode == 'yes' and zone in {'TREND_ZONE', 'SELL_ZONE'}:
+    if config_mode == 'yes' and zone in {'TREND_ZONE', 'CLEAR_ZONE', 'SELL_ZONE'}:
         effective_mode = 'auto'
         cfg_updates['pyramid_add_enabled'] = 'auto'
         new_state['pyramid_active'] = False
@@ -117,8 +186,11 @@ def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], cur
     return new_state, cfg_updates, events, effective_mode
 
 
-def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, double_target: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any], str]:
+def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, limit_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any], str]:
+    """倒金字塔加仓决策：先补到目标仓，再按 last_add_price、步长和权重逐档加仓。"""
     pyramid_add_step = float(cfg.get('pyramid_add_step', cfg.get('add_box_step', 0.05)))
+    if pyramid_add_step <= 0:
+        raise ValueError('pyramid_add_step must be > 0')
     pyramid_weights = cfg.get('pyramid_add_weights', cfg.get('pyramid_weights', [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205])) or [1.0]
     total_steps = min(int(cfg.get('pyramid_add_steps', cfg.get('pyramid_steps', len(pyramid_weights)))), len(pyramid_weights))
     pyramid_step = int(state.get('pyramid_step', 0) or 0)
@@ -127,7 +199,7 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
     target_reached_once = bool(state.get('target_reached_once', False))
     new_state = state.copy()
 
-    if current_units >= double_target - POSITION_EPSILON:
+    if current_units >= limit_units - POSITION_EPSILON:
         return 0.0, new_state, ''
     if current_units < target_units - POSITION_EPSILON:
         add_qty = normalize_position_amount(target_units - current_units, mode, lot_size)
@@ -139,8 +211,9 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
         return 0.0, new_state, ''
     if target_reached_once and pyramid_step < total_steps and last_add_price > 0:
         if current_price <= last_add_price * (1 - pyramid_add_step) + POSITION_EPSILON:
-            add_qty = normalize_position_amount(target_units * pyramid_weights[pyramid_step], mode, lot_size)
-            max_allowed = normalize_position_amount(double_target - current_units, mode, lot_size)
+            pyramid_budget = max(limit_units - target_units, 0.0)
+            add_qty = normalize_position_amount(pyramid_budget * pyramid_weights[pyramid_step], mode, lot_size)
+            max_allowed = normalize_position_amount(limit_units - current_units, mode, lot_size)
             add_qty = normalize_position_amount(min(add_qty, max_allowed), mode, lot_size)
             if add_qty > POSITION_EPSILON:
                 new_state['pyramid_step'] = pyramid_step + 1
@@ -151,14 +224,20 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
 
 
 def get_box_fixed_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any]]:
+    """BOX 固定补仓；锚点改为 last_add_price 优先，避免历史高价导致连续触发。"""
     box_add_step = float(cfg.get('box_add_step', cfg.get('add_box_step', 0.05)))
     add_box_units_pct = float(cfg.get('add_box_units_percent', 0.1))
+    if box_add_step <= 0:
+        raise ValueError('box_add_step must be > 0')
+    if add_box_units_pct <= 0:
+        raise ValueError('add_box_units_percent must be > 0')
+
     last_add_price = state.get('last_add_price', 0.0) or 0.0
     last_trade_price = state.get('last_trade_price', 0.0) or 0.0
     initial_price = state.get('initial_entry_price', 0.0) or 0.0
     current_units = state.get('current_units', 0.0)
-    anchor_candidates = [p for p in (last_add_price, last_trade_price, initial_price, current_price) if p and p > 0]
-    anchor_price = max(anchor_candidates) if anchor_candidates else current_price
+    anchor_price = last_add_price or last_trade_price or initial_price or current_price
+
     if current_price > anchor_price * (1 - box_add_step) + POSITION_EPSILON:
         return 0.0, state.copy()
     max_add = normalize_position_amount(target_units - current_units, mode, lot_size)
@@ -172,13 +251,12 @@ def get_box_fixed_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], targe
     return add_qty, new_state
 
 
-def get_add_trade_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, double_target: float, current_price: float, ma150: float, zone: str, mode: str, lot_size: int = 100) -> Tuple[float, str, Dict[str, Any], Dict[str, Any], List[str]]:
+def get_add_trade_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, limit_units: float, current_price: float, ma150: float, zone: str, mode: str, lot_size: int = 100) -> Tuple[float, str, Dict[str, Any], Dict[str, Any], List[str]]:
+    """统一加仓入口；保留原逻辑：机会区启动后，BOX 区仍可延续倒金字塔加仓。"""
     new_state, cfg_updates, events, effective_mode = evaluate_pyramid_add_runtime(state, cfg, current_price, ma150, zone, target_units)
-    current_units = new_state.get('current_units', 0.0)
-    # BOX_ZONE 不再因低于目标仓位而回补；只有 CHANCE_ZONE 触发 auto 后，
-    # 才允许按倒金字塔逻辑补到目标仓位并继续加仓。
+    # BOX_ZONE 不主动从 auto 启动；但 CHANCE_ZONE 触发 auto->yes 后，BOX_ZONE 可继续按 last_add_price 延续加仓。
     if effective_mode == 'yes' and zone in {'CHANCE_ZONE', 'BOX_ZONE'}:
-        add_qty, py_state, reason = get_pyramid_add_decision(new_state, cfg, target_units, double_target, current_price, mode, lot_size)
+        add_qty, py_state, reason = get_pyramid_add_decision(new_state, cfg, target_units, limit_units, current_price, mode, lot_size)
         if add_qty > POSITION_EPSILON:
             merged = new_state.copy(); merged.update(py_state)
             return add_qty, reason, merged, cfg_updates, events

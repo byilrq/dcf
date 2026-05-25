@@ -162,8 +162,8 @@ def get_base_units(cfg):
 def get_target_units(cfg):
     return parse_position_value(cfg.get("target_units", 0))
 
-def get_double_target(cfg):
-    return get_target_units(cfg) * _safe_float(cfg.get("double_target_factor", 2.0), 2.0)
+def get_limit_units(cfg):
+    return get_target_units(cfg) * _safe_float(cfg.get("limit_target", cfg.get("double_target_factor", 2.0)), 2.0)
 
 def normalize_strategy_run_value(value, default="on"):
     """运行开关只允许 on/off；无效或缺失值按 default 处理，默认 on。"""
@@ -277,7 +277,7 @@ def normalize_symbol_state(name, cfg, entry):
     base_units = get_base_units(cfg)
     live_units = get_live_current_units(cfg)
     live_avg_cost = get_live_current_avg_cost(cfg)
-    double_target = get_double_target(cfg)
+    limit_units = get_limit_units(cfg)
     legacy_mode = entry.get("position_mode")
     reset_reason = None
     had_current_units = "current_units" in entry and entry.get("current_units") not in (None, "")
@@ -311,7 +311,7 @@ def normalize_symbol_state(name, cfg, entry):
     if mode == "percent":
         if current_units < -POSITION_EPSILON:
             reset_reason = "current_units 为负数"
-        elif current_units > max(1.0, double_target * 5):
+        elif current_units > max(1.0, limit_units * 5):
             reset_reason = "检测到旧版按股数状态，无法自动换算为百分比仓位"
     else:
         if current_units < 0:
@@ -1393,17 +1393,12 @@ def _mark_market_ok(dcf_state, snapshot):
 # 计算简单移动平均线 MA（带数据不足处理）
 # ===========================
 def calc_ma_with_coef(closes, length, min_coef=None, reference_ma=None):
+    # 严格均线口径：MA150 必须至少有 150 根K线才计算。
+    # 不再使用 length//2 的半窗口估算，避免短历史标的产生贴近现价的伪 MA。
     if len(closes) >= length:
         ma_value = sum(closes[-length:]) / length
-        return ma_value, 'p' if len(closes) < length * 2 else 'f'
-    elif len(closes) >= max(5, length // 2):
-        ma_value = sum(closes) / len(closes)
-        return ma_value, 'p'
-    elif min_coef is not None and reference_ma is not None:
-        ma_value = reference_ma * min_coef
-        return ma_value, 'c'
-    else:
-        return None, 'insufficient_data'
+        return ma_value, 'f'
+    return None, 'insufficient_data'
 
 # ===========================
 # 横盘指数
@@ -1664,23 +1659,24 @@ def refresh_source_metrics_for_symbol(name, cfg, state):
 # ===========================
 def build_status_message(name, symbol, now_str, zone, current_price, last_trade_price, last_trade_side,
                         current_units, current_avg_cost, ma150, ma150_source,
-                        target_units, double_target, sell_price, clear_price,
+                        base_units, target_units, limit_units, sell_price, clear_price,
                         position_mode="absolute", extra_info=""):
     if last_trade_side == "buy":
-        side_label = "（b）"
+        side_label = "（B）"
     elif last_trade_side == "sell":
-        side_label = "（s）"
+        side_label = "（S）"
     else:
-        side_label = "（买）"
+        side_label = "（B）"
     last_trade_price_msg = f"{last_trade_price:.3f}{side_label}" if last_trade_price is not None else "无"
     msg = (
         f"🟢[INFO]【{name}】 ({symbol})\n"
         f"🕒时间: {now_str}\n"
         f"🍭区间: {zone}\n"
         f"💲当前: {current_price:.3f},上次:{last_trade_price_msg}\n"
-        f"⚖️持仓: {format_units_for_display(current_units, position_mode)},成本: {current_avg_cost:.3f}, "
-        f"目标: {format_units_for_display(target_units, position_mode)}, 上限: {format_units_for_display(double_target, position_mode)}\n"
-        f"🔀MA150={ma150:.3f}({ma150_source}), sell={sell_price:.3f}, Clear={clear_price:.3f}"
+        f"⚖️持仓: {format_units_for_display(current_units, position_mode)}, 成本: {current_avg_cost:.3f}, "
+        f"底仓: {format_units_for_display(base_units, position_mode)}, "
+        f"补仓初始: {format_units_for_display(target_units, position_mode)}, 上限: {format_units_for_display(limit_units, position_mode)}\n"
+        f"🔀MA150={ma150:.3f}({ma150_source}), Trend={sell_price:.3f}, Clear={clear_price:.3f}"
     )
     if extra_info:
         msg += f"\n{extra_info}"
@@ -1688,9 +1684,12 @@ def build_status_message(name, symbol, now_str, zone, current_price, last_trade_
 
 def build_trade_message(name, symbol, now_str, zone, trade_action, trade_price, trade_qty,
                        last_trade_price, last_trade_side, position_after, avg_cost_after, ma150, ma150_source,
-                       target_units, double_target, sell_price, clear_price,
+                       base_units, target_units, limit_units, sell_price, clear_price,
                        position_mode="absolute", extra_info=""):
-    if last_trade_side == "buy":
+    action_text = str(trade_action or "")
+    if "卖" in action_text:
+        side_label = "（S）"
+    elif "买" in action_text:
         side_label = "（B）"
     elif last_trade_side == "sell":
         side_label = "（S）"
@@ -1705,8 +1704,9 @@ def build_trade_message(name, symbol, now_str, zone, trade_action, trade_price, 
         f"🗞交易: {trade_action} {trade_qty_display} @ {trade_price:.3f}\n"
         f"💲当前: {trade_price:.3f},上次: {last_trade_price_msg}\n"
         f"⚖️持仓: {format_units_for_display(position_after, position_mode)}, 成本: {avg_cost_after:.3f}, "
-        f"目标: {format_units_for_display(target_units, position_mode)}, 上限: {format_units_for_display(double_target, position_mode)}\n"
-        f"🔀MA150={ma150:.3f}({ma150_source}), sell={sell_price:.3f}, Clear={clear_price:.3f}"
+        f"底仓: {format_units_for_display(base_units, position_mode)}, "
+        f"补仓初始: {format_units_for_display(target_units, position_mode)}, 上限: {format_units_for_display(limit_units, position_mode)}\n"
+        f"🔀MA150={ma150:.3f}({ma150_source}), Trend={sell_price:.3f}, Clear={clear_price:.3f}"
     )
     if extra_info:
         msg += f"\n{extra_info}"
@@ -1714,11 +1714,11 @@ def build_trade_message(name, symbol, now_str, zone, trade_action, trade_price, 
 
 def build_stop_message(name, symbol, now_str, zone, current_price, last_trade_price, last_trade_side, ma150, ma150_source, sell_price, clear_price):
     if last_trade_side == "buy":
-        side_label = "（b）"
+        side_label = "（B）"
     elif last_trade_side == "sell":
-        side_label = "（s）"
+        side_label = "（S）"
     else:
-        side_label = "（买）"
+        side_label = "（B）"
     last_trade_price_msg = f"{last_trade_price:.3f}{side_label}" if last_trade_price is not None else f"{current_price:.3f}{side_label}"
     return (
         f"🎯[STOP]【{name}】 ({symbol})\n"
@@ -1726,7 +1726,7 @@ def build_stop_message(name, symbol, now_str, zone, current_price, last_trade_pr
         f"🍭区间: {zone}\n"
         f"🛑操作: 停止所有交易\n"
         f"💲当前: {current_price:.3f},上次: {last_trade_price_msg}\n"
-        f"🔀MA150={ma150:.3f}({ma150_source}), sell={sell_price:.3f}, Clear={clear_price:.3f}"
+        f"🔀MA150={ma150:.3f}({ma150_source}), Trend={sell_price:.3f}, Clear={clear_price:.3f}"
     )
 
 def log_trade(dcf_name, symbol, price, qty, side, reason, zone=None,
@@ -1784,7 +1784,7 @@ def log_trade(dcf_name, symbol, price, qty, side, reason, zone=None,
 # ===========================
 
 def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150, current_units,
-                          target_units, double_target, position_mode, add_reason, add_qty,
+                          base_units, target_units, limit_units, position_mode, add_reason, add_qty,
                           clear_step, last_trade_price):
     """Explain why a valid market frame did not trigger a BUY/SELL.
 
@@ -1809,7 +1809,7 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
     try:
         cu = normalize_position_amount(current_units, position_mode)
         target = normalize_position_amount(target_units, position_mode)
-        double = normalize_position_amount(double_target, position_mode)
+        limit = normalize_position_amount(limit_units, position_mode)
 
         if zone == "CHANCE_ZONE":
             mode = get_pyramid_add_enabled(cfg)
@@ -1820,10 +1820,10 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
                     f"当前价 {price_text(current_price)} < MA150 {price_text(ma150)}，开启后才按机会区规则加仓。"
                 )
 
-            if cu >= double - POSITION_EPSILON:
+            if cu >= limit - POSITION_EPSILON:
                 return (
                     "CHANCE_ZONE 未买入：当前持仓 "
-                    f"{units(cu)} 已达到加仓上限 {units(double)}，不再继续加仓。"
+                    f"{units(cu)} 已达到加仓上限 {units(limit)}，不再继续加仓。"
                 )
 
             if cu < target - POSITION_EPSILON:
@@ -1873,8 +1873,9 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
                 )
 
             weight = weights[step] if step < len(weights) else 0.0
-            planned = normalize_position_amount(target * weight, position_mode)
-            max_allowed = normalize_position_amount(double - cu, position_mode)
+            pyramid_budget = max(limit - target, 0.0)
+            planned = normalize_position_amount(pyramid_budget * weight, position_mode)
+            max_allowed = normalize_position_amount(limit - cu, position_mode)
             if planned <= POSITION_EPSILON or max_allowed <= POSITION_EPSILON:
                 return (
                     "CHANCE_ZONE 未买入：已到加仓价，但计划买入量不足，"
@@ -1920,11 +1921,12 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
             step_pct = get_trend_zone_step_percent(cfg)
             anchor = last_trade_price if last_trade_price and last_trade_price > 0 else current_price
             trigger = anchor * (1 + step_pct)
-            excess = max(cu - target, 0.0)
+            base = normalize_position_amount(base_units, position_mode)
+            excess = max(cu - base, 0.0)
             if excess <= POSITION_EPSILON:
                 return (
                     "TREND_ZONE 未卖出：当前持仓 "
-                    f"{units(cu)} 未超过目标 {units(target)}，没有可卖出的机动仓。"
+                    f"{units(cu)} 未超过长期底仓 {units(base)}，没有可卖出的机动仓。"
                 )
             if current_price < trigger - POSITION_EPSILON:
                 return (
@@ -1933,35 +1935,35 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
                     f"（锚定价 {price_text(anchor)}，步长 {pct(step_pct)}）。"
                 )
             sell_pct = get_trend_zone_sell_percent(cfg)
-            planned = normalize_position_amount(min(excess, target * sell_pct), position_mode)
+            planned = normalize_position_amount(min(excess, cu * sell_pct), position_mode)
             if planned <= POSITION_EPSILON:
-                return "TREND_ZONE 未卖出：已到卖出价，但可卖数量太小，无法形成有效卖出。"
+                return "TREND_ZONE 未卖出：已到卖出价，但机动仓可卖数量太小，无法形成有效卖出。"
             return "TREND_ZONE 未卖出：已接近卖出条件，但本轮策略卖出数量为 0。"
 
-        if zone == "SELL_ZONE":
+        if zone in {"CLEAR_ZONE", "SELL_ZONE"}:
             weights = get_clear_pyramid_weights(cfg)
-            plan = calculate_pyramid_sell_plan(target_units, weights, position_mode, 100)
+            plan = calculate_pyramid_sell_plan(base_units, weights, position_mode, 100)
             max_steps = get_clear_pyramid_steps(cfg)
             if max_steps > 0:
                 plan = plan[:max_steps]
             total_steps = len(plan)
             if total_steps <= 0:
-                return "SELL_ZONE 未卖出：离场卖出计划为空，请检查清仓步数或权重配置。"
+                return "CLEAR_ZONE 未卖出：Clear区清底仓计划为空，请检查清底仓步数或权重配置。"
             target_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
             done_step = int(clear_step or 0)
             if target_step <= done_step:
                 if target_step <= 0:
                     return (
-                        "SELL_ZONE 未卖出：尚未达到第 1 步离场价，"
+                        "CLEAR_ZONE 未卖出：尚未达到第 1 步Clear价，"
                         f"当前应卖第 {target_step}/{total_steps} 步，已卖 {done_step}/{total_steps} 步。"
                     )
                 return (
-                    "SELL_ZONE 未卖出：未进入新的离场卖出步，"
+                    "CLEAR_ZONE 未卖出：未进入新的Clear区清底仓步，"
                     f"当前应卖第 {target_step}/{total_steps} 步，已卖 {done_step}/{total_steps} 步。"
                 )
             if cu <= POSITION_EPSILON:
-                return "SELL_ZONE 未卖出：当前已无持仓。"
-            return "SELL_ZONE 未卖出：已进入新的离场区间，但本轮可卖数量为 0。"
+                return "CLEAR_ZONE 未卖出：当前已无持仓。"
+            return "CLEAR_ZONE 未卖出：已进入新的Clear区间，但本轮可卖数量为 0。"
 
         return f"{zone or 'UNKNOWN'} 未交易：当前区间没有匹配到买入或卖出规则。"
     except Exception as e:
@@ -1985,7 +1987,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     position_mode = get_position_mode(cfg)
     base_units = get_base_units(cfg)
     target_units = get_target_units(cfg)
-    double_target = get_double_target(cfg)
+    limit_units = get_limit_units(cfg)
     strategy_run = normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on")
     dcf_state = state.setdefault(name, build_default_symbol_state(cfg))
     dcf_state = normalize_symbol_state(name, cfg, dcf_state)
@@ -2278,16 +2280,16 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             if last_trade_price is not None and last_trade_price > 0 and step_pct > 0:
                 cur_step = max(0, int((current_price - last_trade_price) / (last_trade_price * step_pct)))
             lines.append(f"📈趋势卖出: 步长{_pct_text(step_pct)}，当前{cur_step}步，单次目标{_pct_text(sell_pct)}")
-        elif zone == "SELL_ZONE":
+        elif zone in {"CLEAR_ZONE", "SELL_ZONE"}:
             pyramid_weights_for_sell = get_clear_pyramid_weights(cfg)
-            sell_plan = calculate_pyramid_sell_plan(target_units, pyramid_weights_for_sell, position_mode, 100)
+            sell_plan = calculate_pyramid_sell_plan(base_units, pyramid_weights_for_sell, position_mode, 100)
             if total_clear_pyramid_steps > 0:
                 sell_plan = sell_plan[:total_clear_pyramid_steps]
             total_steps = len(sell_plan)
             cur_clear_step = int(dcf_state.get("clear_step", 0) or 0)
             target_clear_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
             clear_step_pct = _safe_float(cfg.get("clear_zone_step_percent", 0.08), 0.08)
-            lines.append(f"🧹离场倒金字塔: 已卖{cur_clear_step}/{total_steps}步，目标{target_clear_step}步，步长{_pct_text(clear_step_pct)}")
+            lines.append(f"🧹Clear区倒金字塔清底仓: 已卖{cur_clear_step}/{total_steps}步，目标{target_clear_step}步，步长{_pct_text(clear_step_pct)}")
 
         lines.append(dynamic_info)
         return "\n".join(lines)
@@ -2304,7 +2306,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         current_price=current_price, last_trade_price=last_trade_price, last_trade_side=last_trade_side,
         current_units=current_units, current_avg_cost=current_avg_cost,
         ma150=ma150, ma150_source=ma150_source,
-        target_units=target_units, double_target=double_target,
+        base_units=base_units, target_units=target_units, limit_units=limit_units,
         sell_price=sell_price, clear_price=clear_price,
         position_mode=position_mode, extra_info=extra_info_full
     )
@@ -2334,7 +2336,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             "zone": zone, "sell_price": sell_price, "clear_price": clear_price,
             "current_units_before": units_before_decision, "current_units_after": current_units,
             "avg_cost_before": avg_cost_before_decision, "avg_cost_after": current_avg_cost,
-            "target_units": target_units, "double_target": double_target,
+            "target_units": target_units, "limit_units": limit_units,
             "last_trade_price": last_trade_price, "last_trade_side": last_trade_side,
             "last_add_price": dcf_state.get("last_add_price"),
             "pyramid_step": dcf_state.get("pyramid_step"), "clear_step": dcf_state.get("clear_step"),
@@ -2369,7 +2371,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     add_qty = 0.0
     add_reason = ""
     add_qty, add_reason, add_state, cfg_updates, add_events = get_add_trade_decision(
-        state_dict, cfg, target_units, double_target, current_price, ma150, zone, position_mode, 100
+        state_dict, cfg, target_units, limit_units, current_price, ma150, zone, position_mode, 100
     )
     if cfg_updates.get("pyramid_add_enabled") in {"yes", "auto"} and cfg.get("pyramid_add_enabled") != cfg_updates.get("pyramid_add_enabled"):
         cfg["pyramid_add_enabled"] = cfg_updates["pyramid_add_enabled"]
@@ -2378,7 +2380,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         if _evt == "PYRAMID_AUTO_TRIGGERED":
             logging.info(f"[{now_str}] 倒金字塔加仓已激活（价格跌破MA150）")
         elif _evt == "PYRAMID_SWITCH_TO_AUTO":
-            logging.info(f"[{now_str}] 倒金字塔加仓已切回 auto 模式（进入趋势/离场区）")
+            logging.info(f"[{now_str}] 倒金字塔加仓已切回 auto 模式（进入趋势/Clear区）")
     if add_qty > 0:
         new_avg_cost = calculate_new_avg_cost(current_units, current_avg_cost, add_qty, current_price)
         after_units = normalize_position_amount(current_units + add_qty, position_mode)
@@ -2420,7 +2422,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             last_trade_price=last_trade_price, last_trade_side=last_trade_side,
             position_after=after_units, avg_cost_after=new_avg_cost,
             ma150=ma150, ma150_source=ma150_source,
-            target_units=target_units, double_target=double_target,
+            base_units=base_units, target_units=target_units, limit_units=limit_units,
             sell_price=sell_price, clear_price=clear_price,
             position_mode=position_mode, extra_info=extra_info
         )
@@ -2435,7 +2437,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     # ========== 卖出决策 ==========
     if zone == "TREND_ZONE":
         sell_qty, new_state = get_trend_sell_decision(
-            state_dict, cfg, target_units, position_mode, current_price, ma150, 100
+            state_dict, cfg, base_units, position_mode, current_price, ma150, 100
         )
         if sell_qty > 0:
             after_units = normalize_position_amount(current_units - sell_qty, position_mode)
@@ -2472,16 +2474,16 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 last_trade_price=last_trade_price, last_trade_side=last_trade_side,
                 position_after=after_units, avg_cost_after=current_avg_cost,
                 ma150=ma150, ma150_source=ma150_source,
-                target_units=target_units, double_target=double_target,
+                base_units=base_units, target_units=target_units, limit_units=limit_units,
                 sell_price=sell_price, clear_price=clear_price,
                 position_mode=position_mode, extra_info=extra_info
             )
             trade_msg = _apply_strategy_alert_to_message(trade_msg, strategy_level_for_msg, strategy_issue)
             logging.info(trade_msg)
             messages.append(trade_msg)
-    elif zone == "SELL_ZONE":
+    elif zone in {"CLEAR_ZONE", "SELL_ZONE"}:
         pyramid_weights = get_clear_pyramid_weights(cfg)
-        sell_plan = calculate_pyramid_sell_plan(target_units, pyramid_weights, position_mode, 100)
+        sell_plan = calculate_pyramid_sell_plan(base_units, pyramid_weights, position_mode, 100)
         clear_steps_cfg = get_clear_pyramid_steps(cfg)
         if clear_steps_cfg > 0:
             sell_plan = sell_plan[:clear_steps_cfg]
@@ -2496,7 +2498,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                     continue
                 after_units = normalize_position_amount(current_units - sell_units, position_mode)
                 record_trade_state_backup(name, symbol, dcf_state, cfg, {
-                    "side": "SELL", "reason": f"SELL_ZONE_PYRAMID_STEP_{step}", "zone": "SELL_ZONE",
+                    "side": "SELL", "reason": f"CLEAR_ZONE_PYRAMID_STEP_{step}", "zone": "CLEAR_ZONE",
                     "price": current_price, "qty": sell_units,
                     "pos_before": current_units, "pos_after": after_units,
                     "avg_cost_before": current_avg_cost, "avg_cost_after": current_avg_cost,
@@ -2508,7 +2510,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 })
                 log_trade(
                     dcf_name=name, symbol=symbol, price=current_price, qty=sell_units, side="SELL",
-                    reason=f"SELL_ZONE_PYRAMID_STEP_{step}", zone="SELL_ZONE",
+                    reason=f"CLEAR_ZONE_PYRAMID_STEP_{step}", zone="CLEAR_ZONE",
                     pos_before=current_units, pos_after=after_units,
                     avg_cost_before=current_avg_cost, avg_cost_after=current_avg_cost,
                     last_trade_price_before=last_trade_price, last_trade_price_after=current_price,
@@ -2524,14 +2526,14 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 clear_step = step
                 dcf_state["clear_step"] = clear_step
                 persist_runtime_position_to_config(name, current_units, current_avg_cost)
-                extra_info = f"🧹离场区倒金字塔卖出: 第{step}步 ({step_info['weight_percent']:.1f}%)\n{format_units_for_display(sell_units, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
+                extra_info = f"🧹Clear区倒金字塔清底仓: 第{step}步 ({step_info['weight_percent']:.1f}%)\n{format_units_for_display(sell_units, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
                 trade_msg = build_trade_message(
-                    name=name, symbol=symbol, now_str=now_str, zone="SELL_ZONE",
+                    name=name, symbol=symbol, now_str=now_str, zone="CLEAR_ZONE",
                     trade_action="卖出", trade_price=current_price, trade_qty=sell_units,
                     last_trade_price=last_trade_price, last_trade_side=last_trade_side,
                     position_after=after_units, avg_cost_after=current_avg_cost,
                     ma150=ma150, ma150_source=ma150_source,
-                    target_units=target_units, double_target=double_target,
+                    base_units=base_units, target_units=target_units, limit_units=limit_units,
                     sell_price=sell_price, clear_price=clear_price,
                     position_mode=position_mode, extra_info=extra_info
                 )
@@ -2549,7 +2551,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     else:
         reason = build_no_trade_reason(
             zone, cfg, dcf_state, state_dict, current_price, ma150, current_units,
-            target_units, double_target, position_mode, add_reason, add_qty,
+            base_units, target_units, limit_units, position_mode, add_reason, add_qty,
             clear_step, last_trade_price
         )
     reason = append_strategy_issue_to_reason(reason, strategy_issue, ma150_source)
@@ -2567,7 +2569,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "sell_price": sell_price, "clear_price": clear_price,
         "current_units_before": units_before_decision, "current_units_after": current_units,
         "avg_cost_before": avg_cost_before_decision, "avg_cost_after": current_avg_cost,
-        "target_units": target_units, "double_target": double_target,
+        "base_units": base_units, "target_units": target_units, "limit_units": limit_units,
         "last_trade_price": dcf_state.get("last_trade_price"),
         "last_trade_side": dcf_state.get("last_trade_side"),
         "last_add_price": dcf_state.get("last_add_price"),
