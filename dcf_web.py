@@ -97,7 +97,7 @@ PAGE_TITLES = {
 }
 
 PARAM_HELP: Dict[str, str] = {
-    "base_units": "长期持有的底仓。普通 BOX/TREND 区不主动卖穿它；只有进入 Clear 区才按清底仓计划逐步降低这部分底仓。",
+    "base_units": "长期持有的底仓。普通 BOX/TREND 区不主动卖穿它；只有进入 SELL/Clear 离场区才按清仓计划逐步降低这部分底仓。",
     "target_units": "补仓初始仓位。价格跌破 MA150 进入 CHANCE_ZONE 时，若当前持仓低于该值，会先一步补到该仓位；若已达到或超过则不补。该参数不参与 TREND 区卖出。",
     "limit_target": "加仓倍数。最大仓位 = 补仓初始仓位 × 加仓倍数；倒金字塔额外加仓预算 = 最大仓位 - 补仓初始仓位。",
     "current_units": "当前真实持仓。百分比模式可写 3%/0.03；后台会按该值作为下一轮策略判断的当前仓位。",
@@ -108,31 +108,31 @@ PARAM_HELP: Dict[str, str] = {
     "sideways_weight_60": "横盘评分中，MA60 所占权重。越大越偏向中期横盘判断。",
     "sideways_min_k150": "横盘评分很高时，动态 K150 最低可压到的值。数值越小，箱体上沿越容易下移。",
     "trend_multiple": "箱体区上沿倍数 = MA150 * trend_multiple，超过后进入趋势区。",
-    "sell_multiple": "Clear区触发倍数 = MA150 * sell_multiple，超过后进入 Clear 区并开始倒金字塔清底仓。",
+    "sell_multiple": "离场区触发倍数 = MA150 * sell_multiple，超过后开始倒金字塔卖出底仓。",
     "add_box_step": "旧版兼容字段。新页面会分别使用 box_add_step 和 pyramid_add_step。",
     "box_add_step": "箱体区固定加仓步长。保留给箱体区固定回补逻辑使用，和倒金字塔加仓步长互不覆盖。",
     "pyramid_add_step": "倒金字塔加仓步长。进入机会区并补到补仓初始仓位后，价格每相对 last_add_price 下跌该比例，触发下一步加仓。",
     "add_box_units_percent": "旧版箱体区固定加仓比例，最新策略不再使用 BOX 区独立回补。",
     "trend_zone_step_percent": "趋势区卖出步长。价格相对 last_trade_price 上涨达到该比例时，才检查是否卖出高于长期底仓的机动仓。",
     "trend_zone_sell_percent": "趋势区单次卖出比例，按当前持仓计算；只卖出高于 base_units 的机动仓，卖出后不低于长期底仓。",
-    "clear_zone_step_percent": "Clear区倒金字塔清底仓步长。价格相对 sell_multiple 每上移该比例，推进一个清底仓步数。",
+    "clear_zone_step_percent": "离场区倒金字塔卖出步长。价格相对 sell_multiple 每上移该比例，推进一个清仓步数。",
     "grid_box_percent": "箱体区网格交易步长。当前回测策略不使用该参数，主要保留给实盘/后续网格逻辑。",
     "grid_box_units_percent": "箱体区网格交易比例。当前回测策略不使用该参数，主要保留给实盘/后续网格逻辑。",
     "box_grid_enabled": "箱体区网格开关。当前回测策略不使用该参数，状态栏可用于展示配置。",
     "pyramid_steps": "旧版兼容字段。新页面会分别使用 clear_pyramid_steps 和 pyramid_add_steps。",
     "pyramid_weights": "旧版兼容字段。新页面会分别使用 clear_pyramid_weights 和 pyramid_add_weights。",
-    "clear_pyramid_steps": "Clear区倒金字塔清底仓步数上限，实际步数不会超过 clear_pyramid_weights 长度。",
-    "clear_pyramid_weights": "Clear区倒金字塔每步清底仓权重，按 base_units 长期底仓拆分卖出。",
+    "clear_pyramid_steps": "离场区倒金字塔卖出步数上限，实际步数不会超过 clear_pyramid_weights 长度。",
+    "clear_pyramid_weights": "离场区倒金字塔每步卖出权重，按 base_units 长期底仓拆分卖出。",
     "pyramid_add_steps": "机会区/箱体区倒金字塔加仓步数上限，实际步数不会超过 pyramid_add_weights 长度。",
     "pyramid_add_weights": "机会区/箱体区倒金字塔每步加仓权重，按额外加仓预算拆分：补仓初始仓位 × 加仓倍数 - 补仓初始仓位。",
-    "pyramid_add_enabled": "倒金字塔加仓开关。auto=等待首次进入机会区后自动切到 yes；yes=机会区先补到补仓初始仓位，再按步长和权重加仓。进入趋势区或Clear区会自动切回 auto 并重置加仓步数。",
+    "pyramid_add_enabled": "倒金字塔加仓开关。auto=等待首次进入机会区后自动切到 yes；yes=机会区先补到补仓初始仓位，再按步长和权重加仓。进入趋势区或离场区会自动切回 auto 并重置加仓步数。",
 }
 
 BACKTEST_HELP_TEXT = """1) 价格口径：信号和区间使用 Adj Close；成交、估值、持仓成本使用 Close；分红按除息日现金入账，拆股按除权日调整仓位和成本。
-2) 区间划分：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；CLEAR=价格≥MA150*sell_multiple。
+2) 区间划分：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；SELL=价格≥MA150*sell_multiple。
 3) 倒金字塔加仓：历史回测每次都从 pyramid_add_enabled=auto 起步，忽略 dcf.yaml 中实盘监控用的 yes；只有首次进入 CHANCE_ZONE 后才自动切到 yes。
-4) 箱体区规则：回测起步在 BOX_ZONE 时不会因实盘 yes 直接补仓；经历趋势区/Clear区卖出后，回到 BOX_ZONE 也不直接回补。只有已由 CHANCE_ZONE 激活的倒金字塔模式，才可在 CHANCE/BOX 中继续按步长加仓。
-5) 趋势/Clear区：TREND_ZONE 只卖出高于 base_units 的机动仓；CLEAR_ZONE 按 clear_zone_step_percent 推进倒金字塔清底仓。
+4) 箱体区规则：回测起步在 BOX_ZONE 时不会因实盘 yes 直接补仓；经历趋势区/离场区卖出后，回到 BOX_ZONE 也不直接回补。只有已由 CHANCE_ZONE 激活的倒金字塔模式，才可在 CHANCE/BOX 中继续按步长加仓。
+5) 趋势/离场卖出：TREND_ZONE 只卖出高于 base_units 的机动仓；SELL_ZONE 按 clear_zone_step_percent 推进倒金字塔卖出长期底仓。
 6) 回测成本：回测页面的“初始仓位”是临时参数，只代表回测窗口第一交易日 current_units，默认 5%；它不覆盖策略里的 base_units / target_units / limit_target。current_avg_cost 仅用于实盘监控。
 7) 收益口径：期末持仓收益率使用“最新价格 / 摊薄后持仓成本 - 1”；摊薄后持仓成本只扣当前持仓周期内的分红现金贡献和已实现交易收益贡献。综合收益率使用累计投入口径。
 8) 百分比模式下，qty 表示仓位比例；交易日志保留上一次成交价和上一次加仓价。"""
@@ -251,7 +251,7 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
         "title": "区间界限",
         "items": [
             ("trend_multiple", "箱体区上沿倍数", "number"),
-            ("sell_multiple", "Clear区触发倍数", "number"),
+            ("sell_multiple", "离场区触发倍数", "number"),
         ],
     },
     {
@@ -281,11 +281,11 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
     },
     {
         "id": "clear_zone",
-        "title": "Clear区清底仓（倒金字塔）",
+        "title": "离场区减仓（倒金字塔）",
         "items": [
             ("clear_zone_step_percent", "减仓步长", "number"),
-            ("clear_pyramid_steps", "Clear区清底仓步数", "number"),
-            ("clear_pyramid_weights", "Clear区清底仓权重", "text"),
+            ("clear_pyramid_steps", "离场倒金字塔步数", "number"),
+            ("clear_pyramid_weights", "离场倒金字塔权重", "text"),
         ],
     },
     {
@@ -307,7 +307,7 @@ SELECT_FIELD_OPTIONS = {
 }
 
 SUMMARY_KEYS = [
-    "标的", "模式", "K线数量",
+    "标的", "模式", "K线数量", "回测初始仓位",
     "期末持仓收益率", "综合收益率",
     "分红收益率", "交易实现收益率", "持仓收益率",
     "最新价格", "首次建仓原始价", "首次建仓复权价", "首次建仓日",
@@ -1160,6 +1160,12 @@ def display_source_name(source: Any) -> str:
     return s or "未知"
 
 
+
+def format_strategy_source_display(source: Any, fallback: Any = False) -> str:
+    text = display_source_name(source)
+    is_fallback = fallback if isinstance(fallback, bool) else str(fallback or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    return f"{text}（本轮兜底）" if is_fallback and "本轮兜底" not in text else text
+
 def normalize_snapshot_source_fields(record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(record, dict):
         return record
@@ -1794,10 +1800,13 @@ def _source_metric_from_strategy_cache_for_status(node: Dict[str, Any], section:
     if not isinstance(node, dict):
         return [], "", ""
     cache = node.get("strategy_calc_cache") if isinstance(node.get("strategy_calc_cache"), dict) else {}
-    source = display_source_name(node.get("strategy_source") or cache.get("strategy_source") or "")
+    source_raw = node.get("strategy_source") or cache.get("strategy_source") or ""
+    fallback = node.get("strategy_source_fallback", cache.get("strategy_source_fallback", False))
+    source = str(node.get("strategy_source_display") or cache.get("strategy_source_display") or format_strategy_source_display(source_raw, fallback))
     if not source:
         symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
-        source = "tencent_hk" if symbol.startswith("HK") else "tencent_a"
+        source_raw = "tencent_hk" if symbol.startswith("HK") else "tencent_a"
+        source = format_strategy_source_display(source_raw, False)
     ma150 = safe_float(node.get("ma_short", cache.get("ma150")), 0.0)
     current_price = safe_float(node.get("last_price", cache.get("current_price")), 0.0)
     if ma150 <= 0 and current_price <= 0 and not node.get("strategy_error"):
@@ -1955,6 +1964,12 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
             continue
         seen.add(key)
         node = state.get(key, {}) if isinstance(state, dict) else {}
+        # 优先显示策略实际采用后的最终计算结果。source_metrics 可能是旧版或
+        # Web 侧即时计算出的单一默认源结果；如果状态里已有策略缓存，就以
+        # 策略缓存为准，避免页面显示与推送里的“策略源”不一致。
+        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
+        if fallback:
+            return _normalize_metric_cards(fallback), updated_at, err
         metrics = node.get("source_metrics") if isinstance(node, dict) else None
         if isinstance(metrics, list) and metrics:
             selected_metrics = _normalize_metric_cards(_filter_source_metrics_for_current_setting(section, metrics))
@@ -1965,9 +1980,6 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
                 if not err:
                     err = _collect_metric_errors(selected_metrics)
                 return selected_metrics, str(node.get("source_metrics_updated_at", "") or ""), err
-        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
-        if fallback:
-            return _normalize_metric_cards(fallback), updated_at, err
     return [], "", ""
 
 
@@ -2043,7 +2055,7 @@ def _get_zone_for_metrics(current_price: float, ma150: float, cfg: Dict[str, Any
             return "BOX_ZONE"
         if current_price < ma150 * sell_multiple:
             return "TREND_ZONE"
-        return "CLEAR_ZONE"
+        return "SELL_ZONE"
 
 
 def build_source_metric_placeholders(section: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2178,12 +2190,27 @@ def calculate_and_store_source_metric(selected: str, section: Dict[str, Any], so
 
 
 def calculate_and_store_source_metrics(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
-    """Calculate all source metrics. Kept for compatibility, but Web should prefer per-source refresh."""
+    """Return the latest adopted strategy metric for immediate Web display.
+
+    The backend dcf.py will refresh the final selected strategy source after the
+    request is queued. The Web process should not overwrite the status card with
+    a single default-source calculation, because the live strategy may have
+    adopted a better per-symbol fallback source.
+    """
     symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
     if not symbol:
         return build_source_metric_placeholders(section), "", "未找到标的代码"
-    results = [_calculate_single_source_metric(symbol, section, key, label) for key, label in _metric_source_options_for_symbol(symbol)]
-    return _store_source_metrics(selected, symbol, results, "")
+    state = read_state()
+    candidates = [selected, symbol]
+    for key, val in (state or {}).items():
+        if isinstance(val, dict) and str(val.get("symbol", "")).strip().upper() == symbol:
+            candidates.append(key)
+    for key in candidates:
+        node = state.get(key, {}) if isinstance(state, dict) else {}
+        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
+        if fallback:
+            return _normalize_metric_cards(fallback), updated_at, err
+    return build_source_metric_placeholders(section), "", "已请求后台刷新，等待策略进程写入最终采用的数据源结果"
 
 
 def _sanitize_hk_reference_prices(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2680,6 +2707,7 @@ def parse_backtest_output(text: str, symbol: str) -> Dict[str, Any]:
             add(display_label or key, kv[key])
 
     # Web 摘要卡片展示顺序
+    add_key("回测初始仓位")
     add_key("期末持仓收益率")
     add_key("综合收益率")
     if kv.get("买入次数") or kv.get("卖出次数"):
@@ -3056,7 +3084,7 @@ def _save_all_params(config: Dict[str, Any], selected: str) -> None:
     if section.get("pyramid_add_enabled") not in {"yes", "auto"}:
         section["pyramid_add_enabled"] = "auto"
     # 兼容旧模块：旧字段仍写回，但新策略优先读取独立字段。
-    # add_box_step 作为箱体固定加仓步长的旧别名；pyramid_steps/weights 作为Clear区倒金字塔旧别名。
+    # add_box_step 作为箱体固定加仓步长的旧别名；pyramid_steps/weights 作为离场倒金字塔旧别名。
     if "box_add_step" in section:
         section["add_box_step"] = section.get("box_add_step")
     if "clear_pyramid_steps" in section:

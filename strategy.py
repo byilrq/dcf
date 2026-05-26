@@ -6,6 +6,23 @@ from typing import Dict, Any, Tuple, List
 POSITION_EPSILON = 1e-9
 
 
+def _parse_position_value(value: Any, default: float = 0.0) -> float:
+    """Parse absolute or percent-style position values for validation."""
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return default
+            if text.endswith('%'):
+                return float(text[:-1]) / 100.0
+            return float(text)
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 def validate_strategy_config(cfg: Dict[str, Any], name: str = 'strategy') -> None:
     """校验单个标的参数，提前拦截 0、负数、权重异常、目标区间倒置等配置问题。"""
     def positive(key: str, default: Any = None) -> float:
@@ -18,13 +35,20 @@ def validate_strategy_config(cfg: Dict[str, Any], name: str = 'strategy') -> Non
             raise ValueError(f'{name}: {key} must be > 0, got {value}')
         return value
 
-    base_units = float(cfg.get('base_units', 0) or 0)
+    base_units = _parse_position_value(cfg.get('base_units', 0), 0.0)
+    target_units = _parse_position_value(cfg.get('target_units', 1.0), 1.0)
     if base_units < 0:
         raise ValueError(f'{name}: base_units must be >= 0, got {base_units}')
-    positive('target_units', 1.0)
+    if target_units <= 0:
+        raise ValueError(f'{name}: target_units must be > 0, got {target_units}')
     limit_target = positive('limit_target', 2.0)
     if limit_target < 1:
         raise ValueError(f'{name}: limit_target must be >= 1, got {limit_target}')
+    if base_units * limit_target < target_units - POSITION_EPSILON:
+        raise ValueError(
+            f'{name}: base_units * limit_target must be >= target_units '
+            f'(base={base_units}, limit_target={limit_target}, target={target_units})'
+        )
 
     trend_multiple = positive('trend_multiple', 1.2)
     sell_multiple = positive('sell_multiple', 1.5)
@@ -165,6 +189,8 @@ def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], cur
         new_state['pyramid_active'] = False
         new_state['pyramid_step'] = 0
         new_state['target_reached_once'] = False
+        new_state['pyramid_start_units'] = None
+        new_state['pyramid_limit_units'] = None
         events.append('PYRAMID_SWITCH_TO_AUTO')
         return new_state, cfg_updates, events, effective_mode
 
@@ -180,6 +206,8 @@ def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], cur
             new_state['pyramid_step'] = 0
             new_state['target_reached_once'] = state.get('current_units', 0.0) >= target_units - POSITION_EPSILON
             new_state['last_add_price'] = current_price
+            new_state['pyramid_start_units'] = None
+            new_state['pyramid_limit_units'] = None
             events.append('PYRAMID_AUTO_TRIGGERED')
     else:
         new_state['pyramid_active'] = False
@@ -187,7 +215,7 @@ def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], cur
 
 
 def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, limit_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any], str]:
-    """倒金字塔加仓决策：先补到目标仓，再按 last_add_price、步长和权重逐档加仓。"""
+    """倒金字塔加仓决策：先补到补仓初始仓位，再从本轮机会区起点逐档加到极限仓位。"""
     pyramid_add_step = float(cfg.get('pyramid_add_step', cfg.get('add_box_step', 0.05)))
     if pyramid_add_step <= 0:
         raise ValueError('pyramid_add_step must be > 0')
@@ -196,24 +224,49 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
     pyramid_step = int(state.get('pyramid_step', 0) or 0)
     last_add_price = state.get('last_add_price', current_price) or current_price
     current_units = state.get('current_units', 0.0)
-    target_reached_once = bool(state.get('target_reached_once', False))
     new_state = state.copy()
 
+    if limit_units <= target_units - POSITION_EPSILON:
+        return 0.0, new_state, ''
     if current_units >= limit_units - POSITION_EPSILON:
         return 0.0, new_state, ''
+
+    # 首次进入机会区，如果当前仓位低于补仓初始仓位，则先一步补到 target_units。
+    # 本轮倒金字塔预算随后固定为：极限仓位 - 本轮机会区起点仓位，避免每轮随 current_units 漂移。
     if current_units < target_units - POSITION_EPSILON:
-        add_qty = normalize_position_amount(target_units - current_units, mode, lot_size)
+        add_qty = normalize_position_amount(min(target_units - current_units, limit_units - current_units), mode, lot_size)
         if add_qty > POSITION_EPSILON:
             new_state['target_reached_once'] = True
             new_state['last_add_price'] = current_price
             new_state['pyramid_active'] = True
+            new_state['pyramid_start_units'] = normalize_position_amount(min(target_units, limit_units), mode, lot_size)
+            new_state['pyramid_limit_units'] = normalize_position_amount(limit_units, mode, lot_size)
             return add_qty, new_state, 'PYRAMID_INIT'
         return 0.0, new_state, ''
-    if target_reached_once and pyramid_step < total_steps and last_add_price > 0:
+
+    if not bool(new_state.get('target_reached_once', False)):
+        new_state['target_reached_once'] = True
+
+    try:
+        start_units = float(new_state.get('pyramid_start_units') or 0.0)
+    except Exception:
+        start_units = 0.0
+    try:
+        limit_anchor = float(new_state.get('pyramid_limit_units') or 0.0)
+    except Exception:
+        limit_anchor = 0.0
+    if start_units <= POSITION_EPSILON or limit_anchor <= POSITION_EPSILON:
+        # 当前仓位已达到/超过补仓初始仓位时，从进入机会区当时的 current_units 起算。
+        start_units = normalize_position_amount(max(current_units, target_units), mode, lot_size)
+        limit_anchor = normalize_position_amount(limit_units, mode, lot_size)
+        new_state['pyramid_start_units'] = start_units
+        new_state['pyramid_limit_units'] = limit_anchor
+
+    if pyramid_step < total_steps and last_add_price > 0:
         if current_price <= last_add_price * (1 - pyramid_add_step) + POSITION_EPSILON:
-            pyramid_budget = max(limit_units - target_units, 0.0)
+            pyramid_budget = max(limit_anchor - start_units, 0.0)
             add_qty = normalize_position_amount(pyramid_budget * pyramid_weights[pyramid_step], mode, lot_size)
-            max_allowed = normalize_position_amount(limit_units - current_units, mode, lot_size)
+            max_allowed = normalize_position_amount(limit_anchor - current_units, mode, lot_size)
             add_qty = normalize_position_amount(min(add_qty, max_allowed), mode, lot_size)
             if add_qty > POSITION_EPSILON:
                 new_state['pyramid_step'] = pyramid_step + 1
@@ -221,7 +274,6 @@ def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_
                 new_state['pyramid_active'] = True
                 return add_qty, new_state, f'PYRAMID_STEP_{pyramid_step + 1}'
     return 0.0, new_state, ''
-
 
 def get_box_fixed_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any]]:
     """BOX 固定补仓；锚点改为 last_add_price 优先，避免历史高价导致连续触发。"""

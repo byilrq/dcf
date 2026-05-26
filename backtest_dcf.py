@@ -72,19 +72,6 @@ def get_backtest_source_for_symbol(symbol: str) -> str:
     return market_normalize_system_source_value("A_BACKTEST_SOURCE", value) if market_normalize_system_source_value else str(value or "historical_a1").strip()
 
 
-def get_backtest_source_display_name(source: str) -> str:
-    labels = {
-        "historical_a1": "腾讯A股/ETF日K",
-        "historical_a2": "新浪A股/ETF日K",
-        "historical_a3": "BaoStock含权息",
-        "historical_hk1": "腾讯港股日K",
-        "historical_hk2": "Yahoo港股日K",
-        "yfinance": "Yahoo Finance",
-    }
-    key = str(source or "").strip() or "yfinance"
-    return f"{labels.get(key, key)}（{key}）"
-
-
 # ===========================
 # 符号映射
 # ===========================
@@ -176,7 +163,7 @@ def get_target_units(cfg):
 
 
 def get_limit_units(cfg):
-    return get_target_units(cfg) * _safe_float(cfg.get("limit_target", cfg.get("double_target_factor", 2.0)), 2.0)
+    return get_base_units(cfg) * _safe_float(cfg.get("limit_target", cfg.get("double_target_factor", 2.0)), 2.0)
 
 
 def get_trend_multiple(cfg):
@@ -301,13 +288,15 @@ def get_market_weight(units, avg_cost, price, mode):
 # MA计算 & 横盘评分
 # ===========================
 def calc_ma_with_coef(closes, length, min_coef=None, reference_ma=None):
-    # 严格均线口径：必须至少有完整 length 根K线才计算。
-    # 不再使用 length//2 半窗口估算，避免回测起始 MA150 贴近复权价。
-    if len(closes) >= length:
+    count = len(closes or [])
+    if count >= length:
         ma_value = sum(closes[-length:]) / length
         return ma_value, 'f'
+    min_bars = max(5, min(length // 2, length))
+    if count >= min_bars:
+        ma_value = sum(closes) / count
+        return ma_value, f'p{count}'
     return None, 'insufficient_data'
-
 
 def _compute_ma_series(closes, period):
     if len(closes) < period:
@@ -404,8 +393,6 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
             out = out[(out["raw_close"] > 0) & (out["adj_close"] > 0)].tail(days).reset_index(drop=True)
             if len(out) < 10:
                 raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(out)} 条")
-            out.attrs["source_key"] = source
-            out.attrs["source_display"] = get_backtest_source_display_name(source)
             logging.info(f"回测数据源: {symbol} -> {source}, count={len(out)}")
             return out
         except Exception as e:
@@ -454,8 +441,6 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
     out = out.tail(days).reset_index(drop=True)
     if len(out) < 10:
         raise RuntimeError(f"历史数据太少：{symbol} 仅 {len(out)} 条")
-    out.attrs["source_key"] = "yfinance"
-    out.attrs["source_display"] = get_backtest_source_display_name("yfinance")
     logging.info(f"回测数据源: {symbol} -> yfinance, count={len(out)}")
     return out
 
@@ -484,30 +469,14 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     fh.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(fh)
 
-    ma_short_len = int(strategy.get("ma_period_short", 150))
-    # 为严格 MA150 提供预热数据：多取 ma_short_len 根K线，仅用于指标计算，不参与交易/收益统计。
-    requested_days = int(days)
-    raw_df = fetch_market_data(symbol, requested_days + ma_short_len)
-    source_key = str(raw_df.attrs.get("source_key", get_backtest_source_for_symbol(symbol)) or "")
-    source_display = str(raw_df.attrs.get("source_display", get_backtest_source_display_name(source_key)) or "")
-    if len(raw_df) > requested_days:
-        warmup_count = min(ma_short_len, len(raw_df) - requested_days)
-        df = raw_df.tail(requested_days).reset_index(drop=True)
-    else:
-        warmup_count = 0
-        df = raw_df.reset_index(drop=True)
-    full_dates = raw_df["date"].tolist()
-    full_raw_all = raw_df["raw_close"].tolist()
-    full_adj_all = raw_df["adj_close"].tolist()
-    full_div_all = raw_df["dividend"].tolist()
-    full_split_all = raw_df["split_ratio"].tolist()
-    formal_start_idx = max(0, len(raw_df) - len(df))
-
+    df = fetch_market_data(symbol, days)
     dates = df["date"].tolist()
     raw_all = df["raw_close"].tolist()
     adj_all = df["adj_close"].tolist()
     div_all = df["dividend"].tolist()
     split_all = df["split_ratio"].tolist()
+
+    ma_short_len = int(strategy.get("ma_period_short", 150))
 
     position_mode = get_position_mode(cfg)
     target_units = get_target_units(cfg)
@@ -554,6 +523,8 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     last_add_price = raw_all[0]
     pyramid_active = False
     target_reached_once = False
+    pyramid_start_units = None
+    pyramid_limit_units = None
 
     trades_csv = outdir / f"trades_{symbol}.csv"
     with open(trades_csv, "w", newline="", encoding="utf-8") as f:
@@ -797,15 +768,12 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                 f"cash {serialize_numeric(cash_before)} -> {serialize_numeric(cash)}"
             )
 
-        full_i = formal_start_idx + i
-        closes_adj = full_adj_all[: full_i + 1]
+        closes_adj = adj_all[: i + 1]
 
         ma150_raw, _src150 = calc_ma_with_coef(closes_adj, ma_short_len)
         if ma150_raw is None:
-            ma150 = None
-            zone = 'DATA_INSUFFICIENT'
-            sideways_score = 0.0
-            dynamic_k150 = 1.0
+            ma150 = adj_price
+            zone = 'BOX_ZONE'
         else:
             sideways_score = float(compute_sideways_index(closes_adj, cfg))
             base_k150 = _safe_float(cfg.get("k150", 1.0), 1.0)
@@ -824,13 +792,15 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
             "pyramid_step": pyramid_step,
             "pyramid_active": pyramid_active,
             "target_reached_once": target_reached_once,
+            "pyramid_start_units": pyramid_start_units,
+            "pyramid_limit_units": pyramid_limit_units,
             "clear_step": clear_step,
             "initial_entry_price": first_trade_raw_price if first_trade_raw_price is not None else raw_all[0],
         }
 
         # In historical backtests, BOX_ZONE must not initiate add trades while pyramid is still auto.
         # This guard also protects the backtest if an older strategy.py still contains legacy BOX_ZONE_ADD logic.
-        if zone == "DATA_INSUFFICIENT" or (zone == "BOX_ZONE" and get_pyramid_add_enabled(cfg) != "yes"):
+        if zone == "BOX_ZONE" and get_pyramid_add_enabled(cfg) != "yes":
             add_qty, add_reason = 0.0, ""
             new_state, cfg_updates, events = state_dict.copy(), {}, []
         else:
@@ -848,6 +818,8 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         pyramid_step = new_state.get("pyramid_step", pyramid_step)
         last_add_price = new_state.get("last_add_price", last_add_price)
         target_reached_once = new_state.get("target_reached_once", target_reached_once)
+        pyramid_start_units = new_state.get("pyramid_start_units", pyramid_start_units)
+        pyramid_limit_units = new_state.get("pyramid_limit_units", pyramid_limit_units)
         pyramid_active = new_state.get("pyramid_active", pyramid_active)
         state_dict.update(new_state)
         state_dict["current_units"] = units
@@ -1053,15 +1025,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "name": name,
         "position_mode": position_mode,
         "bars": len(df),
-        "requested_days": requested_days,
-        "warmup_bars": warmup_count,
-        "ma_warmup_required": ma_short_len,
-        "data_source": source_display,
-        "data_source_key": source_key,
-        "data_start": dates[0] if dates else "",
-        "data_end": dates[-1] if dates else "",
-        "data_range_summary": f"{dates[0]}~{dates[-1]}｜{len(df)}/{requested_days}根" if dates else "",
-        "data_note": (f"已取满{requested_days}根。MA预热{warmup_count}/{ma_short_len}。" if len(df) >= requested_days else f"请求{requested_days}，实际{len(df)}；MA预热{warmup_count}/{ma_short_len}。"),
         "initial_units": initial_units,
         "initial_units_raw": str(initial_units_raw),
         "backtest_pyramid_add_start": "auto",
@@ -1121,9 +1084,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         rf.write(f"标的: {summary['symbol']} | 名称: {summary['name']}\n")
         rf.write(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}\n")
         rf.write(f"K线数量: {summary['bars']}\n")
-        rf.write(f"数据源: {summary.get('data_source', '')}\n")
-        rf.write(f"数据区间: {summary.get('data_range_summary', '')}\n")
-        rf.write(f"数据说明: {summary.get('data_note', '')}\n")
         rf.write(f"回测倒金字塔起始开关: {summary['backtest_pyramid_add_start']}\n")
         if summary.get('live_pyramid_add_enabled') != summary.get('backtest_pyramid_add_start'):
             rf.write(f"实盘倒金字塔开关: {summary['live_pyramid_add_enabled']}（回测起步已忽略）\n")
@@ -1235,7 +1195,7 @@ def main():
     ap.add_argument("--initial-units", default=None, help="回测临时初始仓位，只作为第一交易日 current_units，默认 5%")
     ap.add_argument("--base-units", default=None, help="覆盖策略配置中的长期底仓 base_units（兼容旧用法，不建议从 Web 回测页使用）")
     ap.add_argument("--target-units", default=None, help="覆盖策略配置中的补仓初始仓位 target_units（兼容旧用法，不建议从 Web 回测页使用）")
-    ap.add_argument("--limit-target", type=float, default=None, help="覆盖仓位上限倍数")
+    ap.add_argument("--limit-target", type=float, default=None, help="覆盖极限仓位倍数（极限仓位=底仓×倍数）")
     args = ap.parse_args()
 
     base_dir = Path(__file__).resolve().parent
@@ -1272,9 +1232,6 @@ def main():
     print(f"标的: {summary['symbol']} | 名称: {summary['name']}")
     print(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}")
     print(f"K线数量: {summary['bars']}")
-    print(f"数据源: {summary.get('data_source', '')}")
-    print(f"数据区间: {summary.get('data_range_summary', '')}")
-    print(f"数据说明: {summary.get('data_note', '')}")
     print(f"回测初始仓位: {format_units_for_display(summary['initial_units'], summary['position_mode'])}")
     print(f"期末持仓收益率: {summary['final_holding_return_rate'] * 100:.2f}%")
     print(f"综合收益率: {summary['stock_total_return'] * 100:.2f}%")
