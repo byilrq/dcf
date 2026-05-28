@@ -29,14 +29,13 @@ SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
 CACHE_DIR = BASE_DIR / "data" / "bars"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Strategy/runtime historical K cache. This is deliberately separate from
-# the generic bar cache because realtime overlay must still refresh every loop.
-# Keyed by symbol + selected historical source + days + price_scale + calendar day.
-STRATEGY_HISTORY_CACHE_DIR = BASE_DIR / "data" / "strategy_history"
-STRATEGY_HISTORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-# Keep only today's strategy-history cache files. Historical K is fetched once
-# per symbol/source/day, while realtime quotes still refresh every loop.
-STRATEGY_HISTORY_CACHE_RETENTION_DAYS = 1
+# Source-level historical K cache. This is deliberately separate from
+# strategy_history because strategy_history only stores final per-symbol
+# strategy results (SYMBOL_YYYY-MM-DD.json). Source snapshots are cached under
+# history_cache for reuse/diagnostics and must not pollute strategy_history.
+SOURCE_HISTORY_CACHE_DIR = BASE_DIR / "data" / "history_cache"
+SOURCE_HISTORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+SOURCE_HISTORY_CACHE_RETENTION_DAYS = 1
 
 SYSTEM_DEFAULTS = {
     "A_QUOTE_SOURCE": "live_a1",
@@ -248,20 +247,20 @@ def _strategy_history_cache_path(symbol: str, source_key: str, days: int, price_
     src = str(source_key or "").strip() or "default"
     day = cache_day or date.today().isoformat()
     scale = str(float(price_scale)).replace(".", "p")
-    return STRATEGY_HISTORY_CACHE_DIR / f"{raw}_{src}_{int(days)}_{scale}_{day}.json"
+    return SOURCE_HISTORY_CACHE_DIR / f"{raw}_{src}_{int(days)}_{scale}_{day}.json"
 
 
-def _prune_strategy_history_daily_cache(retention_days: int = STRATEGY_HISTORY_CACHE_RETENTION_DAYS) -> None:
-    """Delete expired strategy-history daily cache files.
+def _prune_strategy_history_daily_cache(retention_days: int = SOURCE_HISTORY_CACHE_RETENTION_DAYS) -> None:
+    """Delete expired source-history daily cache files.
 
     With retention_days=1, only today's cache files are kept. This prevents
-    /data/strategy_history from accumulating one file per symbol per day forever.
+    /data/history_cache from accumulating one file per symbol per day forever.
     """
     try:
         keep_days = max(1, int(retention_days or 1))
         today = date.today()
         cutoff = today - timedelta(days=keep_days - 1)
-        for path in STRATEGY_HISTORY_CACHE_DIR.glob("*.json"):
+        for path in SOURCE_HISTORY_CACHE_DIR.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 raw_day = str(data.get("cache_day") or "").strip()
@@ -1151,7 +1150,7 @@ def get_history_snapshot_by_source(symbol: str, days: int = 400, price_scale: fl
                 logging.warning(f"Yahoo港股含权息失败 {raw}: {e}；回退腾讯港股日K")
                 snap = _fetch_tencent_hk_snapshot(raw, days, price_scale)
                 # Fallback succeeds: treat the resolved strategy source as the active source
-                # for today's strategy-history cache.  Do not carry the Yahoo 429 error into
+                # for today's source-history cache.  Do not carry the Yahoo 429 error into
                 # every status refresh; the warning is only logged once above.
                 snap.strategy_status = "OK"
                 snap.error = ""

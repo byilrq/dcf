@@ -129,7 +129,7 @@ SYMBOL_CONFIG:
     strategy_run: 'on'
     base_units: 5%
     target_units: 5%
-    limit_target: 2.0
+    limit_target: 3.0
     current_units: 10%
     current_avg_cost: 5.05
     k150: 0.95
@@ -137,16 +137,16 @@ SYMBOL_CONFIG:
     sideways_window_60: 15
     sideways_weight_60: 0.7
     sideways_min_k150: 0.85
-    trend_multiple: 1.2
-    sell_multiple: 1.5
+    trend_multiple: 1.25
+    sell_multiple: 1.4
     add_box_step: 0.025
     add_box_units_percent: 0.1
     box_grid_enabled: 'no'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
-    trend_zone_step_percent: 0.01
+    trend_zone_step_percent: 0.04
     trend_zone_sell_percent: 0.05
-    clear_zone_step_percent: 0.08
+    clear_zone_step_percent: 0.03
     pyramid_add_enabled: auto
     pyramid_steps: 8
     pyramid_weights:
@@ -159,7 +159,7 @@ SYMBOL_CONFIG:
       - 0.17
       - 0.23
     box_add_step: 0.025
-    pyramid_add_step: 0.05
+    pyramid_add_step: 0.025
     clear_pyramid_weights:
       - 0.05
       - 0.07
@@ -186,7 +186,7 @@ SYMBOL_CONFIG:
     strategy_run: 'on'
     base_units: 5%
     target_units: 5%
-    limit_target: 2.0
+    limit_target: 3.0
     current_units: 5%
     current_avg_cost: 0.0
     k150: 0.95
@@ -195,14 +195,14 @@ SYMBOL_CONFIG:
     sideways_weight_60: 0.7
     sideways_min_k150: 0.85
     trend_multiple: 1.2
-    sell_multiple: 1.5
+    sell_multiple: 1.35
     add_box_step: 0.05
     add_box_units_percent: 0.1
     box_grid_enabled: 'no'
     grid_box_percent: 0.01
     grid_box_units_percent: 0.05
     trend_zone_step_percent: 0.01
-    trend_zone_sell_percent: 0.05
+    trend_zone_sell_percent: 0.04
     clear_zone_step_percent: 0.08
     pyramid_add_enabled: auto
     pyramid_steps: 8
@@ -216,7 +216,7 @@ SYMBOL_CONFIG:
       - 0.17
       - 0.23
     box_add_step: 0.05
-    pyramid_add_step: 0.05
+    pyramid_add_step: 0.04
     clear_pyramid_weights:
       - 0.05
       - 0.07
@@ -585,16 +585,16 @@ SYMBOL_CONFIG:
     price_scale: 1.0
     base_units: 10%
     target_units: 5%
-    limit_target: 4.0
-    current_units: 21%
-    current_avg_cost: 455.609524
+    limit_target: 2.0
+    current_units: 26.89%
+    current_avg_cost: 448.16006
     k150: 0.95
     sideways_window_30: 30
     sideways_window_60: 15
     sideways_weight_60: 0.7
     sideways_min_k150: 0.85
-    trend_multiple: 1.2
-    sell_multiple: 1.45
+    trend_multiple: 1.18
+    sell_multiple: 1.36
     add_box_step: 0.025
     add_box_units_percent: 0.01
     box_grid_enabled: 'yes'
@@ -697,11 +697,11 @@ SYMBOL_CONFIG:
     symbol: SZ002847
     strategy_run: 'on'
     price_scale: 1.0
-    base_units: 2.5%
-    target_units: 5%
+    base_units: 3%
+    target_units: 1%
     limit_target: 2.0
-    current_units: 5%
-    current_avg_cost: 55.16
+    current_units: 2.27%
+    current_avg_cost: 55.538278
     k150: 0.95
     sideways_window_30: 30
     sideways_window_60: 20
@@ -720,14 +720,14 @@ SYMBOL_CONFIG:
     pyramid_add_enabled: 'yes'
     pyramid_steps: 8
     pyramid_weights:
-      - 0.08
+      - 0.05
+      - 0.07
       - 0.09
-      - 0.1
-      - 0.12
+      - 0.11
       - 0.13
       - 0.15
-      - 0.16
       - 0.17
+      - 0.23
     box_add_step: 0.05
     pyramid_add_step: 0.05
     clear_pyramid_weights:

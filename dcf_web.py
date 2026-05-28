@@ -97,9 +97,9 @@ PAGE_TITLES = {
 }
 
 PARAM_HELP: Dict[str, str] = {
-    "base_units": "长期持有的底仓。普通 BOX/TREND 区不主动卖穿它；只有进入 SELL/Clear 离场区才按清仓计划逐步降低这部分底仓。",
+    "base_units": "长期持有的底仓。普通 BOX/TREND 区不主动卖穿它；只有进入 Clear区才按清仓计划逐步降低这部分底仓。",
     "target_units": "补仓初始仓位。价格跌破 MA150 进入 CHANCE_ZONE 时，若当前持仓低于该值，会先一步补到该仓位；若已达到或超过则不补。该参数不参与 TREND 区卖出。",
-    "limit_target": "加仓倍数。最大仓位 = 补仓初始仓位 × 加仓倍数；倒金字塔额外加仓预算 = 最大仓位 - 补仓初始仓位。",
+    "limit_target": "极限仓位倍数。最大仓位 = 补仓初始仓位 × 极限仓位倍数；倒金字塔额外加仓预算 = 最大仓位 - 补仓初始仓位。",
     "current_units": "当前真实持仓。百分比模式可写 3%/0.03；后台会按该值作为下一轮策略判断的当前仓位。",
     "current_avg_cost": "当前持仓成本。用于实盘状态、摊薄成本和交易提示；回测起始成本不直接使用该字段。",
     "k150": "MA150 的动态倍率基准。值越大，MA150 上沿越宽，越不容易进入高估/趋势卖出区。",
@@ -108,31 +108,31 @@ PARAM_HELP: Dict[str, str] = {
     "sideways_weight_60": "横盘评分中，MA60 所占权重。越大越偏向中期横盘判断。",
     "sideways_min_k150": "横盘评分很高时，动态 K150 最低可压到的值。数值越小，箱体上沿越容易下移。",
     "trend_multiple": "箱体区上沿倍数 = MA150 * trend_multiple，超过后进入趋势区。",
-    "sell_multiple": "离场区触发倍数 = MA150 * sell_multiple，超过后开始倒金字塔卖出底仓。",
+    "sell_multiple": "Clear区触发倍数 = MA150 * sell_multiple，超过后开始倒金字塔卖出底仓。",
     "add_box_step": "旧版兼容字段。新页面会分别使用 box_add_step 和 pyramid_add_step。",
     "box_add_step": "箱体区固定加仓步长。保留给箱体区固定回补逻辑使用，和倒金字塔加仓步长互不覆盖。",
     "pyramid_add_step": "倒金字塔加仓步长。进入机会区并补到补仓初始仓位后，价格每相对 last_add_price 下跌该比例，触发下一步加仓。",
     "add_box_units_percent": "旧版箱体区固定加仓比例，最新策略不再使用 BOX 区独立回补。",
     "trend_zone_step_percent": "趋势区卖出步长。价格相对 last_trade_price 上涨达到该比例时，才检查是否卖出高于长期底仓的机动仓。",
     "trend_zone_sell_percent": "趋势区单次卖出比例，按当前持仓计算；只卖出高于 base_units 的机动仓，卖出后不低于长期底仓。",
-    "clear_zone_step_percent": "离场区倒金字塔卖出步长。价格相对 sell_multiple 每上移该比例，推进一个清仓步数。",
+    "clear_zone_step_percent": "Clear区倒金字塔卖出步长。价格相对 sell_multiple 每上移该比例，推进一个清仓步数。",
     "grid_box_percent": "箱体区网格交易步长。当前回测策略不使用该参数，主要保留给实盘/后续网格逻辑。",
     "grid_box_units_percent": "箱体区网格交易比例。当前回测策略不使用该参数，主要保留给实盘/后续网格逻辑。",
     "box_grid_enabled": "箱体区网格开关。当前回测策略不使用该参数，状态栏可用于展示配置。",
     "pyramid_steps": "旧版兼容字段。新页面会分别使用 clear_pyramid_steps 和 pyramid_add_steps。",
     "pyramid_weights": "旧版兼容字段。新页面会分别使用 clear_pyramid_weights 和 pyramid_add_weights。",
-    "clear_pyramid_steps": "离场区倒金字塔卖出步数上限，实际步数不会超过 clear_pyramid_weights 长度。",
-    "clear_pyramid_weights": "离场区倒金字塔每步卖出权重，按 base_units 长期底仓拆分卖出。",
-    "pyramid_add_steps": "机会区/箱体区倒金字塔加仓步数上限，实际步数不会超过 pyramid_add_weights 长度。",
-    "pyramid_add_weights": "机会区/箱体区倒金字塔每步加仓权重，按额外加仓预算拆分：补仓初始仓位 × 加仓倍数 - 补仓初始仓位。",
-    "pyramid_add_enabled": "倒金字塔加仓开关。auto=等待首次进入机会区后自动切到 yes；yes=机会区先补到补仓初始仓位，再按步长和权重加仓。进入趋势区或离场区会自动切回 auto 并重置加仓步数。",
+    "clear_pyramid_steps": "Clear区倒金字塔卖出最多步数，实际步数不会超过 clear_pyramid_weights 长度。",
+    "clear_pyramid_weights": "Clear区倒金字塔每步卖出权重，按 base_units 长期底仓拆分卖出。",
+    "pyramid_add_steps": "机会区/箱体区倒金字塔加仓最多步数，实际步数不会超过 pyramid_add_weights 长度。",
+    "pyramid_add_weights": "机会区/箱体区倒金字塔每步加仓权重，按额外加仓预算拆分：极限仓位 - 机会区起点仓位。",
+    "pyramid_add_enabled": "倒金字塔加仓开关。auto=等待首次进入机会区后自动切到 yes；yes=机会区先补到补仓初始仓位，再按步长和权重加仓。进入趋势/Clear区才结束本轮机会区倒金字塔并切回 auto。",
 }
 
 BACKTEST_HELP_TEXT = """1) 价格口径：信号和区间使用 Adj Close；成交、估值、持仓成本使用 Close；分红按除息日现金入账，拆股按除权日调整仓位和成本。
-2) 区间划分：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；SELL=价格≥MA150*sell_multiple。
+2) 区间划分：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；CLEAR=价格≥MA150*sell_multiple。
 3) 倒金字塔加仓：历史回测每次都从 pyramid_add_enabled=auto 起步，忽略 dcf.yaml 中实盘监控用的 yes；只有首次进入 CHANCE_ZONE 后才自动切到 yes。
-4) 箱体区规则：回测起步在 BOX_ZONE 时不会因实盘 yes 直接补仓；经历趋势区/离场区卖出后，回到 BOX_ZONE 也不直接回补。只有已由 CHANCE_ZONE 激活的倒金字塔模式，才可在 CHANCE/BOX 中继续按步长加仓。
-5) 趋势/离场卖出：TREND_ZONE 只卖出高于 base_units 的机动仓；SELL_ZONE 按 clear_zone_step_percent 推进倒金字塔卖出长期底仓。
+4) 箱体区规则：回测起步在 BOX_ZONE 时不会因实盘 yes 直接补仓；只有已由 CHANCE_ZONE 激活的倒金字塔模式，才可在 CHANCE/BOX 中继续按步长加仓。
+5) 趋势/离场卖出：TREND_ZONE 只卖出高于 base_units 的机动仓；CLEAR_ZONE 按 clear_zone_step_percent 推进倒金字塔清底仓。
 6) 回测成本：回测页面的“初始仓位”是临时参数，只代表回测窗口第一交易日 current_units，默认 5%；它不覆盖策略里的 base_units / target_units / limit_target。current_avg_cost 仅用于实盘监控。
 7) 收益口径：期末持仓收益率使用“最新价格 / 摊薄后持仓成本 - 1”；摊薄后持仓成本只扣当前持仓周期内的分红现金贡献和已实现交易收益贡献。综合收益率使用累计投入口径。
 8) 百分比模式下，qty 表示仓位比例；交易日志保留上一次成交价和上一次加仓价。"""
@@ -230,7 +230,7 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
         "items": [
             ("base_units", "长期底仓", "text"),
             ("target_units", "补仓初始仓位", "text"),
-            ("limit_target", "加仓倍数", "number"),
+            ("limit_target", "极限仓位倍数", "number"),
             ("current_units", "当前持仓", "text"),
             ("current_avg_cost", "当前成本", "number"),
         ],
@@ -251,7 +251,7 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
         "title": "区间界限",
         "items": [
             ("trend_multiple", "箱体区上沿倍数", "number"),
-            ("sell_multiple", "离场区触发倍数", "number"),
+            ("sell_multiple", "Clear区触发倍数", "number"),
         ],
     },
     {
@@ -281,7 +281,7 @@ FIELD_GROUPS: List[Dict[str, Any]] = [
     },
     {
         "id": "clear_zone",
-        "title": "离场区减仓（倒金字塔）",
+        "title": "Clear区减仓（倒金字塔）",
         "items": [
             ("clear_zone_step_percent", "减仓步长", "number"),
             ("clear_pyramid_steps", "离场倒金字塔步数", "number"),
@@ -1160,12 +1160,6 @@ def display_source_name(source: Any) -> str:
     return s or "未知"
 
 
-
-def format_strategy_source_display(source: Any, fallback: Any = False) -> str:
-    text = display_source_name(source)
-    is_fallback = fallback if isinstance(fallback, bool) else str(fallback or "").strip().lower() in {"1", "true", "yes", "y", "on"}
-    return f"{text}（本轮兜底）" if is_fallback and "本轮兜底" not in text else text
-
 def normalize_snapshot_source_fields(record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(record, dict):
         return record
@@ -1800,13 +1794,10 @@ def _source_metric_from_strategy_cache_for_status(node: Dict[str, Any], section:
     if not isinstance(node, dict):
         return [], "", ""
     cache = node.get("strategy_calc_cache") if isinstance(node.get("strategy_calc_cache"), dict) else {}
-    source_raw = node.get("strategy_source") or cache.get("strategy_source") or ""
-    fallback = node.get("strategy_source_fallback", cache.get("strategy_source_fallback", False))
-    source = str(node.get("strategy_source_display") or cache.get("strategy_source_display") or format_strategy_source_display(source_raw, fallback))
+    source = display_source_name(node.get("strategy_source") or cache.get("strategy_source") or "")
     if not source:
         symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
-        source_raw = "tencent_hk" if symbol.startswith("HK") else "tencent_a"
-        source = format_strategy_source_display(source_raw, False)
+        source = "tencent_hk" if symbol.startswith("HK") else "tencent_a"
     ma150 = safe_float(node.get("ma_short", cache.get("ma150")), 0.0)
     current_price = safe_float(node.get("last_price", cache.get("current_price")), 0.0)
     if ma150 <= 0 and current_price <= 0 and not node.get("strategy_error"):
@@ -1943,6 +1934,102 @@ def _metric_display_cards(metrics: List[Dict[str, Any]]) -> List[MetricDisplayDi
     return [_metric_display_card(x) for x in (metrics or []) if isinstance(x, dict)]
 
 
+def _strategy_history_cache_dir() -> Path:
+    path = BASE_DIR / "data" / "strategy_history"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _strategy_history_final_cache_path(symbol: str, day_text: str = "") -> Path:
+    safe_symbol = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalize_symbol_input(symbol)) or "UNKNOWN"
+    day_text = day_text or web_strategy_now(read_yaml()).strftime("%Y-%m-%d")
+    return _strategy_history_cache_dir() / f"{safe_symbol}_{day_text}.json"
+
+
+def _read_strategy_history_final_cache(symbol: str) -> Dict[str, Any]:
+    """Read only final strategy result cache: SYMBOL_YYYY-MM-DD.json.
+
+    Ignore source-level diagnostic snapshots like
+    SYMBOL_historical_a3_400_1p0_YYYY-MM-DD.json.
+    """
+    safe_symbol = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalize_symbol_input(symbol)) or "UNKNOWN"
+    today = web_strategy_now(read_yaml()).strftime("%Y-%m-%d")
+    exact = _strategy_history_final_cache_path(safe_symbol, today)
+    candidates = [exact]
+    pattern = re.compile(rf"^{re.escape(safe_symbol)}_\d{{4}}-\d{{2}}-\d{{2}}\.json$")
+    try:
+        candidates.extend(sorted(
+            [p for p in _strategy_history_cache_dir().glob(f"{safe_symbol}_*.json") if pattern.match(p.name) and p != exact],
+            key=lambda x: x.name,
+            reverse=True,
+        ))
+    except Exception:
+        pass
+    for path in candidates:
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8") or "{}")
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            continue
+    return {}
+
+
+
+
+def _metric_from_strategy_history_payload(payload: Dict[str, Any], section: Dict[str, Any], node: Dict[str, Any] = None) -> Tuple[List[Dict[str, Any]], str, str]:
+    if not isinstance(payload, dict) or not payload:
+        return [], "", ""
+    ma150 = safe_float(payload.get("ma150"), 0.0)
+    ma150_raw = safe_float(payload.get("ma150_raw"), 0.0)
+    dynamic_k = safe_float(payload.get("dynamic_k150"), 1.0)
+    if ma150 <= 0 and ma150_raw > 0:
+        ma150 = ma150_raw * dynamic_k
+    if ma150 <= 0:
+        return [], "", ""
+    source = display_source_name(payload.get("strategy_source") or payload.get("strategy_source_key") or "")
+    if payload.get("strategy_source_fallback"):
+        source = f"{source}（本轮兜底）"
+    current_price = safe_float((node or {}).get("last_price"), 0.0)
+    try:
+        if current_price <= 0:
+            current_price = safe_float(payload.get("current_price"), 0.0)
+    except Exception:
+        pass
+    trend_multiple = safe_float(section.get("trend_multiple", 1.2), 1.2)
+    clear_multiple = safe_float(section.get("sell_multiple", 1.5), 1.5)
+    ma_src = str(payload.get("ma150_source") or "")
+    status = str(payload.get("strategy_status") or ("OK" if ma_src == "f" else "WARN")).upper()
+    level = "INFO" if status == "OK" else "WARN"
+    err = "" if ma_src == "f" else f"策略数据为非完整口径: MA150来源={ma_src}"
+    try:
+        zone = _get_zone_for_metrics(current_price, ma150, section) if current_price > 0 else ""
+    except Exception:
+        zone = ""
+    item = {
+        "key": "strategy_history",
+        "label": source or "本标的策略值",
+        "ok": True,
+        "level": level,
+        "status": status,
+        "source": source,
+        "date": str(payload.get("last_bar_date") or payload.get("cache_date") or ""),
+        "updated_at": str(payload.get("updated_at") or ""),
+        "count": int(safe_float(payload.get("history_count", 0), 0)),
+        "current_price": round(current_price, 4) if current_price > 0 else None,
+        "ma150": round(ma150, 4),
+        "ma150_source": ma_src,
+        "sell": round(ma150 * trend_multiple, 4),
+        "clear": round(ma150 * clear_multiple, 4),
+        "dynamic_k": round(dynamic_k, 4),
+        "sideways_score": round(safe_float(payload.get("sideways_score"), 0.0), 4),
+        "zone": zone,
+        "error": err,
+    }
+    return [item], str(payload.get("updated_at") or ""), err
+
+
 def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
     """Read cached history-source metrics for status page.
 
@@ -1953,6 +2040,16 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
         return [], "", ""
     state = read_state()
     symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
+    final_payload = _read_strategy_history_final_cache(symbol) if symbol else {}
+    if final_payload:
+        first_node = None
+        if isinstance(state, dict):
+            first_node = state.get(selected) if isinstance(state.get(selected), dict) else None
+            if not first_node and symbol:
+                first_node = state.get(symbol) if isinstance(state.get(symbol), dict) else None
+        final_metrics, final_updated, final_err = _metric_from_strategy_history_payload(final_payload, section, first_node)
+        if final_metrics:
+            return _normalize_metric_cards(final_metrics), final_updated, final_err
     candidates = [selected, symbol]
     if symbol:
         for key, val in (state or {}).items():
@@ -1964,12 +2061,6 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
             continue
         seen.add(key)
         node = state.get(key, {}) if isinstance(state, dict) else {}
-        # 优先显示策略实际采用后的最终计算结果。source_metrics 可能是旧版或
-        # Web 侧即时计算出的单一默认源结果；如果状态里已有策略缓存，就以
-        # 策略缓存为准，避免页面显示与推送里的“策略源”不一致。
-        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
-        if fallback:
-            return _normalize_metric_cards(fallback), updated_at, err
         metrics = node.get("source_metrics") if isinstance(node, dict) else None
         if isinstance(metrics, list) and metrics:
             selected_metrics = _normalize_metric_cards(_filter_source_metrics_for_current_setting(section, metrics))
@@ -1980,6 +2071,9 @@ def get_source_metrics_for_status(selected: str, section: Dict[str, Any]) -> Tup
                 if not err:
                     err = _collect_metric_errors(selected_metrics)
                 return selected_metrics, str(node.get("source_metrics_updated_at", "") or ""), err
+        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
+        if fallback:
+            return _normalize_metric_cards(fallback), updated_at, err
     return [], "", ""
 
 
@@ -2055,7 +2149,7 @@ def _get_zone_for_metrics(current_price: float, ma150: float, cfg: Dict[str, Any
             return "BOX_ZONE"
         if current_price < ma150 * sell_multiple:
             return "TREND_ZONE"
-        return "SELL_ZONE"
+        return "CLEAR_ZONE"
 
 
 def build_source_metric_placeholders(section: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2085,57 +2179,39 @@ def build_source_metric_placeholders(section: Dict[str, Any]) -> List[Dict[str, 
 
 
 def _calculate_single_source_metric(symbol: str, section: Dict[str, Any], source_key: str, source_label: str) -> Dict[str, Any]:
-    """Calculate one history-source metric card.
-
-    Keep this single-source so Web refreshes do not block on three slow external
-    sources at once. If a source is slow/broken, only that card fails.
-    """
-    config = read_yaml()
-    strategy_cfg = config.get("STRATEGY", {}) if isinstance(config, dict) else {}
-    fetch_days = int(safe_float(strategy_cfg.get("fetch_history_days", 400), 400))
-    ma_len = int(safe_float(strategy_cfg.get("ma_period_short", 150), 150))
-    price_scale = safe_float(section.get("price_scale", 1.0), 1.0)
-    trend_multiple = safe_float(section.get("trend_multiple", 1.2), 1.2)
-    sell_multiple = safe_float(section.get("sell_multiple", 1.5), 1.5)
-    item: Dict[str, Any] = {"key": source_key, "label": source_label, "source": source_key, "ok": False}
-    try:
-        from market_data import get_history_snapshot_by_source
-        snap = get_history_snapshot_by_source(symbol, fetch_days, price_scale=price_scale, source=source_key)
-        closes = [float(x) for x in (snap.closes or []) if float(x) > 0]
-        if len(closes) < max(2, ma_len // 2):
-            raise RuntimeError(f"K线数量不足: {len(closes)}")
-        ma_raw, ma_src = _calc_ma_for_metrics(closes, ma_len)
-        if ma_raw is None:
-            raise RuntimeError(f"无法计算MA{ma_len}: count={len(closes)}")
-        sideways = _compute_sideways_index_for_metrics(closes, section)
-        base_k = safe_float(section.get("k150", 1.0), 1.0)
-        min_k = safe_float(section.get("sideways_min_k150", 0.85), 0.85)
-        if base_k < min_k:
-            min_k = base_k
-        dynamic_k = min_k + (base_k - min_k) * (1.0 - sideways)
-        ma150 = ma_raw * dynamic_k
-        current_price = float(closes[-1])
-        item.update({
-            "ok": True,
-            "level": "INFO" if ma_src == "f" else "WARN",
-            "status": "OK" if ma_src == "f" else "WARN",
-            "source": display_source_name(snap.source),
-            "current_price": round(current_price, 4),
-            "ma150": round(ma150, 4),
-            "ma150_source": ma_src,
-            "sell": round(ma150 * trend_multiple, 4),
-            "clear": round(ma150 * sell_multiple, 4),
-            "dynamic_k": round(dynamic_k, 4),
-            "sideways_score": round(sideways, 4),
-            "date": snap.last_bar_date or "",
-            "count": len(closes),
-            "zone": _get_zone_for_metrics(current_price, ma150, section),
-            "error": "" if ma_src == "f" else f"策略数据为非完整口径: MA150来源={ma_src}",
-        })
-    except Exception as e:
-        item.update({"ok": False, "level": "ERROR", "status": "ERROR", "error": str(e)[:260], "date": "", "count": 0})
-    return item
-
+    """Return the final cached strategy metric; Web must not call history APIs directly."""
+    payload = _read_strategy_history_final_cache(symbol)
+    state = read_state()
+    node = {}
+    if isinstance(state, dict):
+        for _k, _v in state.items():
+            if isinstance(_v, dict) and normalize_symbol_input(str(_v.get("symbol", "") or "")) == normalize_symbol_input(symbol):
+                node = _v
+                break
+    metrics, _, err = _metric_from_strategy_history_payload(payload, section, node)
+    if metrics:
+        item = dict(metrics[0])
+        item.setdefault("key", "strategy_history")
+        return item
+    return {
+        "key": "strategy_history",
+        "label": "本标的策略值",
+        "source": "本标的策略值",
+        "ok": False,
+        "level": "PENDING",
+        "status": "PENDING",
+        "error": err or "已请求刷新本标的最终策略指标，等待后台策略写入结果。",
+        "current_price": None,
+        "ma150": None,
+        "ma150_source": "",
+        "sell": None,
+        "clear": None,
+        "dynamic_k": None,
+        "sideways_score": None,
+        "date": "",
+        "count": 0,
+        "zone": "",
+    }
 
 def _store_source_metrics(selected: str, symbol: str, metrics: List[Dict[str, Any]], error: str = "") -> Tuple[List[Dict[str, Any]], str, str]:
     updated_at = current_time_text()
@@ -2163,54 +2239,24 @@ def _store_source_metrics(selected: str, symbol: str, metrics: List[Dict[str, An
 
 
 def calculate_and_store_source_metric(selected: str, section: Dict[str, Any], source_key: str) -> Tuple[List[Dict[str, Any]], str, str]:
-    """Calculate and store one metric card selected by source_key."""
+    """Request final strategy metric refresh; do not calculate a single source in Web.
+
+    Source-level history snapshots are no longer generated from the status page.
+    The daemon will refresh the final SYMBOL_YYYY-MM-DD strategy cache.
+    """
     symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
-    if not symbol:
-        return build_source_metric_placeholders(section), "", "未找到标的代码"
-    options = _metric_source_options_for_symbol(symbol)
-    labels = dict(options)
-    if source_key not in labels:
-        return build_source_metric_placeholders(section), "", f"不支持的数据源: {source_key}"
-    # Preserve existing cards so other cards do not disappear.
-    existing, _, _ = get_source_metrics_for_status(selected, section)
-    if not existing:
-        existing = build_source_metric_placeholders(section)
-    by_key = {str(x.get("key", "")): dict(x) for x in existing if isinstance(x, dict)}
-    for key, label in options:
-        by_key.setdefault(key, {
-            "key": key, "label": label, "source": key, "ok": False,
-            "level": "INFO", "status": "PENDING",
-            "error": "", "current_price": None, "ma150": None,
-            "sell": None, "clear": None, "dynamic_k": None,
-            "sideways_score": None, "ma150_source": "", "date": "", "count": 0, "zone": "",
-        })
-    by_key[source_key] = _calculate_single_source_metric(symbol, section, source_key, labels[source_key])
-    metrics = [by_key[key] for key, _ in options]
-    return _store_source_metrics(selected, symbol, metrics, "")
+    payload = _read_strategy_history_final_cache(symbol) if symbol else {}
+    state = read_state()
+    node = state.get(selected, {}) if isinstance(state, dict) and isinstance(state.get(selected), dict) else {}
+    metrics, updated_at, err = _metric_from_strategy_history_payload(payload, section, node)
+    if metrics:
+        return metrics, updated_at, err
+    return build_source_metric_placeholders(section), "", "已请求刷新本标的最终策略指标，等待后台策略写入结果。"
 
 
 def calculate_and_store_source_metrics(selected: str, section: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str, str]:
-    """Return the latest adopted strategy metric for immediate Web display.
-
-    The backend dcf.py will refresh the final selected strategy source after the
-    request is queued. The Web process should not overwrite the status card with
-    a single default-source calculation, because the live strategy may have
-    adopted a better per-symbol fallback source.
-    """
-    symbol = normalize_symbol_input(str((section or {}).get("symbol", "") or ""))
-    if not symbol:
-        return build_source_metric_placeholders(section), "", "未找到标的代码"
-    state = read_state()
-    candidates = [selected, symbol]
-    for key, val in (state or {}).items():
-        if isinstance(val, dict) and str(val.get("symbol", "")).strip().upper() == symbol:
-            candidates.append(key)
-    for key in candidates:
-        node = state.get(key, {}) if isinstance(state, dict) else {}
-        fallback, updated_at, err = _source_metric_from_strategy_cache_for_status(node, section)
-        if fallback:
-            return _normalize_metric_cards(fallback), updated_at, err
-    return build_source_metric_placeholders(section), "", "已请求后台刷新，等待策略进程写入最终采用的数据源结果"
+    """Request final strategy metric refresh; never generate per-source snapshots."""
+    return calculate_and_store_source_metric(selected, section, "")
 
 
 def _sanitize_hk_reference_prices(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

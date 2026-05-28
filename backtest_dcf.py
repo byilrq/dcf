@@ -6,6 +6,8 @@ import math
 import json
 import argparse
 import logging
+import os
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -18,6 +20,7 @@ from strategy import (
     normalize_position_amount,
     calculate_pyramid_sell_plan,
     get_pyramid_sell_target_step,
+    get_clear_pyramid_target_step,
     get_trend_sell_decision,
     get_add_trade_decision,
     POSITION_EPSILON,
@@ -288,15 +291,18 @@ def get_market_weight(units, avg_cost, price, mode):
 # MA计算 & 横盘评分
 # ===========================
 def calc_ma_with_coef(closes, length, min_coef=None, reference_ma=None):
-    count = len(closes or [])
-    if count >= length:
+    if len(closes) >= length:
         ma_value = sum(closes[-length:]) / length
-        return ma_value, 'f'
-    min_bars = max(5, min(length // 2, length))
-    if count >= min_bars:
-        ma_value = sum(closes) / count
-        return ma_value, f'p{count}'
-    return None, 'insufficient_data'
+        return ma_value, 'p' if len(closes) < length * 2 else 'f'
+    elif len(closes) >= max(5, length // 2):
+        ma_value = sum(closes) / len(closes)
+        return ma_value, 'p'
+    elif min_coef is not None and reference_ma is not None:
+        ma_value = reference_ma * min_coef
+        return ma_value, 'c'
+    else:
+        return None, 'insufficient_data'
+
 
 def _compute_ma_series(closes, period):
     if len(closes) < period:
@@ -348,15 +354,94 @@ def compute_sideways_index(closes, cfg):
     return max(0.0, min(1.0, sideways_score))
 
 
-# ===========================
+
+HISTORY_CACHE_DIR = Path(__file__).resolve().parent / "data" / "history_cache"
+STRATEGY_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "strategy_history"
+
+
+def _cache_day() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _safe_symbol_for_file(symbol: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(symbol or "").upper().strip()) or "UNKNOWN"
+
+
+def _history_cache_path(symbol: str, source: str, days: int, price_scale: float = 1.0) -> Path:
+    HISTORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    safe_symbol = _safe_symbol_for_file(symbol)
+    safe_source = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(source or "unknown"))
+    scale_text = str(price_scale).replace(".", "p")
+    return HISTORY_CACHE_DIR / f"{safe_symbol}_{safe_source}_{int(days)}_{scale_text}_{_cache_day()}.json"
+
+
+
+def _df_from_history_cache(path: Path, days: int) -> pd.DataFrame | None:
+    """Read a backtest history-cache file from data/history_cache.
+
+    This cache is separate from strategy_history. It is used only to avoid
+    repeated historical API calls for the same backtest request.
+    """
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        rows = data.get("rows")
+        if not isinstance(rows, list) or not rows:
+            return None
+        df = pd.DataFrame(rows)
+        required = {"date", "raw_close", "adj_close", "dividend", "split_ratio"}
+        if not required.issubset(set(df.columns)):
+            return None
+        for col in ["raw_close", "adj_close", "dividend", "split_ratio"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["raw_close", "adj_close"]).copy()
+        df = df[(df["raw_close"] > 0) & (df["adj_close"] > 0)].copy()
+        if len(df) < 10:
+            return None
+        return df.tail(days).reset_index(drop=True)
+    except Exception:
+        return None
+
+
+def _save_history_cache(path: Path, symbol: str, source: str, df: pd.DataFrame) -> None:
+    """Write a backtest history-cache file under data/history_cache.
+
+    This intentionally does not write anything to data/strategy_history; that
+    directory is reserved for final per-symbol strategy indicator results.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        required = ["date", "raw_close", "adj_close", "dividend", "split_ratio"]
+        rows = df[required].to_dict(orient="records")
+        payload = {
+            "cache_day": _cache_day(),
+            "symbol": str(symbol or "").upper().strip(),
+            "source": str(source or ""),
+            "written_at": datetime.now().isoformat(timespec="seconds"),
+            "rows": rows,
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
+
 # 市场数据
 # ===========================
 def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
     source = get_backtest_source_for_symbol(symbol)
     if source and source != "yfinance":
         try:
-            from market_data import get_history_snapshot_by_source
-            snap = get_history_snapshot_by_source(symbol, days=days, price_scale=1.0, source=source)
+            cache_path = _history_cache_path(symbol, source, days, 1.0)
+            cached_df = _df_from_history_cache(cache_path, days)
+            if cached_df is not None and len(cached_df) >= 10:
+                logging.info(f"回测数据源缓存: {symbol} -> {source}, count={len(cached_df)}")
+                return cached_df
+            import market_data as _market_data
+            snap = _market_data.get_history_snapshot_by_source(symbol, days=days, price_scale=1.0, source=source)
             closes = list(snap.closes or [])[-days:]
             dates = list(snap.dates or [])[-len(closes):]
             raw_closes = list(getattr(snap, "raw_closes", None) or [])[-len(closes):]
@@ -394,6 +479,7 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
             if len(out) < 10:
                 raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(out)} 条")
             logging.info(f"回测数据源: {symbol} -> {source}, count={len(out)}")
+            _save_history_cache(cache_path, symbol, source, out)
             return out
         except Exception as e:
             raise RuntimeError(f"回测数据源 {source} 获取失败: {symbol}: {e}")
@@ -469,14 +555,24 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     fh.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(fh)
 
-    df = fetch_market_data(symbol, days)
+    ma_short_len = int(strategy.get("ma_period_short", 150))
+    requested_days = int(days)
+    fetch_days = max(requested_days + ma_short_len, requested_days)
+    df_full = fetch_market_data(symbol, fetch_days)
+    if len(df_full) > requested_days:
+        warmup_df = df_full.iloc[:-requested_days].copy()
+        df = df_full.iloc[-requested_days:].copy().reset_index(drop=True)
+    else:
+        warmup_df = df_full.iloc[0:0].copy()
+        df = df_full.copy().reset_index(drop=True)
+    warmup_adj_all = warmup_df["adj_close"].tolist() if not warmup_df.empty else []
+    warmup_available = min(len(warmup_adj_all), ma_short_len)
+
     dates = df["date"].tolist()
     raw_all = df["raw_close"].tolist()
     adj_all = df["adj_close"].tolist()
     div_all = df["dividend"].tolist()
     split_all = df["split_ratio"].tolist()
-
-    ma_short_len = int(strategy.get("ma_period_short", 150))
 
     position_mode = get_position_mode(cfg)
     target_units = get_target_units(cfg)
@@ -523,8 +619,10 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     last_add_price = raw_all[0]
     pyramid_active = False
     target_reached_once = False
+    pyramid_anchor_price = None
     pyramid_start_units = None
     pyramid_limit_units = None
+    clear_anchor_price = None
 
     trades_csv = outdir / f"trades_{symbol}.csv"
     with open(trades_csv, "w", newline="", encoding="utf-8") as f:
@@ -714,6 +812,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         logger.info(f"initial_cash_weight={format_percent_ratio(cash)} | fee_rate={fee_rate} | slippage_bp={slippage_bp}")
     logger.info("MODE: 信号=Adj Close；成交/估值=Close；事件=Dividends + Stock Splits")
     logger.info(f"backtest_pyramid_add_start=auto | live_config_pyramid_add_enabled={live_pyramid_add_enabled}")
+    logger.info(f"MA warmup={warmup_available}/{ma_short_len} | requested_bars={len(df)} | fetched_bars={len(df_full)}")
     logger.info("=" * 80)
 
     for i in range(len(df)):
@@ -768,7 +867,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                 f"cash {serialize_numeric(cash_before)} -> {serialize_numeric(cash)}"
             )
 
-        closes_adj = adj_all[: i + 1]
+        closes_adj = warmup_adj_all + adj_all[: i + 1]
 
         ma150_raw, _src150 = calc_ma_with_coef(closes_adj, ma_short_len)
         if ma150_raw is None:
@@ -784,17 +883,29 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
             ma150 = ma150_raw * dynamic_k150
             zone = get_zone(adj_price, ma150, cfg)
 
+        clear_price = ma150 * get_sell_multiple(cfg) if ma150 is not None else None
+        # Clear区首次进入时锁定第0步；离开到 TREND/BOX 不重置，重新进入 CHANCE 才重置。
+        if zone == "CLEAR_ZONE":
+            if clear_anchor_price is None or _safe_float(clear_anchor_price, 0.0) <= 0:
+                clear_anchor_price = clear_price
+                clear_step = 0
+        elif zone == "CHANCE_ZONE":
+            clear_anchor_price = None
+            clear_step = 0
+
         # 构建状态字典供策略函数使用（策略只在 strategy.py 中定义）
         state_dict = {
             "current_units": units,
             "last_trade_price": last_trade_price,
             "last_add_price": last_add_price,
+            "pyramid_anchor_price": pyramid_anchor_price,
+            "pyramid_start_units": pyramid_start_units,
+            "pyramid_limit_units": pyramid_limit_units,
             "pyramid_step": pyramid_step,
             "pyramid_active": pyramid_active,
             "target_reached_once": target_reached_once,
-            "pyramid_start_units": pyramid_start_units,
-            "pyramid_limit_units": pyramid_limit_units,
             "clear_step": clear_step,
+            "clear_anchor_price": clear_anchor_price,
             "initial_entry_price": first_trade_raw_price if first_trade_raw_price is not None else raw_all[0],
         }
 
@@ -817,9 +928,10 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         # steps must continue from that state instead of resetting every bar.
         pyramid_step = new_state.get("pyramid_step", pyramid_step)
         last_add_price = new_state.get("last_add_price", last_add_price)
-        target_reached_once = new_state.get("target_reached_once", target_reached_once)
+        pyramid_anchor_price = new_state.get("pyramid_anchor_price", pyramid_anchor_price)
         pyramid_start_units = new_state.get("pyramid_start_units", pyramid_start_units)
         pyramid_limit_units = new_state.get("pyramid_limit_units", pyramid_limit_units)
+        target_reached_once = new_state.get("target_reached_once", target_reached_once)
         pyramid_active = new_state.get("pyramid_active", pyramid_active)
         state_dict.update(new_state)
         state_dict["current_units"] = units
@@ -835,10 +947,13 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                            raw_price, adj_price, ma150, dividend, split_ratio)
                 last_trade_price = new_state.get("last_trade_price", last_trade_price)
         elif zone == "CLEAR_ZONE":
-            pyramid_weights = cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255])
+            pyramid_weights = cfg.get("clear_pyramid_weights", cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255]))
             sell_plan = calculate_pyramid_sell_plan(base_units, pyramid_weights, position_mode, lot_size)
+            clear_steps_cfg = int(_safe_float(cfg.get("clear_pyramid_steps", cfg.get("pyramid_steps", len(sell_plan))), len(sell_plan)))
+            if clear_steps_cfg > 0:
+                sell_plan = sell_plan[:clear_steps_cfg]
             total_steps = len(sell_plan)
-            target_step = get_pyramid_sell_target_step(raw_price, ma150, cfg, total_steps)
+            target_step = get_clear_pyramid_target_step(raw_price, clear_anchor_price or (ma150 * get_sell_multiple(cfg)), cfg, total_steps)
             if target_step > clear_step:
                 for step_info in sell_plan[clear_step:target_step]:
                     step_units = min(step_info["units"], units)
@@ -1025,6 +1140,10 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "name": name,
         "position_mode": position_mode,
         "bars": len(df),
+        "requested_bars": requested_days,
+        "fetched_bars": len(df_full),
+        "ma_warmup_available": warmup_available,
+        "ma_warmup_required": ma_short_len,
         "initial_units": initial_units,
         "initial_units_raw": str(initial_units_raw),
         "backtest_pyramid_add_start": "auto",
@@ -1084,6 +1203,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         rf.write(f"标的: {summary['symbol']} | 名称: {summary['name']}\n")
         rf.write(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}\n")
         rf.write(f"K线数量: {summary['bars']}\n")
+        rf.write(f"MA预热: {summary.get('ma_warmup_available', 0)}/{summary.get('ma_warmup_required', 150)}根\n")
         rf.write(f"回测倒金字塔起始开关: {summary['backtest_pyramid_add_start']}\n")
         if summary.get('live_pyramid_add_enabled') != summary.get('backtest_pyramid_add_start'):
             rf.write(f"实盘倒金字塔开关: {summary['live_pyramid_add_enabled']}（回测起步已忽略）\n")
@@ -1195,7 +1315,7 @@ def main():
     ap.add_argument("--initial-units", default=None, help="回测临时初始仓位，只作为第一交易日 current_units，默认 5%")
     ap.add_argument("--base-units", default=None, help="覆盖策略配置中的长期底仓 base_units（兼容旧用法，不建议从 Web 回测页使用）")
     ap.add_argument("--target-units", default=None, help="覆盖策略配置中的补仓初始仓位 target_units（兼容旧用法，不建议从 Web 回测页使用）")
-    ap.add_argument("--limit-target", type=float, default=None, help="覆盖极限仓位倍数（极限仓位=底仓×倍数）")
+    ap.add_argument("--limit-target", type=float, default=None, help="覆盖极限仓位倍数")
     args = ap.parse_args()
 
     base_dir = Path(__file__).resolve().parent
@@ -1232,6 +1352,7 @@ def main():
     print(f"标的: {summary['symbol']} | 名称: {summary['name']}")
     print(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}")
     print(f"K线数量: {summary['bars']}")
+    print(f"MA预热: {summary.get('ma_warmup_available', 0)}/{summary.get('ma_warmup_required', 150)}根")
     print(f"回测初始仓位: {format_units_for_display(summary['initial_units'], summary['position_mode'])}")
     print(f"期末持仓收益率: {summary['final_holding_return_rate'] * 100:.2f}%")
     print(f"综合收益率: {summary['stock_total_return'] * 100:.2f}%")

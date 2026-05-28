@@ -24,6 +24,7 @@ from strategy import (
     normalize_position_amount,
     calculate_pyramid_sell_plan,
     get_pyramid_sell_target_step,
+    get_clear_pyramid_target_step,
     get_trend_sell_decision,
     get_pyramid_add_enabled,
     get_add_trade_decision,
@@ -40,7 +41,6 @@ SYSTEM_CONFIG_FILE = BASE_DIR / "system_config.json"
 LOG_DIR = BASE_DIR / "log"
 TRADE_LOG_FILE = BASE_DIR / "trade_log.csv"
 SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
-STRATEGY_HISTORY_DIR = BASE_DIR / "data" / "strategy_history"
 STATE_BACKUP_DIR = BASE_DIR / "data" / "state_backups"
 STATE_BACKUP_INDEX = STATE_BACKUP_DIR / "index.json"
 PUSH_DETAIL_LOG_FILE = BASE_DIR / "data" / "push_details.jsonl"
@@ -266,13 +266,15 @@ def build_default_symbol_state(cfg):
         "last_status_msg": None,
         "pyramid_step": 0,
         "clear_step": 0,
+        "clear_anchor_price": None,
         "strategy_run": normalize_strategy_run_value(cfg.get("strategy_run", "on"), "on"),
         "position_mode": get_position_mode(cfg),
         "last_add_price": None,
-        "pyramid_active": False,
-        "target_reached_once": False,
+        "pyramid_anchor_price": None,
         "pyramid_start_units": None,
         "pyramid_limit_units": None,
+        "pyramid_active": False,
+        "target_reached_once": False,
     }
 
 def normalize_symbol_state(name, cfg, entry):
@@ -297,18 +299,20 @@ def normalize_symbol_state(name, cfg, entry):
         entry["pyramid_step"] = 0
     if "clear_step" not in entry:
         entry["clear_step"] = 0
+    if "clear_anchor_price" not in entry:
+        entry["clear_anchor_price"] = None
     if "last_add_price" not in entry:
         entry["last_add_price"] = None
-    if "pyramid_active" not in entry:
-        entry["pyramid_active"] = False
-    if "target_reached_once" not in entry:
-        entry["target_reached_once"] = False
-        entry["pyramid_start_units"] = None
-        entry["pyramid_limit_units"] = None
+    if "pyramid_anchor_price" not in entry:
+        entry["pyramid_anchor_price"] = None
     if "pyramid_start_units" not in entry:
         entry["pyramid_start_units"] = None
     if "pyramid_limit_units" not in entry:
         entry["pyramid_limit_units"] = None
+    if "pyramid_active" not in entry:
+        entry["pyramid_active"] = False
+    if "target_reached_once" not in entry:
+        entry["target_reached_once"] = False
     current_units = entry.get("current_units", live_units if live_units is not None else base_units)
     try:
         current_units = float(current_units)
@@ -333,11 +337,13 @@ def normalize_symbol_state(name, cfg, entry):
         entry["avg_cost"] = live_avg_cost if live_avg_cost is not None else 0.0
         entry["pyramid_step"] = 0
         entry["clear_step"] = 0
+        entry["clear_anchor_price"] = None
         entry["last_add_price"] = None
-        entry["pyramid_active"] = False
-        entry["target_reached_once"] = False
+        entry["pyramid_anchor_price"] = None
         entry["pyramid_start_units"] = None
         entry["pyramid_limit_units"] = None
+        entry["pyramid_active"] = False
+        entry["target_reached_once"] = False
     else:
         # Runtime state is authoritative. Config changes or program restarts must not
         # silently overwrite live strategy anchors/position state. YAML current_units
@@ -1274,13 +1280,6 @@ def _display_source_name(source):
             return "本地缓存"
         return s or "未知"
 
-
-
-def _format_strategy_source_display(source, fallback=False):
-    """Display strategy history source; mark per-symbol fallback without changing system source."""
-    text = _display_source_name(source)
-    return f"{text}（本轮兜底）" if fallback and "本轮兜底" not in text else text
-
 def _strategy_level_badge(level: str) -> str:
     level = str(level or "INFO").upper()
     if level == "ERROR":
@@ -1411,17 +1410,23 @@ def _mark_market_ok(dcf_state, snapshot):
 # 计算简单移动平均线 MA（带数据不足处理）
 # ===========================
 def calc_ma_with_coef(closes, length, min_coef=None, reference_ma=None):
-    # 冷启动均线口径：满 length 根为正式 MA；不足时若达到 ma_min_bars，则使用部分样本均线并标记 pN。
-    # pN 会在推送/状态中明确提示，不再伪装成正式 MA150。
-    count = len(closes or [])
+    """Calculate MA with explicit cold-start marking.
+
+    - f: full MA with length bars.
+    - pN: provisional MA using N bars when N >= ma_min_bars (default 75).
+    - insufficient_data: fewer than ma_min_bars bars.
+
+    pN is intentionally visible in push/status so cold-start MA is never mistaken
+    for a formal MA150.
+    """
+    closes = list(closes or [])
+    count = len(closes)
     if count >= length:
-        ma_value = sum(closes[-length:]) / length
-        return ma_value, 'f'
-    min_bars = int(_safe_float(STRATEGY.get('ma_min_bars', 75), 75)) if 'STRATEGY' in globals() else max(5, length // 2)
-    min_bars = max(5, min(min_bars, length))
+        return sum(closes[-length:]) / length, 'f'
+    min_bars = int(_safe_float(STRATEGY.get('ma_min_bars', 75), 75)) if 'STRATEGY' in globals() else 75
+    min_bars = max(1, min(min_bars, length))
     if count >= min_bars:
-        ma_value = sum(closes) / count
-        return ma_value, f'p{count}'
+        return sum(closes) / count, f'p{count}'
     return None, 'insufficient_data'
 
 # ===========================
@@ -1513,109 +1518,41 @@ def _read_system_config_for_metrics():
     return cfg
 
 
+
 def _history_source_options_for_symbol(symbol):
-    """Return the selected 回测/策略数据源 only; labels are customer-facing names."""
+    """Return historical strategy sources in fallback order.
+
+    The system-selected source is tried first. Other sources are only per-symbol,
+    per-run fallbacks and never rewrite system_config.json or dcf.yaml.
+    """
     raw = str(symbol or "").upper().strip()
     system_cfg = _read_system_config_for_metrics()
     if raw.startswith("HK"):
-        key = system_cfg.get("HK_BACKTEST_SOURCE", "historical_hk1")
+        selected = system_cfg.get("HK_BACKTEST_SOURCE", "historical_hk1")
         labels = {
             "historical_hk1": "腾讯港股日K",
-            "historical_hk2": "Yahoo港股日K",
-            "historical_hk3": "备用",
+            "historical_hk2": "Yahoo港股含权息",
+            "historical_hk3": "备用港股日K",
         }
+        order = [selected, "historical_hk1", "historical_hk2", "historical_hk3"]
     else:
-        key = system_cfg.get("A_BACKTEST_SOURCE", "historical_a1")
+        selected = system_cfg.get("A_BACKTEST_SOURCE", "historical_a1")
         labels = {
             "historical_a1": "腾讯A股/ETF日K",
             "historical_a2": "新浪A股/ETF日K",
             "historical_a3": "BaoStock A股含权息",
         }
-    return [(key, labels.get(key, _display_source_name(key)))]
-
-
-
-def _history_source_all_options_for_symbol(symbol):
-    """Return selected history source first, then all known fallback history sources for the symbol."""
-    raw = str(symbol or "").upper().strip()
-    if raw.startswith("HK"):
-        all_items = [
-            ("historical_hk1", "腾讯港股日K"),
-            ("historical_hk2", "Yahoo港股日K"),
-            ("historical_hk3", "备用"),
-        ]
-    else:
-        all_items = [
-            ("historical_a1", "腾讯A股/ETF日K"),
-            ("historical_a2", "新浪A股/ETF日K"),
-            ("historical_a3", "BaoStock A股含权息"),
-        ]
-    selected = _history_source_options_for_symbol(symbol)
-    out = []
+        order = [selected, "historical_a1", "historical_a2", "historical_a3"]
     seen = set()
-    for key, label in selected + all_items:
-        if key not in seen:
-            seen.add(key)
-            out.append((key, label))
+    out = []
+    for key in order:
+        key = str(key or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append((key, labels.get(key, _display_source_name(key))))
     return out
 
-
-def _select_strategy_history_snapshot(symbol, cfg, fetch_days, price_scale, ma_short_len):
-    """Select the best strategy history source for MA calculation.
-
-    Prefer a full MA source (ma_source == 'f') even if an earlier fallback source
-    can only produce a cold-start partial MA such as p92.  Only when every
-    history source fails to provide a full MA do we fall back to the best partial
-    result.  This prevents a short-history quote source from stopping the
-    fallback chain too early.
-    """
-    source_options = _history_source_all_options_for_symbol(symbol)
-    default_source_key = source_options[0][0] if source_options else ""
-    attempts = []
-    best_partial = None
-    for source_key, source_label in source_options:
-        try:
-            snap = get_history_snapshot_by_source(symbol, fetch_days, price_scale=price_scale, source=source_key)
-            closes = list(getattr(snap, "closes", []) or [])
-            count = len(closes)
-            ma_raw, ma_src = calc_ma_with_coef(closes, ma_short_len)
-            attempt = {
-                "key": source_key,
-                "label": source_label,
-                "count": count,
-                "date": getattr(snap, "last_bar_date", "") or "",
-                "ma_source": ma_src,
-                "ok": ma_raw is not None,
-            }
-            attempts.append(attempt)
-            if ma_raw is not None and ma_src == 'f':
-                attempt["selected"] = True
-                attempt["selection_reason"] = "full_ma"
-                attempt["fallback"] = bool(source_key != default_source_key)
-                return snap, source_key, source_label, ma_raw, ma_src, attempts
-            if ma_raw is not None:
-                if best_partial is None or count > best_partial[5]:
-                    best_partial = (snap, source_key, source_label, ma_raw, ma_src, count)
-        except Exception as e:
-            attempts.append({
-                "key": source_key,
-                "label": source_label,
-                "count": 0,
-                "date": "",
-                "ma_source": "",
-                "ok": False,
-                "error": str(e)[:160],
-            })
-    if best_partial is not None:
-        snap, source_key, source_label, ma_raw, ma_src, _count = best_partial
-        for attempt in attempts:
-            if attempt.get("key") == source_key:
-                attempt["selected"] = True
-                attempt["selection_reason"] = "best_partial_ma"
-                attempt["fallback"] = bool(source_key != default_source_key)
-                break
-        return snap, source_key, source_label, ma_raw, ma_src, attempts
-    return None, "", "", None, "insufficient_data", attempts
 
 def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, snap, ma_short_len):
     closes = list(getattr(snap, "closes", []) or [])
@@ -1655,16 +1592,14 @@ def _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, sna
         "dynamic_k": round(float(dynamic_k150), 4),
         "sideways_score": round(float(sideways_score), 4),
         "zone": zone,
-        "error": "" if ma150_source == "f" else f"冷启动MA: MA150来源={ma150_source}，未满{ma_short_len}根K线",
+        "error": "" if ma150_source == "f" else f"策略数据为非完整口径: MA150来源={ma150_source}",
     }
 
 
 def _source_metric_from_strategy_state(symbol, cfg, dcf_state):
     """Build the Web 回测/策略指标 card from the latest strategy calculation cache."""
+    strategy_source = _display_source_name(dcf_state.get("strategy_source") or _strategy_source_for_symbol(symbol))
     cache = dcf_state.get("strategy_calc_cache") if isinstance(dcf_state.get("strategy_calc_cache"), dict) else {}
-    strategy_source = _display_source_name(dcf_state.get("strategy_source") or cache.get("strategy_source") or _strategy_source_for_symbol(symbol))
-    strategy_source_fallback = bool(dcf_state.get("strategy_source_fallback", cache.get("strategy_source_fallback", False)))
-    strategy_source_display = str(dcf_state.get("strategy_source_display") or cache.get("strategy_source_display") or _format_strategy_source_display(strategy_source, strategy_source_fallback))
     ma150 = _safe_float(dcf_state.get("ma_short", cache.get("ma150")), 0.0)
     dynamic_k = _safe_float(dcf_state.get("dynamic_k150", cache.get("dynamic_k150")), 0.0)
     sideways = _safe_float(dcf_state.get("sideways_score", cache.get("sideways_score")), 0.0)
@@ -1680,7 +1615,7 @@ def _source_metric_from_strategy_state(symbol, cfg, dcf_state):
     if ok and ma150_source and ma150_source != "f" and level == "INFO":
         level = "WARN"
         status = "WARN"
-        err = err or f"冷启动MA: MA150来源={ma150_source}，未满{ma_short_len}根K线"
+        err = err or f"策略数据为非完整口径: MA150来源={ma150_source}"
     zone = ""
     try:
         if ok:
@@ -1688,12 +1623,12 @@ def _source_metric_from_strategy_state(symbol, cfg, dcf_state):
     except Exception:
         zone = ""
     return {
-        "key": strategy_source_display,
-        "label": f"{strategy_source_display} 策略值",
+        "key": strategy_source,
+        "label": f"{strategy_source} 策略值",
         "ok": bool(ok and level != "ERROR"),
         "level": level,
         "status": status,
-        "source": strategy_source_display,
+        "source": strategy_source,
         "date": last_bar_date,
         "updated_at": updated_at,
         "count": history_count,
@@ -1709,137 +1644,313 @@ def _source_metric_from_strategy_state(symbol, cfg, dcf_state):
     }
 
 
-def _safe_strategy_history_filename(name, symbol):
-    raw = str(symbol or name or "strategy").strip().upper() or "strategy"
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw) + ".json"
+
+def _strategy_history_dir():
+    path = BASE_DIR / "data" / "strategy_history"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
-def write_strategy_history_record(name, symbol, dcf_state, cfg=None):
-    """Persist the final usable strategy calculation result for this symbol.
+def _strategy_history_path(symbol, day_text=None):
+    safe_symbol = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(symbol or "").upper().strip()) or "UNKNOWN"
+    day_text = day_text or strategy_now().strftime("%Y-%m-%d")
+    return _strategy_history_dir() / f"{safe_symbol}_{day_text}.json"
 
-    This is a per-symbol record of the selected strategy calculation result. It
-    does not change the global system data-source setting. The strategy still
-    recomputes from the default source first on the next cycle, but this file is
-    useful for status display, auditing and confirming which source/result was
-    actually used.
-    """
+
+
+
+def _read_strategy_history_cache(symbol, day_text=None):
+    path = _strategy_history_path(symbol, day_text)
+    if not path.exists():
+        return None
     try:
-        STRATEGY_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        cache = dcf_state.get("strategy_calc_cache") if isinstance(dcf_state.get("strategy_calc_cache"), dict) else {}
-        metric = _source_metric_from_strategy_state(symbol, cfg or {}, dcf_state) if dcf_state.get("ma_short") else {}
-        rec = {
-            "name": str(name or ""),
-            "symbol": str(symbol or "").upper(),
-            "updated_at": str(dcf_state.get("strategy_calc_updated_at") or strategy_now().strftime("%Y-%m-%d %H:%M:%S")),
-            "strategy_source": str(dcf_state.get("strategy_source") or cache.get("strategy_source") or ""),
-            "strategy_source_display": str(dcf_state.get("strategy_source_display") or cache.get("strategy_source_display") or ""),
-            "strategy_source_fallback": bool(dcf_state.get("strategy_source_fallback", cache.get("strategy_source_fallback", False))),
-            "strategy_status": str(dcf_state.get("strategy_status") or cache.get("strategy_status") or ""),
-            "strategy_level": str(dcf_state.get("strategy_level") or ""),
-            "strategy_error": str(dcf_state.get("strategy_error") or ""),
-            "ma150": dcf_state.get("ma_short"),
-            "ma150_source": str(dcf_state.get("ma_short_source") or cache.get("ma150_source") or ""),
-            "dynamic_k150": dcf_state.get("dynamic_k150"),
-            "sideways_score": dcf_state.get("sideways_score"),
-            "last_price": dcf_state.get("last_price"),
-            "last_bar_date": str(cache.get("last_bar_date") or dcf_state.get("last_valid_bar_date") or ""),
-            "history_count": cache.get("history_count", dcf_state.get("history_count", 0)),
-            "metric": metric,
-            "attempts": dcf_state.get("strategy_source_attempts") or [],
-        }
-        path = STRATEGY_HISTORY_DIR / _safe_strategy_history_filename(name, symbol)
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logging.debug(f"读取策略历史缓存失败 {path}: {e}")
+        return None
+
+
+def _write_strategy_history_cache(symbol, record, day_text=None):
+    try:
+        path = _strategy_history_path(symbol, day_text)
+        rec = {str(k): _json_safe_value(v) for k, v in (record or {}).items()}
+        rec["symbol"] = str(symbol or "").upper().strip()
+        rec["cache_date"] = day_text or strategy_now().strftime("%Y-%m-%d")
+        rec["updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
+        # Keep only recent cache files per symbol to avoid unbounded growth.
+        safe_symbol = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(symbol or "").upper().strip()) or "UNKNOWN"
+        files = sorted(_strategy_history_dir().glob(f"{safe_symbol}_*.json"), key=lambda x: x.name, reverse=True)
+        for old_path in files[10:]:
+            try:
+                old_path.unlink()
+            except Exception:
+                pass
+        return True
     except Exception as e:
-        logging.debug(f"写入策略计算历史失败: {name}/{symbol}: {e}")
+        logging.debug(f"写入策略历史缓存失败: {e}")
+        return False
 
+
+def _metric_payload_to_strategy_cache(payload, cfg):
+    """Convert a stored strategy-history record back to runtime values."""
+    if not isinstance(payload, dict):
+        return None
+    ma150 = _safe_float(payload.get("ma150"), 0.0)
+    ma150_raw = _safe_float(payload.get("ma150_raw"), 0.0)
+    dynamic_k150 = _safe_float(payload.get("dynamic_k150"), 1.0)
+    if ma150 <= 0 and ma150_raw > 0:
+        ma150 = ma150_raw * dynamic_k150
+    if ma150_raw <= 0 and ma150 > 0 and dynamic_k150 > 0:
+        ma150_raw = ma150 / dynamic_k150
+    if ma150 <= 0:
+        return None
+    return {
+        "strategy_source_key": str(payload.get("strategy_source_key") or ""),
+        "strategy_source": _display_source_name(payload.get("strategy_source") or payload.get("strategy_source_key") or ""),
+        "strategy_source_fallback": bool(payload.get("strategy_source_fallback", False)),
+        "strategy_status": str(payload.get("strategy_status") or ("OK" if str(payload.get("ma150_source")) == "f" else "WARN")),
+        "last_bar_date": str(payload.get("last_bar_date") or payload.get("date") or ""),
+        "history_count": _safe_int(payload.get("history_count", payload.get("count", 0)), 0),
+        "ma150": ma150,
+        "ma150_raw": ma150_raw,
+        "ma150_source": str(payload.get("ma150_source") or ""),
+        "sideways_score": _safe_float(payload.get("sideways_score"), 0.0),
+        "dynamic_k150": dynamic_k150,
+        "k150": _safe_float(payload.get("k150", cfg.get("k150", 1.0)), _safe_float(cfg.get("k150", 1.0), 1.0)),
+        "attempts": payload.get("strategy_source_attempts") if isinstance(payload.get("strategy_source_attempts"), list) else [],
+        "updated_at": str(payload.get("updated_at") or strategy_now().strftime("%Y-%m-%d %H:%M:%S")),
+    }
+
+
+def _build_strategy_calc_from_snapshot(source_key, source_label, symbol, cfg, snap, ma_short_len):
+    closes = list(getattr(snap, "closes", []) or [])
+    ma150_raw, ma150_source = calc_ma_with_coef(closes, ma_short_len)
+    if ma150_raw is None:
+        raise RuntimeError(f"历史数据不足，无法计算MA150，count={len(closes)}")
+    sideways_score = float(compute_sideways_index(closes, cfg))
+    base_k150 = float(cfg.get("k150", 1.0))
+    min_k150 = float(cfg.get("sideways_min_k150", 0.85))
+    if base_k150 < min_k150:
+        min_k150 = base_k150
+    dynamic_k150 = min_k150 + (base_k150 - min_k150) * (1.0 - sideways_score)
+    ma150 = ma150_raw * dynamic_k150
+    return {
+        "strategy_source_key": source_key,
+        "strategy_source": source_label or _display_source_name(source_key),
+        "strategy_status": "OK" if ma150_source == "f" else "WARN",
+        "last_bar_date": str(getattr(snap, "last_bar_date", "") or ""),
+        "history_count": len(closes),
+        "ma150": ma150,
+        "ma150_raw": ma150_raw,
+        "ma150_source": ma150_source,
+        "sideways_score": sideways_score,
+        "dynamic_k150": dynamic_k150,
+        "k150": base_k150,
+        "updated_at": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _select_strategy_calc_for_symbol(symbol, cfg, market_snapshot, fetch_days, ma_short_len, dcf_state=None):
+    """Return the final strategy calculation result for this symbol/day.
+
+    Result selection ignores which source produced it after calculation. The
+    source is recorded for diagnosis only. Cache is per symbol + strategy date;
+    when it is present, intraday loops reuse it and only realtime price is
+    refreshed.
+    """
+    dcf_state = dcf_state if isinstance(dcf_state, dict) else {}
+    today_key = strategy_now().strftime("%Y-%m-%d")
+    cached = _metric_payload_to_strategy_cache(_read_strategy_history_cache(symbol, today_key), cfg)
+    if cached:
+        cached["from_cache"] = True
+        return cached
+
+    # Daily failure cache: if all historical sources were already traversed today,
+    # do not hammer the same sources every loop. The alert path still pushes only
+    # once per day. Clear this by deleting state or waiting for the next strategy day.
+    if str(dcf_state.get("strategy_history_failed_date") or "") == today_key:
+        cached_reason = str(dcf_state.get("strategy_history_failed_reason") or "").strip()
+        if cached_reason:
+            raise RuntimeError(cached_reason)
+
+    price_scale = cfg.get("price_scale", 1.0)
+    selected_key = _canonical_market_source((_read_system_config_for_metrics().get("HK_BACKTEST_SOURCE") if str(symbol).upper().startswith("HK") else _read_system_config_for_metrics().get("A_BACKTEST_SOURCE")) or "")
+    attempts = []
+    best_partial = None
+    best_partial_count = -1
+    for source_key, source_label in _history_source_options_for_symbol(symbol):
+        source_display = source_label or _display_source_name(source_key)
+        try:
+            import market_data as _market_data
+            snap = _market_data.get_history_snapshot_by_source(symbol, fetch_days, price_scale=price_scale, source=source_key)
+            # market_data may write source-level diagnostic snapshots as a side effect;
+            # strategy_history keeps only SYMBOL_YYYY-MM-DD.json final results.
+            calc = _build_strategy_calc_from_snapshot(source_key, source_display, symbol, cfg, snap, ma_short_len)
+            fallback = _canonical_market_source(source_key) != selected_key
+            calc["strategy_source_fallback"] = bool(fallback)
+            attempts.append({
+                "source_key": source_key,
+                "source": source_display,
+                "status": calc.get("strategy_status"),
+                "ma150_source": calc.get("ma150_source"),
+                "count": calc.get("history_count"),
+                "last_bar_date": calc.get("last_bar_date"),
+                "fallback": bool(fallback),
+                "error": "",
+            })
+            calc["strategy_source_attempts"] = attempts[:]
+            if str(calc.get("ma150_source")) == "f":
+                dcf_state.pop("strategy_history_failed_date", None)
+                dcf_state.pop("strategy_history_failed_reason", None)
+                _write_strategy_history_cache(symbol, calc, today_key)
+                calc["from_cache"] = False
+                return calc
+            count = _safe_int(calc.get("history_count", 0), 0)
+            if count > best_partial_count:
+                best_partial = dict(calc)
+                best_partial_count = count
+        except Exception as e:
+            attempts.append({
+                "source_key": source_key,
+                "source": source_display,
+                "status": "ERROR",
+                "ma150_source": "",
+                "count": 0,
+                "last_bar_date": "",
+                "fallback": _canonical_market_source(source_key) != selected_key,
+                "error": str(e)[:240],
+            })
+
+    if best_partial:
+        best_partial["strategy_source_attempts"] = attempts[:]
+        dcf_state.pop("strategy_history_failed_date", None)
+        dcf_state.pop("strategy_history_failed_reason", None)
+        _write_strategy_history_cache(symbol, best_partial, today_key)
+        best_partial["from_cache"] = False
+        return best_partial
+
+    error_text = "；".join(f"{x.get('source')}: {x.get('error') or x.get('status')}" for x in attempts) or "无可用历史数据源"
+    final_error = f"全部历史数据源失败，无法计算MA150：{error_text}"
+    dcf_state["strategy_history_failed_date"] = today_key
+    dcf_state["strategy_history_failed_reason"] = final_error
+    dcf_state["strategy_source_attempts"] = attempts[:]
+    raise RuntimeError(final_error)
+
+
+def _maybe_strategy_history_alert(dcf_state, msg, reason_key):
+    """Push strategy-history data errors at most once per symbol per day."""
+    day_key = strategy_now().strftime("%Y%m%d")
+    alert_key = f"{day_key}|strategy_history_failed"
+    if dcf_state.get("last_strategy_history_alert_key") == alert_key:
+        return []
+    dcf_state["last_strategy_history_alert_key"] = alert_key
+    return [msg]
 
 def refresh_source_metrics_for_symbol(name, cfg, state):
-    """Refresh the final adopted strategy-source metric for one symbol.
+    """Refresh the final strategy metric for one symbol without source-level snapshots.
 
-    The card shown in Web is the same kind of result the live strategy uses:
-    default source first, then per-symbol fallback sources, preferring a full
-    MA150 result over a cold-start partial MA. This does not change the global
-    system source setting.
+    This uses the same final-source selection path as live strategy calculation:
+    default history source first, then fallback sources, preferring a complete MA150.
+    It writes only the compact SYMBOL_YYYY-MM-DD strategy result cache and the
+    state source_metrics card. It deliberately does not calculate/store per-source
+    history snapshots such as SYMBOL_historical_a3_400_1p0_YYYY-MM-DD.json.
     """
     symbol = str((cfg or {}).get("symbol", "") or "").strip().upper()
     dcf_state = state.setdefault(name, build_default_symbol_state(cfg))
     fetch_days = int(_safe_float(STRATEGY.get("fetch_history_days", 400), 400))
     ma_short_len = int(_safe_float(STRATEGY.get("ma_period_short", 150), 150))
-    price_scale = cfg.get("price_scale", 1.0)
+    current_price = _safe_float(dcf_state.get("last_price", 0.0), 0.0)
     try:
-        history_snap, source_key, source_label, ma_raw, ma_src, attempts = _select_strategy_history_snapshot(
-            symbol, cfg, fetch_days, price_scale, ma_short_len
+        strategy_calc = _select_strategy_calc_for_symbol(
+            symbol, cfg, None, fetch_days, ma_short_len, dcf_state=dcf_state
         )
-        dcf_state["strategy_source_attempts"] = attempts
-        if history_snap is None or ma_raw is None:
-            detail = "；".join(
-                f"{x.get('label') or x.get('key')}: {x.get('count', 0)}条" + (f"/{x.get('ma_source')}" if x.get('ma_source') else "")
-                for x in attempts if isinstance(x, dict)
-            )
-            raise RuntimeError("全部历史数据源均无法计算MA150" + (f"（{detail}）" if detail else ""))
-        metric = _calc_source_metric_from_snapshot(source_key, source_label, symbol, cfg, history_snap, ma_short_len)
-        selected_attempt = next((x for x in attempts if isinstance(x, dict) and x.get("selected")), {})
-        fallback = bool(selected_attempt.get("fallback"))
-        source_display = _format_strategy_source_display(_display_source_name(source_key or source_label), fallback)
-        metric["source"] = source_display
-        metric["label"] = f"{source_display} 策略值"
-        metric["key"] = source_display
-        metric["fallback"] = fallback
-        metric["selection_reason"] = str(selected_attempt.get("selection_reason") or "")
-        updated_at = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
-        dcf_state["strategy_source"] = _display_source_name(source_key or source_label)
-        dcf_state["strategy_source_display"] = source_display
-        dcf_state["strategy_source_fallback"] = fallback
-        dcf_state["strategy_source_selection_reason"] = str(selected_attempt.get("selection_reason") or "")
-        dcf_state["strategy_status"] = metric.get("status", "OK")
-        dcf_state["strategy_level"] = metric.get("level", "INFO")
-        dcf_state["strategy_error"] = metric.get("error", "") or ""
-        dcf_state["strategy_calc_updated_at"] = updated_at
-        dcf_state["ma_short"] = metric.get("ma150")
-        dcf_state["ma_short_source"] = metric.get("ma150_source")
-        dcf_state["dynamic_k150"] = metric.get("dynamic_k")
-        dcf_state["sideways_score"] = metric.get("sideways_score")
-        dcf_state["last_price"] = metric.get("current_price") or dcf_state.get("last_price")
+        strategy_source = _display_source_name(strategy_calc.get("strategy_source") or strategy_calc.get("strategy_source_key") or _strategy_source_for_symbol(symbol))
+        if bool(strategy_calc.get("strategy_source_fallback")):
+            strategy_source = f"{strategy_source}（本轮兜底）"
+        ma150 = _safe_float(strategy_calc.get("ma150"), 0.0)
+        ma150_raw = _safe_float(strategy_calc.get("ma150_raw"), 0.0)
+        ma150_source = str(strategy_calc.get("ma150_source") or "")
+        sideways_score = _safe_float(strategy_calc.get("sideways_score"), 0.0)
+        dynamic_k150 = _safe_float(strategy_calc.get("dynamic_k150"), 1.0)
+        base_k150 = _safe_float(strategy_calc.get("k150"), float(cfg.get("k150", 1.0)))
+        strategy_status = strategy_calc.get("strategy_status") or ("OK" if ma150_source == "f" else "WARN")
+        level = "INFO" if strategy_status == "OK" else "WARN"
+        error = "" if ma150_source == "f" else f"策略数据为非完整口径: MA150来源={ma150_source}"
+        updated_at = strategy_calc.get("updated_at") or strategy_now().strftime("%Y-%m-%d %H:%M:%S")
         dcf_state["strategy_calc_cache"] = {
-            "key": _strategy_calc_cache_key(symbol, dcf_state["strategy_source"], metric.get("date", ""), ma_short_len, cfg),
             "symbol": symbol,
-            "strategy_source": dcf_state["strategy_source"],
-            "strategy_source_display": source_display,
-            "strategy_source_fallback": fallback,
-            "strategy_source_selection_reason": dcf_state["strategy_source_selection_reason"],
-            "strategy_status": metric.get("status", "OK"),
-            "last_bar_date": metric.get("date", ""),
-            "ma150": metric.get("ma150"),
-            "ma150_raw": ma_raw,
-            "ma150_source": metric.get("ma150_source"),
-            "sideways_score": metric.get("sideways_score"),
-            "dynamic_k150": metric.get("dynamic_k"),
-            "k150": float(cfg.get("k150", 1.0)),
-            "history_count": metric.get("count", 0),
+            "strategy_source": strategy_source,
+            "strategy_source_key": strategy_calc.get("strategy_source_key"),
+            "strategy_source_fallback": bool(strategy_calc.get("strategy_source_fallback")),
+            "strategy_status": strategy_status,
+            "last_bar_date": strategy_calc.get("last_bar_date", ""),
+            "ma150": ma150,
+            "ma150_raw": ma150_raw,
+            "ma150_source": ma150_source,
+            "sideways_score": sideways_score,
+            "dynamic_k150": dynamic_k150,
+            "k150": base_k150,
+            "history_count": _safe_int(strategy_calc.get("history_count", 0), 0),
+            "strategy_source_attempts": strategy_calc.get("attempts") or strategy_calc.get("strategy_source_attempts") or [],
             "updated_at": updated_at,
+        }
+        dcf_state["strategy_source"] = strategy_source
+        dcf_state["strategy_status"] = strategy_status
+        dcf_state["strategy_level"] = level
+        dcf_state["strategy_error"] = error
+        dcf_state["strategy_calc_updated_at"] = updated_at
+        dcf_state["ma_short"] = ma150
+        dcf_state["ma_short_source"] = ma150_source
+        dcf_state["dynamic_k150"] = dynamic_k150
+        dcf_state["sideways_score"] = sideways_score
+        dcf_state["k150"] = base_k150
+        dcf_state["history_count"] = _safe_int(strategy_calc.get("history_count", 0), 0)
+        dcf_state["last_valid_bar_date"] = strategy_calc.get("last_bar_date", "")
+        if current_price > 0:
+            dcf_state["last_price"] = current_price
+        dcf_state["source_metrics"] = [_source_metric_from_strategy_state(symbol, cfg, dcf_state)]
+        dcf_state["source_metrics_updated_at"] = updated_at
+        dcf_state["source_metrics_error"] = error
+        dcf_state["strategy_metrics_level"] = level
+        logging.info(f"📊 已刷新本标的最终策略指标: {name} ({symbol})，源={strategy_source}，MA150={ma150_source}。")
+        return dcf_state["source_metrics"]
+    except Exception as e:
+        reason = str(e)[:500] or "全部历史数据源失败，无法计算MA150"
+        updated_at = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+        metric = {
+            "key": "strategy_history",
+            "label": "本标的策略值",
+            "ok": False,
+            "level": "ERROR",
+            "status": "ERROR",
+            "source": "全部历史数据源",
+            "date": "",
+            "count": 0,
+            "current_price": current_price if current_price > 0 else None,
+            "ma150": None,
+            "ma150_source": "",
+            "sell": None,
+            "clear": None,
+            "dynamic_k": None,
+            "sideways_score": None,
+            "zone": "",
+            "error": reason,
         }
         dcf_state["source_metrics"] = [metric]
         dcf_state["source_metrics_updated_at"] = updated_at
-        dcf_state["source_metrics_error"] = metric.get("error", "") or ""
-        write_strategy_history_record(name, symbol, dcf_state, cfg)
-        logging.info(f"📊 已刷新回测/策略数据源指标: {name} ({symbol})，采用 {source_display}，MA150={metric.get('ma150_source') or '-'}。")
-        return [metric]
-    except Exception as e:
-        err = str(e)[:300]
-        metric = {
-            "key": "策略源", "label": "策略源", "ok": False, "level": "ERROR", "status": "ERROR",
-            "source": "策略源", "date": "", "count": 0, "current_price": None, "ma150": None,
-            "ma150_source": "", "sell": None, "clear": None, "dynamic_k": None,
-            "sideways_score": None, "zone": "", "error": err,
-        }
-        dcf_state["source_metrics"] = [metric]
-        dcf_state["source_metrics_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
-        dcf_state["source_metrics_error"] = err
+        dcf_state["source_metrics_error"] = reason
         dcf_state["strategy_metrics_level"] = "ERROR"
-        logging.info(f"📊 回测/策略数据源指标刷新失败: {name} ({symbol})，{err}")
+        dcf_state["strategy_status"] = "ERROR"
+        dcf_state["strategy_level"] = "ERROR"
+        dcf_state["strategy_error"] = reason
+        logging.info(f"📊 刷新本标的最终策略指标失败: {name} ({symbol})，{reason}")
         return [metric]
+
+
 
 # ===========================
 # 推送功能
@@ -2065,7 +2176,8 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
                 )
 
             weight = weights[step] if step < len(weights) else 0.0
-            pyramid_budget = max(limit - target, 0.0)
+            start_units = _safe_float(state_dict.get("pyramid_start_units", target), target)
+            pyramid_budget = max(limit - start_units, 0.0)
             planned = normalize_position_amount(pyramid_budget * weight, position_mode)
             max_allowed = normalize_position_amount(limit - cu, position_mode)
             if planned <= POSITION_EPSILON or max_allowed <= POSITION_EPSILON:
@@ -2140,13 +2252,13 @@ def build_no_trade_reason(zone, cfg, dcf_state, state_dict, current_price, ma150
                 plan = plan[:max_steps]
             total_steps = len(plan)
             if total_steps <= 0:
-                return "CLEAR_ZONE 未卖出：Clear清底仓计划为空，请检查清仓步数或权重配置。"
-            target_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
+                return "CLEAR_ZONE 未卖出：Clear区清底仓计划为空，请检查清仓步数或权重配置。"
+            target_step = get_clear_pyramid_target_step(current_price, state_dict.get("clear_anchor_price") or (ma150 * get_sell_multiple(cfg)), cfg, total_steps)
             done_step = int(clear_step or 0)
             if target_step <= done_step:
                 if target_step <= 0:
                     return (
-                        "CLEAR_ZONE 未卖出：尚未达到第 1 步Clear价，"
+                        "CLEAR_ZONE 未卖出：尚未达到第 1 步Clear触发价，"
                         f"当前应卖第 {target_step}/{total_steps} 步，已卖 {done_step}/{total_steps} 步。"
                     )
                 return (
@@ -2332,116 +2444,77 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         dcf_state["last_trade_price"] = current_price
         dcf_state["last_trade_side"] = "buy"
 
-    history_snap, history_source_key, history_source_label, selected_ma_raw, selected_ma_source, history_attempts = _select_strategy_history_snapshot(symbol, cfg, fetch_days, price_scale, ma_short_len)
-    selected_attempt = next((x for x in history_attempts if isinstance(x, dict) and x.get("selected")), {})
-    strategy_source_fallback = bool(selected_attempt.get("fallback"))
-    strategy_source_selection_reason = str(selected_attempt.get("selection_reason") or "")
-    if history_snap is not None:
-        closes = list(getattr(history_snap, "closes", []) or [])
-        strategy_source = _display_source_name(history_source_key or history_source_label)
-        strategy_last_bar_date = getattr(history_snap, "last_bar_date", "") or getattr(snapshot, "last_bar_date", "")
-        dcf_state["strategy_source_attempts"] = history_attempts
-    else:
-        strategy_source = _display_source_name(getattr(snapshot, "strategy_source", "") or _strategy_source_for_symbol(symbol))
-        strategy_last_bar_date = getattr(snapshot, "last_bar_date", "")
-        dcf_state["strategy_source_attempts"] = history_attempts
-    strategy_source_display = _format_strategy_source_display(strategy_source, strategy_source_fallback)
-    dcf_state["strategy_source_fallback"] = strategy_source_fallback
-    dcf_state["strategy_source_selection_reason"] = strategy_source_selection_reason
-    dcf_state["strategy_source_display"] = strategy_source_display
-    strategy_status = "OK"
-    strategy_key = _strategy_calc_cache_key(symbol, strategy_source, strategy_last_bar_date, ma_short_len, cfg)
-    strategy_cache = dcf_state.get("strategy_calc_cache") if isinstance(dcf_state.get("strategy_calc_cache"), dict) else {}
-    if strategy_cache.get("key") == strategy_key:
-        ma150 = _safe_float(strategy_cache.get("ma150"), 0.0)
-        ma150_source = str(strategy_cache.get("ma150_source") or "f")
-        sideways_score = _safe_float(strategy_cache.get("sideways_score"), 0.0)
-        dynamic_k150 = _safe_float(strategy_cache.get("dynamic_k150"), 1.0)
-        base_k150 = _safe_float(strategy_cache.get("k150"), float(cfg.get("k150", 1.0)))
-        # 缓存命中时也必须恢复 ma150_raw；后续快照/日志会写入该字段。
-        # 兼容上一版已经写入但缺少 ma150_raw 的旧缓存：用 ma150 / dynamic_k150 反推。
-        ma150_raw = _safe_float(strategy_cache.get("ma150_raw"), 0.0)
-        if ma150_raw <= 0 and dynamic_k150 > 0:
-            ma150_raw = ma150 / dynamic_k150
-        if ma150 <= 0 or ma150_raw <= 0:
-            strategy_cache = {}
-    if not strategy_cache or strategy_cache.get("key") != strategy_key:
-        ma150_raw, ma150_source = selected_ma_raw, selected_ma_source
-        if ma150_raw is None:
-            counts = [int(x.get("count", 0) or 0) for x in history_attempts if isinstance(x, dict)]
-            max_count = max(counts) if counts else len(closes)
-            detail = "；".join(
-                f"{x.get('label') or x.get('key')}: {x.get('count', 0)}条" + (f"/{x.get('ma_source')}" if x.get('ma_source') else "")
-                for x in history_attempts if isinstance(x, dict)
-            )
-            reason = "全部历史数据源均无法计算MA150" + (f"（{detail}）" if detail else "")
-            msg = _build_market_data_error_message(
-                name, symbol, reason,
-                current_price=current_price, last_known_price=last_valid_price, closes_count=max_count,
-                source=snapshot.source, last_bar_date=strategy_last_bar_date
-            )
-            logging.info(msg)
-            dcf_state["strategy_status"] = "ERROR"
-            dcf_state["strategy_level"] = "ERROR"
-            dcf_state["strategy_error"] = reason
-            dcf_state["source_metrics"] = [{
-                "key": strategy_source, "label": f"{strategy_source} 策略值", "ok": False, "level": "ERROR", "status": "ERROR",
-                "source": strategy_source, "date": strategy_last_bar_date or "", "count": max_count,
-                "current_price": current_price, "ma150": None, "sell": None, "clear": None,
-                "dynamic_k": None, "sideways_score": None, "ma150_source": "", "zone": "", "error": reason,
-            }]
-            dcf_state["source_metrics_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
-            dcf_state["source_metrics_error"] = reason
-            _mark_market_error(dcf_state, msg, reason, snapshot.source)
-            write_market_skip_snapshot(
-                name, symbol, dcf_state, reason, level="ERROR",
-                current_price=current_price, last_known_price=last_valid_price,
-                closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
-                trade_allowed=False,
-            )
-            return _maybe_market_alert(dcf_state, msg, reason)
-        sideways_score = float(compute_sideways_index(closes, cfg))
-        base_k150 = float(cfg.get("k150", 1.0))
-        min_k150 = float(cfg.get("sideways_min_k150", 0.85))
-        if base_k150 < min_k150:
-            min_k150 = base_k150
-        dynamic_k150 = min_k150 + (base_k150 - min_k150) * (1.0 - sideways_score)
-        ma150 = ma150_raw * dynamic_k150
-        dcf_state["strategy_calc_cache"] = {
-            "key": strategy_key,
-            "symbol": symbol,
-            "strategy_source": strategy_source,
-            "strategy_source_display": strategy_source_display,
-            "strategy_source_fallback": strategy_source_fallback,
-            "strategy_source_selection_reason": strategy_source_selection_reason,
-            "strategy_status": "OK",
-            "last_bar_date": strategy_last_bar_date,
-            "ma150": ma150,
-            "ma150_raw": ma150_raw,
-            "ma150_source": ma150_source,
-            "sideways_score": sideways_score,
-            "dynamic_k150": dynamic_k150,
-            "k150": base_k150,
-            "history_count": len(closes),
-            "updated_at": strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-    if isinstance(dcf_state.get("strategy_calc_cache"), dict):
-        cache_for_source = dcf_state.get("strategy_calc_cache") or {}
-        strategy_source_fallback = bool(cache_for_source.get("strategy_source_fallback", strategy_source_fallback))
-        strategy_source_selection_reason = str(cache_for_source.get("strategy_source_selection_reason", strategy_source_selection_reason) or "")
-    strategy_source_display = _format_strategy_source_display(strategy_source, strategy_source_fallback)
+    try:
+        strategy_calc = _select_strategy_calc_for_symbol(
+            symbol, cfg, snapshot, fetch_days, ma_short_len, dcf_state=dcf_state
+        )
+    except Exception as e:
+        reason = str(e)[:500] or "全部历史数据源失败，无法计算MA150"
+        msg = _build_market_data_error_message(
+            name, symbol, reason,
+            current_price=current_price, last_known_price=last_valid_price, closes_count=len(closes),
+            source=snapshot.source, last_bar_date=snapshot.last_bar_date
+        )
+        logging.info(msg)
+        dcf_state["strategy_status"] = "ERROR"
+        dcf_state["strategy_level"] = "ERROR"
+        dcf_state["strategy_error"] = reason
+        dcf_state["source_metrics"] = [{
+            "key": "strategy_history", "label": "本标的策略值", "ok": False, "level": "ERROR", "status": "ERROR",
+            "source": "全部历史数据源", "date": getattr(snapshot, "last_bar_date", "") or "", "count": len(closes),
+            "current_price": current_price, "ma150": None, "sell": None, "clear": None,
+            "dynamic_k": None, "sideways_score": None, "ma150_source": "", "zone": "", "error": reason,
+        }]
+        dcf_state["source_metrics_updated_at"] = strategy_now().strftime("%Y-%m-%d %H:%M:%S")
+        dcf_state["source_metrics_error"] = reason
+        _mark_market_error(dcf_state, msg, reason, snapshot.source)
+        write_market_skip_snapshot(
+            name, symbol, dcf_state, reason, level="ERROR",
+            current_price=current_price, last_known_price=last_valid_price,
+            closes_count=len(closes), source=snapshot.source, last_bar_date=snapshot.last_bar_date,
+            trade_allowed=False,
+        )
+        return _maybe_strategy_history_alert(dcf_state, msg, reason)
+
+    strategy_source = _display_source_name(strategy_calc.get("strategy_source") or strategy_calc.get("strategy_source_key") or _strategy_source_for_symbol(symbol))
+    if bool(strategy_calc.get("strategy_source_fallback")):
+        strategy_source = f"{strategy_source}（本轮兜底）"
+    ma150 = _safe_float(strategy_calc.get("ma150"), 0.0)
+    ma150_raw = _safe_float(strategy_calc.get("ma150_raw"), 0.0)
+    ma150_source = str(strategy_calc.get("ma150_source") or "")
+    sideways_score = _safe_float(strategy_calc.get("sideways_score"), 0.0)
+    dynamic_k150 = _safe_float(strategy_calc.get("dynamic_k150"), 1.0)
+    base_k150 = _safe_float(strategy_calc.get("k150"), float(cfg.get("k150", 1.0)))
+    strategy_history_count = _safe_int(strategy_calc.get("history_count", 0), len(closes))
+    strategy_key = _strategy_calc_cache_key(symbol, strategy_source, strategy_calc.get("last_bar_date") or getattr(snapshot, "last_bar_date", ""), ma_short_len, cfg)
+    dcf_state["strategy_calc_cache"] = {
+        "key": strategy_key,
+        "symbol": symbol,
+        "strategy_source": strategy_source,
+        "strategy_source_key": strategy_calc.get("strategy_source_key"),
+        "strategy_source_fallback": bool(strategy_calc.get("strategy_source_fallback")),
+        "strategy_status": strategy_calc.get("strategy_status") or ("OK" if ma150_source == "f" else "WARN"),
+        "last_bar_date": strategy_calc.get("last_bar_date") or getattr(snapshot, "last_bar_date", ""),
+        "ma150": ma150,
+        "ma150_raw": ma150_raw,
+        "ma150_source": ma150_source,
+        "sideways_score": sideways_score,
+        "dynamic_k150": dynamic_k150,
+        "k150": base_k150,
+        "history_count": strategy_history_count,
+        "strategy_source_attempts": strategy_calc.get("attempts") or strategy_calc.get("strategy_source_attempts") or [],
+        "updated_at": strategy_calc.get("updated_at") or strategy_now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    dcf_state["strategy_source_attempts"] = dcf_state["strategy_calc_cache"].get("strategy_source_attempts", [])
     if ma150_source and ma150_source != "f":
         strategy_status = "WARN"
         dcf_state["strategy_level"] = "WARN"
-        dcf_state["strategy_error"] = f"冷启动MA: MA150来源={ma150_source}，未满{ma_short_len}根K线"
+        dcf_state["strategy_error"] = f"策略数据为非完整口径: MA150来源={ma150_source}"
     else:
         strategy_status = "OK"
         dcf_state["strategy_level"] = "INFO"
         dcf_state["strategy_error"] = ""
     dcf_state["strategy_source"] = strategy_source
-    dcf_state["strategy_source_display"] = strategy_source_display
-    dcf_state["strategy_source_fallback"] = strategy_source_fallback
-    dcf_state["strategy_source_selection_reason"] = strategy_source_selection_reason
     dcf_state["strategy_status"] = strategy_status
     dcf_state["strategy_calc_key"] = strategy_key
     dcf_state["strategy_calc_updated_at"] = dcf_state.get("strategy_calc_cache", {}).get("updated_at", strategy_now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -2454,9 +2527,6 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     dcf_state["market_source"] = _display_source_name(snapshot.source)
     dcf_state["last_valid_market_source"] = _display_source_name(snapshot.source)
     dcf_state["strategy_source"] = strategy_source
-    dcf_state["strategy_source_display"] = strategy_source_display
-    dcf_state["strategy_source_fallback"] = strategy_source_fallback
-    dcf_state["strategy_source_selection_reason"] = strategy_source_selection_reason
     dcf_state["strategy_status"] = strategy_status
     dcf_state["current_units"] = current_units
     dcf_state["avg_cost"] = current_avg_cost
@@ -2464,7 +2534,6 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     dcf_state["source_metrics"] = [_source_metric_from_strategy_state(symbol, cfg, dcf_state)]
     dcf_state["source_metrics_updated_at"] = dcf_state.get("strategy_calc_updated_at")
     dcf_state["source_metrics_error"] = dcf_state.get("strategy_error", "")
-    write_strategy_history_record(name, symbol, dcf_state, cfg)
     dcf_state["position_mode"] = position_mode
     if current_units > 0 and current_avg_cost == 0:
         current_avg_cost = current_price
@@ -2474,6 +2543,17 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     dcf_state["last_time"] = now_str
     sell_price = ma150 * get_trend_multiple(cfg)
     clear_price = ma150 * get_sell_multiple(cfg)
+    # Clear区周期规则：首次进入 CLEAR_ZONE 时锁定本轮第0步锚点；
+    # 回到 TREND/BOX 不重置，后续再次进入 CLEAR 继续沿用旧步数与旧锚点；
+    # 只有重新进入 CHANCE_ZONE，才说明高位周期结束，重置 Clear 清底仓状态。
+    if zone == "CLEAR_ZONE":
+        if not dcf_state.get("clear_anchor_price") or _safe_float(dcf_state.get("clear_anchor_price"), 0.0) <= 0:
+            dcf_state["clear_anchor_price"] = clear_price
+            dcf_state["clear_step"] = 0
+    elif zone == "CHANCE_ZONE":
+        if dcf_state.get("clear_anchor_price") is not None or int(dcf_state.get("clear_step", 0) or 0) != 0:
+            dcf_state["clear_anchor_price"] = None
+            dcf_state["clear_step"] = 0
     def _pct_text(value):
         return format_percent_ratio(value, digits=2)
 
@@ -2516,9 +2596,9 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                 sell_plan = sell_plan[:total_clear_pyramid_steps]
             total_steps = len(sell_plan)
             cur_clear_step = int(dcf_state.get("clear_step", 0) or 0)
-            target_clear_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
+            target_clear_step = get_clear_pyramid_target_step(current_price, dcf_state.get("clear_anchor_price") or clear_price, cfg, total_steps)
             clear_step_pct = _safe_float(cfg.get("clear_zone_step_percent", 0.08), 0.08)
-            lines.append(f"🧹Clear清底仓: 已卖{cur_clear_step}/{total_steps}步，目标{target_clear_step}步，步长{_pct_text(clear_step_pct)}")
+            lines.append(f"🧹Clear倒金字塔: 已卖{cur_clear_step}/{total_steps}步，目标{target_clear_step}步，步长{_pct_text(clear_step_pct)}")
 
         lines.append(dynamic_info)
         return "\n".join(lines)
@@ -2527,7 +2607,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     market_line = f"📡行情源: {_display_source_name(snapshot.source)}，数据状态: OK。"
     strategy_level_for_msg = str(dcf_state.get("strategy_level") or ("WARN" if strategy_status == "WARN" else "INFO")).upper()
     strategy_issue = _short_strategy_issue(strategy_level_for_msg, dcf_state.get("strategy_error", ""), ma150_source)
-    strategy_line = f"🧭策略源: {strategy_source_display}，数据状态: {strategy_status}{('，' + strategy_issue) if strategy_issue else ''}。"
+    strategy_line = f"🧭策略源: {strategy_source}，数据状态: {strategy_status}{('，' + strategy_issue) if strategy_issue else ''}。"
     extra_info_full = (extra_info_full + "\n" if extra_info_full else "") + market_line + "\n" + strategy_line
     status_suffix = f"\n🚦策略运行状态: {strategy_run.upper()}"
     status_msg = build_status_message(
@@ -2558,7 +2638,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             "name": name, "symbol": symbol, "level": strategy_level_for_msg,
             "action": "MONITOR_ONLY", "decision": "MONITOR_ONLY",
             "reason": "strategy_run=off", "market_status": "ok",
-            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_source_display": strategy_source_display, "strategy_source_fallback": strategy_source_fallback, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue, "last_bar_date": snapshot.last_bar_date,
+            "market_source": _display_source_name(snapshot.source), "strategy_source": strategy_source, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue, "last_bar_date": snapshot.last_bar_date,
             "history_count": len(closes), "current_price": current_price,
             "ma150": ma150, "ma150_raw": ma150_raw, "ma150_source": ma150_source,
             "dynamic_k150": dynamic_k150, "sideways_score": sideways_score,
@@ -2590,12 +2670,14 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "current_units": current_units,
         "last_trade_price": last_trade_price,
         "last_add_price": last_add_price,
+        "pyramid_anchor_price": dcf_state.get("pyramid_anchor_price"),
+        "pyramid_start_units": dcf_state.get("pyramid_start_units"),
+        "pyramid_limit_units": dcf_state.get("pyramid_limit_units"),
         "pyramid_step": pyramid_step,
         "pyramid_active": pyramid_active,
         "target_reached_once": target_reached_once,
-        "pyramid_start_units": dcf_state.get("pyramid_start_units"),
-        "pyramid_limit_units": dcf_state.get("pyramid_limit_units"),
         "clear_step": clear_step,
+        "clear_anchor_price": dcf_state.get("clear_anchor_price"),
     }
 
     # ========== 加仓决策（统一由 strategy.py 决定） ==========
@@ -2610,7 +2692,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     for _evt in add_events:
         if _evt == "PYRAMID_AUTO_TRIGGERED":
             logging.info(f"[{now_str}] 倒金字塔加仓已激活（价格跌破MA150）")
-        elif _evt == "PYRAMID_SWITCH_TO_AUTO":
+        elif _evt in {"PYRAMID_SWITCH_TO_AUTO", "PYRAMID_RESET_TO_TREND"}:
             logging.info(f"[{now_str}] 倒金字塔加仓已切回 auto 模式（进入趋势/Clear区）")
     if add_qty > 0:
         new_avg_cost = calculate_new_avg_cost(current_units, current_avg_cost, add_qty, current_price)
@@ -2643,9 +2725,10 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         dcf_state["last_trade_side"] = "buy"
         dcf_state["pyramid_step"] = add_state.get("pyramid_step", pyramid_step)
         dcf_state["last_add_price"] = add_state.get("last_add_price", last_add_price)
-        dcf_state["target_reached_once"] = add_state.get("target_reached_once", target_reached_once)
+        dcf_state["pyramid_anchor_price"] = add_state.get("pyramid_anchor_price", dcf_state.get("pyramid_anchor_price"))
         dcf_state["pyramid_start_units"] = add_state.get("pyramid_start_units", dcf_state.get("pyramid_start_units"))
         dcf_state["pyramid_limit_units"] = add_state.get("pyramid_limit_units", dcf_state.get("pyramid_limit_units"))
+        dcf_state["target_reached_once"] = add_state.get("target_reached_once", target_reached_once)
         dcf_state["pyramid_active"] = add_state.get("pyramid_active", pyramid_active)
         persist_runtime_position_to_config(name, current_units, current_avg_cost)
         extra_info = f"🏛{add_reason}: {format_units_for_display(add_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
@@ -2663,6 +2746,11 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         logging.info(trade_msg)
         messages.append(trade_msg)
     state_dict.update(add_state)
+    # 即使本轮未成交，也保存机会区倒金字塔的运行锚点。
+    # 这能保证中途加入标的后，后续继续以 MA150 第0步和已追认步数推进。
+    for _k in ("pyramid_step", "last_add_price", "pyramid_anchor_price", "pyramid_start_units", "pyramid_limit_units", "pyramid_active", "target_reached_once"):
+        if _k in add_state:
+            dcf_state[_k] = add_state.get(_k)
     pyramid_step = dcf_state.get("pyramid_step", pyramid_step)
     clear_step = dcf_state.get("clear_step", clear_step)
     last_add_price = dcf_state.get("last_add_price", last_add_price)
@@ -2721,7 +2809,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         if clear_steps_cfg > 0:
             sell_plan = sell_plan[:clear_steps_cfg]
         total_steps = len(sell_plan)
-        target_step = get_pyramid_sell_target_step(current_price, ma150, cfg, total_steps)
+        target_step = get_clear_pyramid_target_step(current_price, state_dict.get("clear_anchor_price") or (ma150 * get_sell_multiple(cfg)), cfg, total_steps)
         if target_step > clear_step:
             for step_info in sell_plan[clear_step:target_step]:
                 step = step_info["step"]
@@ -2794,7 +2882,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "action": action, "decision": action, "reason": reason,
         "trade_count": len(messages),
         "market_status": "ok", "market_source": _display_source_name(snapshot.source),
-        "strategy_source": strategy_source, "strategy_source_display": strategy_source_display, "strategy_source_fallback": strategy_source_fallback, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue,
+        "strategy_source": strategy_source, "strategy_status": strategy_status, "strategy_level": strategy_level_for_msg, "strategy_issue": strategy_issue,
         "last_bar_date": snapshot.last_bar_date, "history_count": len(closes),
         "current_price": current_price, "ma150": ma150, "ma150_raw": ma150_raw,
         "ma150_source": ma150_source, "dynamic_k150": dynamic_k150,
@@ -2809,8 +2897,6 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "pyramid_step": dcf_state.get("pyramid_step"),
         "pyramid_active": dcf_state.get("pyramid_active"),
         "target_reached_once": dcf_state.get("target_reached_once"),
-        "pyramid_start_units": dcf_state.get("pyramid_start_units"),
-        "pyramid_limit_units": dcf_state.get("pyramid_limit_units"),
         "clear_step": dcf_state.get("clear_step"),
         "trade_allowed": True,
     })

@@ -6,23 +6,6 @@ from typing import Dict, Any, Tuple, List
 POSITION_EPSILON = 1e-9
 
 
-def _parse_position_value(value: Any, default: float = 0.0) -> float:
-    """Parse absolute or percent-style position values for validation."""
-    try:
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return default
-            if text.endswith('%'):
-                return float(text[:-1]) / 100.0
-            return float(text)
-        if value is None:
-            return default
-        return float(value)
-    except Exception:
-        return default
-
-
 def validate_strategy_config(cfg: Dict[str, Any], name: str = 'strategy') -> None:
     """校验单个标的参数，提前拦截 0、负数、权重异常、目标区间倒置等配置问题。"""
     def positive(key: str, default: Any = None) -> float:
@@ -35,20 +18,16 @@ def validate_strategy_config(cfg: Dict[str, Any], name: str = 'strategy') -> Non
             raise ValueError(f'{name}: {key} must be > 0, got {value}')
         return value
 
-    base_units = _parse_position_value(cfg.get('base_units', 0), 0.0)
-    target_units = _parse_position_value(cfg.get('target_units', 1.0), 1.0)
+    base_units = float(cfg.get('base_units', 0) or 0)
     if base_units < 0:
         raise ValueError(f'{name}: base_units must be >= 0, got {base_units}')
-    if target_units <= 0:
-        raise ValueError(f'{name}: target_units must be > 0, got {target_units}')
+    target_units = positive('target_units', 1.0)
+    base_units = positive('base_units', target_units)
     limit_target = positive('limit_target', 2.0)
     if limit_target < 1:
         raise ValueError(f'{name}: limit_target must be >= 1, got {limit_target}')
-    if base_units * limit_target < target_units - POSITION_EPSILON:
-        raise ValueError(
-            f'{name}: base_units * limit_target must be >= target_units '
-            f'(base={base_units}, limit_target={limit_target}, target={target_units})'
-        )
+    if base_units * limit_target < target_units:
+        raise ValueError(f'{name}: base_units * limit_target must be >= target_units; got {base_units} * {limit_target} < {target_units}')
 
     trend_multiple = positive('trend_multiple', 1.2)
     sell_multiple = positive('sell_multiple', 1.5)
@@ -176,14 +155,21 @@ def get_pyramid_add_enabled(cfg: Dict[str, Any]) -> str:
 
 
 def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], current_price: float, ma150: float, zone: str, target_units: float) -> Tuple[Dict[str, Any], Dict[str, Any], List[str], str]:
-    """维护倒金字塔运行状态：机会区 auto->yes，趋势/Clear区 yes->auto 并重置步数。"""
+    """维护机会区倒金字塔运行状态。
+
+    新周期规则：
+    1. 首次进入 CHANCE_ZONE 时，以当时 MA150 锁定第0步锚点。
+    2. 回到 BOX_ZONE 不重置；后续再次进入 CHANCE_ZONE 继续沿用旧步数与 last_add_price。
+    3. 进入 TREND_ZONE/CLEAR_ZONE 表示本轮低吸周期结束，才重置机会区倒金字塔。
+    """
     new_state = state.copy()
     cfg_updates: Dict[str, Any] = {}
     events: List[str] = []
     config_mode = get_pyramid_add_enabled(cfg)
     effective_mode = config_mode
 
-    if config_mode == 'yes' and zone in {'TREND_ZONE', 'CLEAR_ZONE', 'SELL_ZONE'}:
+    def reset_pyramid(reason: str = 'PYRAMID_SWITCH_TO_AUTO'):
+        nonlocal effective_mode
         effective_mode = 'auto'
         cfg_updates['pyramid_add_enabled'] = 'auto'
         new_state['pyramid_active'] = False
@@ -191,88 +177,228 @@ def evaluate_pyramid_add_runtime(state: Dict[str, Any], cfg: Dict[str, Any], cur
         new_state['target_reached_once'] = False
         new_state['pyramid_start_units'] = None
         new_state['pyramid_limit_units'] = None
-        events.append('PYRAMID_SWITCH_TO_AUTO')
+        new_state['pyramid_anchor_price'] = None
+        new_state['last_add_price'] = None
+        events.append(reason)
+
+    # 低吸周期在进入趋势/高估区后结束。BOX 只是反弹，不重置。
+    if zone in {'TREND_ZONE', 'CLEAR_ZONE'}:
+        if bool(state.get('pyramid_active', False)) or config_mode == 'yes':
+            reset_pyramid('PYRAMID_RESET_TO_TREND')
+        else:
+            new_state['pyramid_active'] = False
         return new_state, cfg_updates, events, effective_mode
 
-    if config_mode == 'yes':
-        new_state['pyramid_active'] = True
+    active = bool(state.get('pyramid_active', False))
+
+    # BOX 不主动启动倒金字塔；若此前 CHANCE 已激活，则在 BOX 中延续同一轮状态。
+    if zone == 'BOX_ZONE':
+        if active or config_mode == 'yes':
+            effective_mode = 'yes'
+            new_state['pyramid_active'] = True
+        else:
+            effective_mode = 'auto'
+            new_state['pyramid_active'] = False
         return new_state, cfg_updates, events, effective_mode
 
-    if zone == 'CHANCE_ZONE':
+    if zone != 'CHANCE_ZONE':
+        return new_state, cfg_updates, events, effective_mode
+
+    # 已激活的机会区周期再次进入 CHANCE 时，沿用旧锚点和旧步数。
+    if active or config_mode == 'yes':
         effective_mode = 'yes'
-        cfg_updates['pyramid_add_enabled'] = 'yes'
         new_state['pyramid_active'] = True
-        if not bool(state.get('pyramid_active', False)):
-            new_state['pyramid_step'] = 0
-            new_state['target_reached_once'] = state.get('current_units', 0.0) >= target_units - POSITION_EPSILON
-            new_state['last_add_price'] = current_price
-            new_state['pyramid_start_units'] = None
-            new_state['pyramid_limit_units'] = None
-            events.append('PYRAMID_AUTO_TRIGGERED')
-    else:
-        new_state['pyramid_active'] = False
+        if not new_state.get('pyramid_anchor_price'):
+            anchor_price = ma150 if ma150 is not None and ma150 > 0 else current_price
+            new_state['pyramid_anchor_price'] = anchor_price
+            new_state['last_add_price'] = new_state.get('last_add_price') or anchor_price
+        return new_state, cfg_updates, events, effective_mode
+
+    # auto 模式首次进入 CHANCE_ZONE 时自动开启，并用当时 MA150 锁定第0步。
+    effective_mode = 'yes'
+    cfg_updates['pyramid_add_enabled'] = 'yes'
+    new_state['pyramid_active'] = True
+    new_state['pyramid_step'] = 0
+    new_state['target_reached_once'] = state.get('current_units', 0.0) >= target_units - POSITION_EPSILON
+    anchor_price = ma150 if ma150 is not None and ma150 > 0 else current_price
+    new_state['last_add_price'] = anchor_price
+    new_state['pyramid_anchor_price'] = anchor_price
+    new_state['pyramid_start_units'] = None
+    new_state['pyramid_limit_units'] = None
+    events.append('PYRAMID_AUTO_TRIGGERED')
     return new_state, cfg_updates, events, effective_mode
 
+def _get_crossed_pyramid_step(anchor_price: float, current_price: float, step_pct: float, total_steps: int) -> int:
+    """按 MA150 第0步锚点，计算当前价格已经跌破到第几档。"""
+    if anchor_price is None or anchor_price <= 0 or current_price is None or current_price <= 0:
+        return 0
+    step_pct = float(step_pct)
+    if step_pct <= 0 or total_steps <= 0:
+        return 0
+    crossed = 0
+    trigger_price = anchor_price
+    for i in range(1, total_steps + 1):
+        trigger_price *= (1 - step_pct)
+        if current_price <= trigger_price + POSITION_EPSILON:
+            crossed = i
+        else:
+            break
+    return crossed
 
-def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, limit_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any], str]:
-    """倒金字塔加仓决策：先补到补仓初始仓位，再从本轮机会区起点逐档加到极限仓位。"""
+
+def _get_pyramid_step_price(anchor_price: float, step_pct: float, step: int) -> float:
+    """返回某一倒金字塔步数对应的理论锚点价格。"""
+    if anchor_price is None or anchor_price <= 0:
+        return 0.0
+    step = max(0, int(step or 0))
+    return float(anchor_price) * ((1 - float(step_pct)) ** step)
+
+
+def _get_crossed_clear_step(anchor_price: float, current_price: float, step_pct: float, total_steps: int) -> int:
+    """按 Clear 触发线第0步锚点，计算当前价格已经上穿到第几档。
+
+    第1档在 anchor_price 触发；后续每档以上一档理论触发价按 step_pct 上移。
+    """
+    if anchor_price is None or anchor_price <= 0 or current_price is None or current_price <= 0:
+        return 0
+    step_pct = float(step_pct)
+    if step_pct <= 0 or total_steps <= 0:
+        return 0
+    crossed = 0
+    trigger_price = float(anchor_price)
+    for i in range(1, total_steps + 1):
+        if current_price >= trigger_price - POSITION_EPSILON:
+            crossed = i
+            trigger_price *= (1 + step_pct)
+        else:
+            break
+    return crossed
+
+
+def get_clear_pyramid_target_step(current_price: float, clear_anchor_price: float, cfg: Dict[str, Any], total_steps: int) -> int:
+    """Clear区倒金字塔清底仓目标步数，使用本轮锁定的 Clear 锚点。"""
+    step_pct = float(cfg.get('clear_zone_step_percent', 0.08))
+    if step_pct <= 0:
+        raise ValueError('clear_zone_step_percent must be > 0')
+    return min(max(_get_crossed_clear_step(clear_anchor_price, current_price, step_pct, total_steps), 0), total_steps)
+
+
+def get_clear_step_price(anchor_price: float, step_pct: float, step: int) -> float:
+    """返回 Clear 区某一卖出步数对应的理论锚点价格。"""
+    if anchor_price is None or anchor_price <= 0:
+        return 0.0
+    step = max(0, int(step or 0))
+    if step <= 1:
+        return float(anchor_price)
+    return float(anchor_price) * ((1 + float(step_pct)) ** (step - 1))
+
+
+def _format_step_reason(prefix: str, start_step: int, end_step: int) -> str:
+    if end_step <= 0 or end_step < start_step:
+        return prefix
+    if start_step == end_step:
+        return f'{prefix}_{end_step}'
+    return f'{prefix}_{start_step}_TO_{end_step}'
+
+
+def get_pyramid_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, limit_units: float, current_price: float, ma150: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any], str]:
+    """机会区倒金字塔加仓。
+
+    规则：
+    1. 以 MA150 作为第0步价格锚点，而不是以首次运行时的当前价作为锚点。
+    2. 若进入机会区时当前仓位低于补仓初始仓位 target_units，先补到 target_units。
+    3. 若当前仓位已达到或超过 target_units，则不补初始仓，直接以当前仓位作为本轮起点。
+    4. 锁定 pyramid_start_units / pyramid_limit_units，后续每档预算不随 current_units 漂移。
+    5. 中途添加标的时，按 MA150 到当前价已经跨过的档位一次性追认加仓步数。
+    """
     pyramid_add_step = float(cfg.get('pyramid_add_step', cfg.get('add_box_step', 0.05)))
     if pyramid_add_step <= 0:
         raise ValueError('pyramid_add_step must be > 0')
     pyramid_weights = cfg.get('pyramid_add_weights', cfg.get('pyramid_weights', [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205])) or [1.0]
     total_steps = min(int(cfg.get('pyramid_add_steps', cfg.get('pyramid_steps', len(pyramid_weights)))), len(pyramid_weights))
     pyramid_step = int(state.get('pyramid_step', 0) or 0)
-    last_add_price = state.get('last_add_price', current_price) or current_price
     current_units = state.get('current_units', 0.0)
     new_state = state.copy()
 
-    if limit_units <= target_units - POSITION_EPSILON:
-        return 0.0, new_state, ''
     if current_units >= limit_units - POSITION_EPSILON:
         return 0.0, new_state, ''
 
-    # 首次进入机会区，如果当前仓位低于补仓初始仓位，则先一步补到 target_units。
-    # 本轮倒金字塔预算随后固定为：极限仓位 - 本轮机会区起点仓位，避免每轮随 current_units 漂移。
-    if current_units < target_units - POSITION_EPSILON:
-        add_qty = normalize_position_amount(min(target_units - current_units, limit_units - current_units), mode, lot_size)
-        if add_qty > POSITION_EPSILON:
-            new_state['target_reached_once'] = True
-            new_state['last_add_price'] = current_price
-            new_state['pyramid_active'] = True
-            new_state['pyramid_start_units'] = normalize_position_amount(min(target_units, limit_units), mode, lot_size)
-            new_state['pyramid_limit_units'] = normalize_position_amount(limit_units, mode, lot_size)
-            return add_qty, new_state, 'PYRAMID_INIT'
-        return 0.0, new_state, ''
+    anchor_price = state.get('pyramid_anchor_price') or state.get('last_add_price') or ma150 or current_price
+    if ma150 is not None and ma150 > 0:
+        # 本轮机会区的第0步固定为 MA150；旧状态缺少锚点时自动纠正。
+        anchor_price = state.get('pyramid_anchor_price') or ma150
+    anchor_price = float(anchor_price) if anchor_price else float(current_price)
 
-    if not bool(new_state.get('target_reached_once', False)):
-        new_state['target_reached_once'] = True
+    start_units = state.get('pyramid_start_units')
+    limit_anchor_units = state.get('pyramid_limit_units')
+    init_qty = 0.0
+    init_done = bool(state.get('target_reached_once', False))
 
-    try:
-        start_units = float(new_state.get('pyramid_start_units') or 0.0)
-    except Exception:
-        start_units = 0.0
-    try:
-        limit_anchor = float(new_state.get('pyramid_limit_units') or 0.0)
-    except Exception:
-        limit_anchor = 0.0
-    if start_units <= POSITION_EPSILON or limit_anchor <= POSITION_EPSILON:
-        # 当前仓位已达到/超过补仓初始仓位时，从进入机会区当时的 current_units 起算。
-        start_units = normalize_position_amount(max(current_units, target_units), mode, lot_size)
-        limit_anchor = normalize_position_amount(limit_units, mode, lot_size)
+    if start_units is None or float(start_units or 0.0) <= POSITION_EPSILON or limit_anchor_units is None or float(limit_anchor_units or 0.0) <= POSITION_EPSILON:
+        if current_units < target_units - POSITION_EPSILON:
+            init_qty = normalize_position_amount(target_units - current_units, mode, lot_size)
+            start_units = target_units
+            init_done = True
+        else:
+            start_units = current_units
+            init_done = True
+        limit_anchor_units = limit_units
         new_state['pyramid_start_units'] = start_units
-        new_state['pyramid_limit_units'] = limit_anchor
+        new_state['pyramid_limit_units'] = limit_anchor_units
+        new_state['pyramid_anchor_price'] = anchor_price
+        new_state['last_add_price'] = anchor_price
+        new_state['target_reached_once'] = init_done
+        new_state['pyramid_active'] = True
 
-    if pyramid_step < total_steps and last_add_price > 0:
-        if current_price <= last_add_price * (1 - pyramid_add_step) + POSITION_EPSILON:
-            pyramid_budget = max(limit_anchor - start_units, 0.0)
-            add_qty = normalize_position_amount(pyramid_budget * pyramid_weights[pyramid_step], mode, lot_size)
-            max_allowed = normalize_position_amount(limit_anchor - current_units, mode, lot_size)
-            add_qty = normalize_position_amount(min(add_qty, max_allowed), mode, lot_size)
-            if add_qty > POSITION_EPSILON:
-                new_state['pyramid_step'] = pyramid_step + 1
-                new_state['last_add_price'] = current_price
-                new_state['pyramid_active'] = True
-                return add_qty, new_state, f'PYRAMID_STEP_{pyramid_step + 1}'
+    start_units = float(start_units or 0.0)
+    limit_anchor_units = float(limit_anchor_units or limit_units)
+    pyramid_budget = max(limit_anchor_units - start_units, 0.0)
+
+    # 第一次/无成交时按 MA150 第0步锚点追认已跨过的档位；
+    # 一旦发生过加仓，后续档位按上次实际加仓成交价继续推进，避免 MA150 或理论档位漂移。
+    ref_add_price = state.get('last_add_price') or anchor_price
+    if pyramid_step > 0 and ref_add_price and float(ref_add_price) > 0:
+        target_step = pyramid_step
+        trigger_price = float(ref_add_price)
+        for _step in range(pyramid_step + 1, total_steps + 1):
+            trigger_price *= (1 - pyramid_add_step)
+            if current_price <= trigger_price + POSITION_EPSILON:
+                target_step = _step
+            else:
+                break
+    else:
+        target_step = _get_crossed_pyramid_step(anchor_price, current_price, pyramid_add_step, total_steps)
+    target_step = min(max(target_step, pyramid_step), total_steps)
+
+    step_qty = 0.0
+    if init_done and pyramid_budget > POSITION_EPSILON and target_step > pyramid_step:
+        step_weight = sum(float(w) for w in pyramid_weights[pyramid_step:target_step])
+        step_qty = normalize_position_amount(pyramid_budget * step_weight, mode, lot_size)
+
+    total_qty = normalize_position_amount(init_qty + step_qty, mode, lot_size)
+    max_allowed = normalize_position_amount(limit_units - current_units, mode, lot_size)
+    total_qty = normalize_position_amount(min(total_qty, max_allowed), mode, lot_size)
+
+    if total_qty > POSITION_EPSILON:
+        new_state['pyramid_step'] = target_step
+        new_state['last_add_price'] = current_price
+        new_state['pyramid_anchor_price'] = anchor_price
+        new_state['pyramid_start_units'] = start_units
+        new_state['pyramid_limit_units'] = limit_anchor_units
+        new_state['target_reached_once'] = True
+        new_state['pyramid_active'] = True
+        if init_qty > POSITION_EPSILON and step_qty > POSITION_EPSILON:
+            return total_qty, new_state, _format_step_reason('PYRAMID_INIT_STEP', pyramid_step + 1, target_step)
+        if init_qty > POSITION_EPSILON:
+            return total_qty, new_state, 'PYRAMID_INIT'
+        return total_qty, new_state, _format_step_reason('PYRAMID_STEP', pyramid_step + 1, target_step)
+
+    # 即便本轮不成交，也保留锚点，保证后续继续按 MA150 第0步推进。
+    new_state['pyramid_anchor_price'] = anchor_price
+    new_state['pyramid_start_units'] = start_units
+    new_state['pyramid_limit_units'] = limit_anchor_units
+    new_state['last_add_price'] = state.get('last_add_price') or anchor_price
+    new_state['target_reached_once'] = init_done
     return 0.0, new_state, ''
 
 def get_box_fixed_add_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_units: float, current_price: float, mode: str, lot_size: int = 100) -> Tuple[float, Dict[str, Any]]:
@@ -308,7 +434,7 @@ def get_add_trade_decision(state: Dict[str, Any], cfg: Dict[str, Any], target_un
     new_state, cfg_updates, events, effective_mode = evaluate_pyramid_add_runtime(state, cfg, current_price, ma150, zone, target_units)
     # BOX_ZONE 不主动从 auto 启动；但 CHANCE_ZONE 触发 auto->yes 后，BOX_ZONE 可继续按 last_add_price 延续加仓。
     if effective_mode == 'yes' and zone in {'CHANCE_ZONE', 'BOX_ZONE'}:
-        add_qty, py_state, reason = get_pyramid_add_decision(new_state, cfg, target_units, limit_units, current_price, mode, lot_size)
+        add_qty, py_state, reason = get_pyramid_add_decision(new_state, cfg, target_units, limit_units, current_price, ma150, mode, lot_size)
         if add_qty > POSITION_EPSILON:
             merged = new_state.copy(); merged.update(py_state)
             return add_qty, reason, merged, cfg_updates, events

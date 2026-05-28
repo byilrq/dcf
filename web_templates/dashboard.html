@@ -1216,7 +1216,7 @@
                 <div class="name">{{ m.label }}</div>
                 {% if m.ok %}
                   <div class="price">{{ fmt_snapshot_value(m.current_price) }}</div>
-                  <div class="metric-line">🔀MA150={{ fmt_snapshot_value(m.ma150) }}({{ m.ma150_source or '-' }}), sell={{ fmt_snapshot_value(m.sell) }}, Clear={{ fmt_snapshot_value(m.clear) }}</div>
+                  <div class="metric-line">🔀MA150={{ fmt_snapshot_value(m.ma150) }}({{ m.ma150_source or '-' }}), Trend={{ fmt_snapshot_value(m.sell) }}, Clear={{ fmt_snapshot_value(m.clear) }}</div>
                   <div class="metric-line">⏳动态K={{ fmt_snapshot_value(m.dynamic_k) }}，横盘评分={{ fmt_snapshot_value(m.sideways_score) }}</div>
                   <div class="meta">{{ m.source }}{% if m.date %} · {{ m.date }}{% endif %} · K线{{ m.count }}{% if m.zone %} · {{ m.zone }}{% endif %}</div>
                 {% else %}
