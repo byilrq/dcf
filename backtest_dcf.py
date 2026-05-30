@@ -23,6 +23,7 @@ from strategy import (
     get_clear_pyramid_target_step,
     get_trend_sell_decision,
     get_add_trade_decision,
+    get_sell_trade_decision,
     POSITION_EPSILON,
 )
 
@@ -194,7 +195,7 @@ def get_trend_zone_sell_percent(cfg):
 
 
 def get_clear_zone_step_percent(cfg):
-    return _safe_float(cfg.get("clear_zone_step_percent", 0.08), 0.08)
+    return _safe_float(cfg.get("clear_zone_step_percent", 0.04), 0.04)
 
 
 def get_box_grid_enabled(cfg):
@@ -203,10 +204,15 @@ def get_box_grid_enabled(cfg):
 
 
 def get_pyramid_add_enabled(cfg):
-    value = str(cfg.get("pyramid_add_enabled", "no")).strip().lower()
+    value = str(cfg.get("pyramid_add_enabled", "auto")).strip().lower()
     if value in {"yes", "auto"}:
         return value
-    return "no"
+    return "auto"
+
+
+def get_pyramid_sell_flag(cfg):
+    value = str(cfg.get("pyramid_sell_flag", "off")).strip().lower()
+    return value if value in {"on", "off"} else "off"
 
 
 def format_percent_ratio(value, digits=2):
@@ -255,6 +261,7 @@ def write_config_section_to_report(rf, cfg: dict):
         "box_grid_enabled", "grid_box_percent", "grid_box_units_percent",
         "trend_zone_step_percent", "trend_zone_sell_percent",
         "clear_zone_step_percent", "pyramid_steps", "pyramid_weights", "pyramid_add_enabled",
+        "pyramid_sell_flag", "clear_pyramid_weights", "clear_pyramid_steps",
         "backtest_pyramid_add_start", "ignored_live_pyramid_add_enabled",
         "fee_rate", "slippage_bp", "lot_size", "initial_cash", "init_avg_cost",
     ]
@@ -354,7 +361,6 @@ def compute_sideways_index(closes, cfg):
     return max(0.0, min(1.0, sideways_score))
 
 
-
 HISTORY_CACHE_DIR = Path(__file__).resolve().parent / "data" / "history_cache"
 STRATEGY_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "strategy_history"
 
@@ -375,13 +381,7 @@ def _history_cache_path(symbol: str, source: str, days: int, price_scale: float 
     return HISTORY_CACHE_DIR / f"{safe_symbol}_{safe_source}_{int(days)}_{scale_text}_{_cache_day()}.json"
 
 
-
 def _df_from_history_cache(path: Path, days: int) -> pd.DataFrame | None:
-    """Read a backtest history-cache file from data/history_cache.
-
-    This cache is separate from strategy_history. It is used only to avoid
-    repeated historical API calls for the same backtest request.
-    """
     try:
         if not path.exists():
             return None
@@ -405,11 +405,6 @@ def _df_from_history_cache(path: Path, days: int) -> pd.DataFrame | None:
 
 
 def _save_history_cache(path: Path, symbol: str, source: str, df: pd.DataFrame) -> None:
-    """Write a backtest history-cache file under data/history_cache.
-
-    This intentionally does not write anything to data/strategy_history; that
-    directory is reserved for final per-symbol strategy indicator results.
-    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         required = ["date", "raw_close", "adj_close", "dividend", "split_ratio"]
@@ -426,7 +421,6 @@ def _save_history_cache(path: Path, symbol: str, source: str, df: pd.DataFrame) 
         tmp.replace(path)
     except Exception:
         pass
-
 
 
 # 市场数据
@@ -451,7 +445,6 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
             if len(closes) < 10:
                 raise RuntimeError(f"历史数据太少：{symbol} source={source} 仅 {len(closes)} 条")
             if not dates or len(dates) != len(closes):
-                # Fallback: synthesize dates only if the source did not expose date list.
                 end_dt = datetime.now()
                 dates = [(end_dt - timedelta(days=len(closes)-1-i)).strftime("%Y-%m-%d") for i in range(len(closes))]
             if len(raw_closes) != len(closes):
@@ -530,22 +523,32 @@ def fetch_market_data(symbol: str, days: int) -> pd.DataFrame:
     logging.info(f"回测数据源: {symbol} -> yfinance, count={len(out)}")
     return out
 
+
 # ===========================
 # 回测主逻辑
 # ===========================
 def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdir: Path, initial_units_override: str | None = None):
     cfg = dict(cfg or {})
-    # Historical backtests must not inherit the live monitor's manual pyramid switch.
-    # Live monitoring may keep pyramid_add_enabled=yes, but every backtest starts from auto.
-    # This prevents an initial BOX_ZONE bar from buying simply because the live config is yes.
+    
+    # 记录实盘配置（仅用于报告）
     live_pyramid_add_enabled = get_pyramid_add_enabled(cfg)
+    live_pyramid_sell_flag = get_pyramid_sell_flag(cfg)
+    
+    # 回测强制从 auto/off 开始（策略会自动切换），但保留原始值到报告
     report_cfg = dict(cfg)
     report_cfg["pyramid_add_enabled"] = "auto"
+    report_cfg["pyramid_sell_flag"] = "off"
     report_cfg["backtest_pyramid_add_start"] = "auto"
+    report_cfg["backtest_pyramid_sell_start"] = "off"
     if live_pyramid_add_enabled != "auto":
         report_cfg["ignored_live_pyramid_add_enabled"] = live_pyramid_add_enabled
+    if live_pyramid_sell_flag != "off":
+        report_cfg["ignored_live_pyramid_sell_flag"] = live_pyramid_sell_flag
+    
+    # 设置回测初始值（策略内部会根据需要自动修改）
     cfg["pyramid_add_enabled"] = "auto"
-
+    cfg["pyramid_sell_flag"] = "off"
+    
     outdir.mkdir(parents=True, exist_ok=True)
     log_path = outdir / f"backtest_{symbol}.log"
     logger = logging.getLogger(f"bt_{symbol}")
@@ -584,8 +587,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     initial_cash = _safe_float(cfg.get("initial_cash", 0.0), 0.0)
     lot_size = int(_safe_float(cfg.get("lot_size", 100), 100))
 
-    # 回测页面里的“初始仓位”是临时回测参数，只代表回测窗口第一交易日的 current_units。
-    # 它不覆盖策略中的 base_units / target_units / limit_target。
     initial_units_raw = initial_units_override if initial_units_override not in (None, "") else "5%"
     initial_units = normalize_position_amount(parse_position_value(initial_units_raw), position_mode, lot_size)
 
@@ -596,33 +597,28 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
 
     units = initial_units
 
-    # Backtest cost basis is independent from live monitoring cost.
-    # current_avg_cost is reserved for live monitoring only and must not pollute historical backtests.
-    # For historical backtests, the initial temporary position is costed at the first raw price in the backtest window.
     initial_avg_cost = raw_all[0]
-
     avg_cost = initial_avg_cost if units > POSITION_EPSILON else 0.0
     initial_stock_units = units
     initial_stock_return_base = (initial_stock_units * avg_cost) if position_mode == "absolute" else initial_stock_units
     last_trade_price = raw_all[0]
     last_trade_side = "buy"
-    pyramid_step = 0
-    clear_step = 0
+    pyramid_add_step = 0
+    pyramid_sell_step = 0
     realized_pnl = 0.0
-    # Cash/account contribution used only for stock-app style diluted cost.
-    # It resets when the position is fully cleared, so old closed-cycle profits do not
-    # artificially reduce the cost of a later new position.
     dilution_credit = 0.0
     total_buy_qty_raw = 0.0
     total_sell_qty_raw = 0.0
     total_buy_cost = 0.0
     last_add_price = raw_all[0]
-    pyramid_active = False
+    pyramid_add_active = False
     target_reached_once = False
     pyramid_anchor_price = None
     pyramid_start_units = None
     pyramid_limit_units = None
-    clear_anchor_price = None
+    pyramid_sell_active = False
+    pyramid_sell_anchor_price = None
+    pyramid_sell_last_price = None
 
     trades_csv = outdir / f"trades_{symbol}.csv"
     with open(trades_csv, "w", newline="", encoding="utf-8") as f:
@@ -783,12 +779,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     start_raw_price = raw_all[0]
     start_adj_price = adj_all[0]
 
-    # “首次建仓”用于表示本次回测区间内初始持仓的建仓基准点，
-    # 不是第一次由策略触发的加仓日期。
-    # 如果回测起点已有回测临时初始仓位，则首次建仓日应为
-    # 当前回测数据的第一天：当回测天数短于上市历史时是回测窗口首日；
-    # 当回测天数超过上市历史时自然就是上市首日。
-    # 如果回测起点没有初始仓位，则仍由第一笔 BUY/SELL 交易回填。
     if units > POSITION_EPSILON:
         first_trade_date = dates[0]
         first_trade_raw_price = start_raw_price
@@ -812,6 +802,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         logger.info(f"initial_cash_weight={format_percent_ratio(cash)} | fee_rate={fee_rate} | slippage_bp={slippage_bp}")
     logger.info("MODE: 信号=Adj Close；成交/估值=Close；事件=Dividends + Stock Splits")
     logger.info(f"backtest_pyramid_add_start=auto | live_config_pyramid_add_enabled={live_pyramid_add_enabled}")
+    logger.info(f"backtest_pyramid_sell_start=off | live_config_pyramid_sell_flag={live_pyramid_sell_flag}")
     logger.info(f"MA warmup={warmup_available}/{ma_short_len} | requested_bars={len(df)} | fetched_bars={len(df_full)}")
     logger.info("=" * 80)
 
@@ -883,17 +874,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
             ma150 = ma150_raw * dynamic_k150
             zone = get_zone(adj_price, ma150, cfg)
 
-        clear_price = ma150 * get_sell_multiple(cfg) if ma150 is not None else None
-        # Clear区首次进入时锁定第0步；离开到 TREND/BOX 不重置，重新进入 CHANCE 才重置。
-        if zone == "CLEAR_ZONE":
-            if clear_anchor_price is None or _safe_float(clear_anchor_price, 0.0) <= 0:
-                clear_anchor_price = clear_price
-                clear_step = 0
-        elif zone == "CHANCE_ZONE":
-            clear_anchor_price = None
-            clear_step = 0
-
-        # 构建状态字典供策略函数使用（策略只在 strategy.py 中定义）
+        # 构建状态字典（符合策略接口要求）
         state_dict = {
             "current_units": units,
             "last_trade_price": last_trade_price,
@@ -901,16 +882,17 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
             "pyramid_anchor_price": pyramid_anchor_price,
             "pyramid_start_units": pyramid_start_units,
             "pyramid_limit_units": pyramid_limit_units,
-            "pyramid_step": pyramid_step,
-            "pyramid_active": pyramid_active,
+            "pyramid_step": pyramid_add_step,
+            "pyramid_add_active": pyramid_add_active,
             "target_reached_once": target_reached_once,
-            "clear_step": clear_step,
-            "clear_anchor_price": clear_anchor_price,
+            "pyramid_sell_active": pyramid_sell_active,
+            "pyramid_sell_step": pyramid_sell_step,
+            "pyramid_sell_anchor_price": pyramid_sell_anchor_price,
+            "pyramid_sell_last_price": pyramid_sell_last_price,
             "initial_entry_price": first_trade_raw_price if first_trade_raw_price is not None else raw_all[0],
         }
 
-        # In historical backtests, BOX_ZONE must not initiate add trades while pyramid is still auto.
-        # This guard also protects the backtest if an older strategy.py still contains legacy BOX_ZONE_ADD logic.
+        # ========== 加仓决策 ==========
         if zone == "BOX_ZONE" and get_pyramid_add_enabled(cfg) != "yes":
             add_qty, add_reason = 0.0, ""
             new_state, cfg_updates, events = state_dict.copy(), {}, []
@@ -923,48 +905,56 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         if add_qty > POSITION_EPSILON:
             _exec_buy(dt, raw_price, add_qty, zone, add_reason, raw_price, adj_price, ma150, dividend, split_ratio)
 
-        # Persist pyramid runtime state even on days without a trade. This is important
-        # for auto mode: once CHANCE_ZONE activates the pyramid state, the later BOX/CHANCE
-        # steps must continue from that state instead of resetting every bar.
-        pyramid_step = new_state.get("pyramid_step", pyramid_step)
+        # 更新加仓状态
+        pyramid_add_step = new_state.get("pyramid_step", pyramid_add_step)
         last_add_price = new_state.get("last_add_price", last_add_price)
         pyramid_anchor_price = new_state.get("pyramid_anchor_price", pyramid_anchor_price)
         pyramid_start_units = new_state.get("pyramid_start_units", pyramid_start_units)
         pyramid_limit_units = new_state.get("pyramid_limit_units", pyramid_limit_units)
         target_reached_once = new_state.get("target_reached_once", target_reached_once)
-        pyramid_active = new_state.get("pyramid_active", pyramid_active)
-        state_dict.update(new_state)
-        state_dict["current_units"] = units
+        pyramid_add_active = new_state.get("pyramid_add_active", pyramid_add_active)
 
         # ========== 卖出决策 ==========
+        # 根据区域分别处理
         sell_qty = 0.0
+        sell_reason = ""
+        sell_state = state_dict.copy()
+        sell_cfg_updates = {}
+        sell_events = []
+
         if zone == "TREND_ZONE":
-            sell_qty, new_state = get_trend_sell_decision(
+            # 趋势区阶梯卖出
+            sell_qty, trend_state = get_trend_sell_decision(
                 state_dict, cfg, base_units, position_mode, raw_price, ma150, lot_size
             )
             if sell_qty > 0:
-                _exec_sell(dt, raw_price, sell_qty, zone, "TREND_ZONE_SELL",
-                           raw_price, adj_price, ma150, dividend, split_ratio)
-                last_trade_price = new_state.get("last_trade_price", last_trade_price)
+                sell_reason = "TREND_ZONE_SELL"
+                sell_state.update(trend_state)
+                # 趋势区卖出不会修改 pyramid_sell_flag，所以无需更新 cfg
         elif zone == "CLEAR_ZONE":
-            pyramid_weights = cfg.get("clear_pyramid_weights", cfg.get("pyramid_weights", [0.03, 0.055, 0.08, 0.105, 0.13, 0.155, 0.18, 0.205, 0.23, 0.255]))
-            sell_plan = calculate_pyramid_sell_plan(base_units, pyramid_weights, position_mode, lot_size)
-            clear_steps_cfg = int(_safe_float(cfg.get("clear_pyramid_steps", cfg.get("pyramid_steps", len(sell_plan))), len(sell_plan)))
-            if clear_steps_cfg > 0:
-                sell_plan = sell_plan[:clear_steps_cfg]
-            total_steps = len(sell_plan)
-            target_step = get_clear_pyramid_target_step(raw_price, clear_anchor_price or (ma150 * get_sell_multiple(cfg)), cfg, total_steps)
-            if target_step > clear_step:
-                for step_info in sell_plan[clear_step:target_step]:
-                    step_units = min(step_info["units"], units)
-                    if step_units <= POSITION_EPSILON:
-                        clear_step = step_info["step"]
-                        continue
-                    _exec_sell(dt, raw_price, step_units, zone, f"CLEAR_ZONE_PYRAMID_STEP_{step_info['step']}",
-                               raw_price, adj_price, ma150, dividend, split_ratio)
-                    clear_step = step_info["step"]
-                    if units <= POSITION_EPSILON:
-                        break
+            # Clear 区倒金字塔卖出（会自动管理 pyramid_sell_flag）
+            sell_qty, sell_reason, sell_state, sell_cfg_updates, sell_events = get_sell_trade_decision(
+                state_dict, cfg, raw_price, zone, position_mode, lot_size
+            )
+            # 将策略自动更新的 pyramid_sell_flag 写回 cfg
+            for k, v in sell_cfg_updates.items():
+                cfg[k] = v
+
+        # 执行卖出
+        if sell_qty > POSITION_EPSILON:
+            _exec_sell(dt, raw_price, sell_qty, zone, sell_reason,
+                       raw_price, adj_price, ma150, dividend, split_ratio)
+            # 更新卖出运行时状态（无论是否实际卖出，都要从 sell_state 中同步）
+            pyramid_sell_active = sell_state.get("pyramid_sell_active", pyramid_sell_active)
+            pyramid_sell_step = sell_state.get("pyramid_sell_step", pyramid_sell_step)
+            pyramid_sell_anchor_price = sell_state.get("pyramid_sell_anchor_price", pyramid_sell_anchor_price)
+            pyramid_sell_last_price = sell_state.get("pyramid_sell_last_price", pyramid_sell_last_price)
+        else:
+            # 即使没有卖出，也要同步状态（因为策略可能重置了 pyramid_sell_active）
+            pyramid_sell_active = sell_state.get("pyramid_sell_active", pyramid_sell_active)
+            pyramid_sell_step = sell_state.get("pyramid_sell_step", pyramid_sell_step)
+            pyramid_sell_anchor_price = sell_state.get("pyramid_sell_anchor_price", pyramid_sell_anchor_price)
+            pyramid_sell_last_price = sell_state.get("pyramid_sell_last_price", pyramid_sell_last_price)
 
         # 更新价值/回撤
         cur_value = get_total_value(cash, units, avg_cost, raw_price, position_mode)
@@ -973,7 +963,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         if peak_value and peak_value > 0:
             max_dd_ref = max(max_dd_ref, (peak_value - cur_value) / peak_value)
 
-        # 记录每日详情
+        # 记录每日详情（pyramid_add 和 pyramid_sell 取自当前 cfg）
         daily_records.append({
             "date": dt,
             "raw_price": raw_price,
@@ -981,14 +971,15 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
             "ma150": round(ma150, 4) if ma150 is not None else None,
             "zone": zone,
             "holding": format_units_for_display(units, position_mode),
-            "pyramid": get_pyramid_add_enabled(cfg),
+            "pyramid_add": get_pyramid_add_enabled(cfg),
+            "pyramid_sell": get_pyramid_sell_flag(cfg),
         })
 
     # 生成每日详情 CSV
     daily_details_path = outdir / f"daily_details_{symbol}.csv"
     with open(daily_details_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["date", "raw_price", "restor_price", "ma150", "zone", "holding", "pyramid"])
+        writer.writerow(["date", "raw_price", "restor_price", "ma150", "zone", "holding", "pyramid_add", "pyramid_sell"])
         for rec in daily_records:
             writer.writerow([
                 rec["date"],
@@ -997,21 +988,20 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                 f"{rec['ma150']:.4f}" if rec["ma150"] is not None else "",
                 rec["zone"] if rec["zone"] is not None else "",
                 rec["holding"],
-                rec.get("pyramid", ""),
+                rec.get("pyramid_add", ""),
+                rec.get("pyramid_sell", ""),
             ])
     logger.info(f"每日详情 CSV 已保存: {daily_details_path}")
 
+    # ========== 计算最终统计 ==========
     end_value = get_total_value(cash, units, avg_cost, raw_all[-1], position_mode)
     final_market_weight = get_market_weight(units, avg_cost, raw_all[-1], position_mode)
     floating_pnl = (raw_all[-1] - avg_cost) * units if position_mode == "absolute" and units > POSITION_EPSILON and avg_cost > 0 else 0.0
     if position_mode == "percent" and units > POSITION_EPSILON and avg_cost > 0:
         floating_pnl = units * (raw_all[-1] / avg_cost - 1.0)
 
-    # Raw ending average cost before cost dilution.
-    # This is kept for internal PnL decomposition and market-weight estimation.
     raw_backtest_avg_cost = avg_cost if units > POSITION_EPSILON else 0.0
 
-    total_fee = 0.0
     buy_cnt = 0
     sell_cnt = 0
     with open(trades_csv, "r", encoding="utf-8") as f:
@@ -1034,9 +1024,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
             elif row["event_type"] == "SPLIT":
                 split_events += 1
 
-    # Stock-return denominator: initial base position plus additional buys during backtest.
-    # The old logic used only total_buy_cost/total_buy_qty_raw after any buy,
-    # which omitted the initial base position and overstated stock-level returns.
     if position_mode == "absolute":
         stock_return_base = initial_stock_return_base + total_buy_cost
         if stock_return_base <= POSITION_EPSILON and units > POSITION_EPSILON and avg_cost > 0:
@@ -1048,25 +1035,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     if stock_return_base <= POSITION_EPSILON:
         stock_return_base = 1.0
 
-    # Stock-app style diluted ending cost basis.
-    # IMPORTANT: only cash/account contributions are used to reduce cost here.
-    # Do NOT use dividend_stock_return or realized_stock_return in this formula, because
-    # those are already divided by stock_return_base and would double-scale the result.
-    #
-    # absolute mode:
-    #   remaining cost amount = ending shares * raw ending average cost - cash dividends - realized PnL
-    # percent mode:
-    #   units is a cost-weight position, while dividend_total and realized_pnl are account-weight
-    #   contributions. Therefore the cost-weight to dilute is: units - dividend_total - realized_pnl.
-    dividend_profit_contribution = dividend_total
-    realized_profit_contribution = realized_pnl
-    total_profit_contribution = dividend_total + realized_pnl + floating_pnl
-    # For diluted cost, use the live credit ledger from the current open position cycle.
-    # This usually equals dividend_total + realized_pnl when the position was never fully cleared.
-    # If the strategy fully liquidates and later re-enters, earlier closed-cycle credits are reset
-    # and will not make the new position's cost unrealistically low.
     dilution_profit_contribution = dilution_credit
-
     diluted_backtest_avg_cost = raw_backtest_avg_cost
     diluted_cost_reduction = 0.0
     diluted_cost_fully_recovered = False
@@ -1078,10 +1047,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                 diluted_backtest_avg_cost = remaining_cost_amount / units
                 diluted_cost_reduction = raw_backtest_avg_cost - diluted_backtest_avg_cost
             else:
-                # The current open position's dividends + realized gains have already
-                # recovered all remaining position cost. Showing 0.00% return is misleading;
-                # downstream report/web should display this as "cost recovered" instead of
-                # forcing a divide-by-zero result to zero.
                 diluted_backtest_avg_cost = 0.0
                 diluted_cost_reduction = raw_backtest_avg_cost
                 diluted_cost_fully_recovered = True
@@ -1092,26 +1057,14 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
                 diluted_backtest_avg_cost = raw_backtest_avg_cost * remaining_cost_weight / original_cost_weight
                 diluted_cost_reduction = raw_backtest_avg_cost - diluted_backtest_avg_cost
             else:
-                # In percent mode, dividend_total/realized_pnl are account-weight credits.
-                # If credits exceed the remaining cost-weight position, the software-style
-                # diluted cost is zero/negative, meaning principal has been recovered.
                 diluted_backtest_avg_cost = 0.0
                 diluted_cost_reduction = raw_backtest_avg_cost
                 diluted_cost_fully_recovered = True
 
     final_holding_return_note = ""
     if units > POSITION_EPSILON and diluted_backtest_avg_cost > POSITION_EPSILON:
-        # Normal stock-app style: current price / diluted cost - 1.
         final_holding_return_rate = raw_all[-1] / diluted_backtest_avg_cost - 1.0
     elif units > POSITION_EPSILON and diluted_cost_fully_recovered:
-        # When dividends + realized gains have reduced the diluted cost to zero or below,
-        # a pure "price / diluted_cost - 1" calculation becomes undefined.
-        # Keep a numeric current-position result by measuring the current open position's
-        # final benefit against the original remaining position cost:
-        #   (ending market value + current-cycle cash credits - original remaining cost)
-        #   / original remaining cost
-        # This preserves the user's "stock software-like" intent without showing 0.00%
-        # while the account still holds shares/position.
         if position_mode == "absolute":
             original_holding_cost = units * raw_backtest_avg_cost
             ending_market_value = units * raw_all[-1]
@@ -1131,8 +1084,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
     realized_stock_return = (realized_pnl / stock_return_base) if stock_return_base > POSITION_EPSILON else 0.0
     holding_stock_return = (floating_pnl / stock_return_base) if stock_return_base > POSITION_EPSILON else 0.0
     stock_total_return = dividend_stock_return + realized_stock_return + holding_stock_return
-
-    # 构建收益率分解字符串
     stock_return_explain = f"{dividend_stock_return * 100:.2f}% + {realized_stock_return * 100:.2f}% + {holding_stock_return * 100:.2f}% = {stock_total_return * 100:.2f}%"
 
     summary = {
@@ -1149,6 +1100,9 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "backtest_pyramid_add_start": "auto",
         "live_pyramid_add_enabled": live_pyramid_add_enabled,
         "runtime_pyramid_add_final": get_pyramid_add_enabled(cfg),
+        "backtest_pyramid_sell_start": "off",
+        "live_pyramid_sell_flag": live_pyramid_sell_flag,
+        "runtime_pyramid_sell_final": get_pyramid_sell_flag(cfg),
         "start_value": start_value,
         "end_value": end_value,
         "realized_pnl": realized_pnl,
@@ -1163,7 +1117,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "stock_total_return": stock_total_return,
         "stock_return_base": stock_return_base,
         "initial_stock_return_base": initial_stock_return_base,
-        "total_profit_contribution": total_profit_contribution,
         "dilution_credit": dilution_credit,
         "additional_buy_return_base": total_buy_cost if position_mode == "absolute" else total_buy_qty_raw,
         "stock_return_explain": stock_return_explain,
@@ -1173,7 +1126,7 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "sell_trades": sell_cnt,
         "dividend_events": dividend_events,
         "split_events": split_events,
-        "total_fee": total_fee,
+        "total_fee": 0.0,
         "final_cash": cash,
         "final_units": units,
         "final_market_weight": final_market_weight,
@@ -1181,9 +1134,6 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         "raw_backtest_avg_cost": raw_backtest_avg_cost,
         "diluted_cost_reduction": diluted_cost_reduction if units > POSITION_EPSILON else 0.0,
         "dilution_profit_contribution": dilution_profit_contribution,
-        "dividend_profit_contribution": dividend_profit_contribution,
-        "realized_profit_contribution": realized_profit_contribution,
-        "realized_and_dividend_profit": dilution_profit_contribution,
         "start_raw_price": start_raw_price,
         "start_adj_price": start_adj_price,
         "first_trade_date": first_trade_date,
@@ -1204,10 +1154,14 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         rf.write(f"模式: {'百分比仓位' if summary['position_mode'] == 'percent' else '股数仓位'}\n")
         rf.write(f"K线数量: {summary['bars']}\n")
         rf.write(f"MA预热: {summary.get('ma_warmup_available', 0)}/{summary.get('ma_warmup_required', 150)}根\n")
-        rf.write(f"回测倒金字塔起始开关: {summary['backtest_pyramid_add_start']}\n")
+        rf.write(f"回测倒金字塔加仓起始开关: {summary['backtest_pyramid_add_start']}\n")
         if summary.get('live_pyramid_add_enabled') != summary.get('backtest_pyramid_add_start'):
-            rf.write(f"实盘倒金字塔开关: {summary['live_pyramid_add_enabled']}（回测起步已忽略）\n")
-        # 按 Web 摘要顺序输出核心指标
+            rf.write(f"实盘倒金字塔加仓开关: {summary['live_pyramid_add_enabled']}（回测起步已忽略）\n")
+        rf.write(f"回测倒金字塔卖出起始开关: {summary['backtest_pyramid_sell_start']}\n")
+        if summary.get('live_pyramid_sell_flag') != summary.get('backtest_pyramid_sell_start'):
+            rf.write(f"实盘倒金字塔卖出开关: {summary['live_pyramid_sell_flag']}（回测起步已忽略）\n")
+        rf.write(f"运行结束时倒金字塔加仓开关: {summary['runtime_pyramid_add_final']}\n")
+        rf.write(f"运行结束时倒金字塔卖出开关: {summary['runtime_pyramid_sell_final']}\n")
         rf.write(f"期末持仓收益率: {summary['final_holding_return_rate'] * 100:.2f}%\n")
         rf.write(f"综合收益率: {summary['stock_total_return'] * 100:.2f}%\n")
         rf.write(f"买入次数: {summary['buy_trades']}\n")
@@ -1219,14 +1173,12 @@ def backtest(symbol: str, name: str, cfg: dict, strategy: dict, days: int, outdi
         rf.write(f"综合收益率计算: {summary['stock_return_explain']}\n")
         if summary['position_mode'] == 'percent':
             rf.write(f"累计投入仓位: {format_percent_ratio(summary['stock_return_base'])}\n")
-            rf.write(f"收益贡献: {format_percent_ratio(summary['total_profit_contribution'])}\n")
-            rf.write(f"摊薄成本收益贡献: {format_percent_ratio(summary['dilution_credit'])}\n")
+            rf.write(f"收益贡献: {format_percent_ratio(summary['dilution_credit'])}\n")
             if summary.get('diluted_cost_fully_recovered'):
                 rf.write(f"摊薄成本状态: {summary.get('final_holding_return_note', '摊薄成本已降至0，已按当前持仓最终收益口径计算')}\n")
         else:
             rf.write(f"累计投入金额: {summary['stock_return_base']:.4f}\n")
-            rf.write(f"收益贡献金额: {summary['total_profit_contribution']:.4f}\n")
-            rf.write(f"摊薄成本收益贡献金额: {summary['dilution_credit']:.4f}\n")
+            rf.write(f"收益贡献金额: {summary['dilution_credit']:.4f}\n")
             if summary.get('diluted_cost_fully_recovered'):
                 rf.write(f"摊薄成本状态: {summary.get('final_holding_return_note', '摊薄成本已降至0，已按当前持仓最终收益口径计算')}\n")
         rf.write(f"最新价格: {summary['last_raw_price']:.4f}\n")
@@ -1365,14 +1317,12 @@ def main():
     print(f"综合收益率计算: {summary['stock_return_explain']}")
     if summary['position_mode'] == 'percent':
         print(f"累计投入仓位: {format_percent_ratio(summary['stock_return_base'])}")
-        print(f"收益贡献: {format_percent_ratio(summary['total_profit_contribution'])}")
-        print(f"摊薄成本收益贡献: {format_percent_ratio(summary['dilution_credit'])}")
+        print(f"收益贡献: {format_percent_ratio(summary['dilution_credit'])}")
         if summary.get('diluted_cost_fully_recovered'):
             print(f"摊薄成本状态: {summary.get('final_holding_return_note', '摊薄成本已降至0，已按当前持仓最终收益口径计算')}")
     else:
         print(f"累计投入金额: {summary['stock_return_base']:.4f}")
-        print(f"收益贡献金额: {summary['total_profit_contribution']:.4f}")
-        print(f"摊薄成本收益贡献金额: {summary['dilution_credit']:.4f}")
+        print(f"收益贡献金额: {summary['dilution_credit']:.4f}")
         if summary.get('diluted_cost_fully_recovered'):
             print(f"摊薄成本状态: {summary.get('final_holding_return_note', '摊薄成本已降至0，已按当前持仓最终收益口径计算')}")
     print(f"最新价格: {summary['last_raw_price']:.4f}")
@@ -1410,7 +1360,7 @@ def main():
     print("2) 区间：CHANCE=价格<MA150；BOX=MA150~MA150*trend_multiple；TREND=MA150*trend_multiple~MA150*sell_multiple；CLEAR=价格≥MA150*sell_multiple。")
     print("3) 倒金字塔加仓：历史回测每次从 pyramid_add_enabled=auto 起步，忽略 dcf.yaml 中实盘 yes；首次进入 CHANCE_ZONE 后才切到 yes。")
     print("4) 箱体区规则：回测起步在 BOX_ZONE 时不会因实盘 yes 直接补仓；只有已由 CHANCE_ZONE 激活的倒金字塔模式，才可在 CHANCE/BOX 中继续按步长加仓。")
-    print("5) 卖出规则：TREND_ZONE 只卖出高于长期底仓 base_units 的机动仓；CLEAR_ZONE 按 clear_zone_step_percent 推进倒金字塔清底仓步数。")
+    print("5) 卖出规则：TREND_ZONE 只卖出高于长期底仓 base_units 的机动仓；CLEAR_ZONE 按倒金字塔卖出（首次进入 CLEAR 自动激活，跌回 BOX/CHANCE 重置）。")
     print("6) 回测成本：回测页面的初始仓位只代表第一交易日 current_units，成本使用回测窗口第一天 Close；current_avg_cost 仅用于实盘监控。")
     print("7) 收益口径：期末持仓收益率=最新价格/摊薄后持仓成本-1；综合收益率按累计投入计算。")
     print("8) 百分比模式下 qty 表示仓位比例；交易日志保留上一次成交价和上一次加仓价。")

@@ -273,7 +273,7 @@ def build_default_symbol_state(cfg):
         "pyramid_anchor_price": None,
         "pyramid_start_units": None,
         "pyramid_limit_units": None,
-        "pyramid_active": False,
+        "pyramid_add_active": False,
         "target_reached_once": False,
     }
 
@@ -309,8 +309,8 @@ def normalize_symbol_state(name, cfg, entry):
         entry["pyramid_start_units"] = None
     if "pyramid_limit_units" not in entry:
         entry["pyramid_limit_units"] = None
-    if "pyramid_active" not in entry:
-        entry["pyramid_active"] = False
+    if "pyramid_add_active" not in entry:
+        entry["pyramid_add_active"] = False
     if "target_reached_once" not in entry:
         entry["target_reached_once"] = False
     current_units = entry.get("current_units", live_units if live_units is not None else base_units)
@@ -342,7 +342,7 @@ def normalize_symbol_state(name, cfg, entry):
         entry["pyramid_anchor_price"] = None
         entry["pyramid_start_units"] = None
         entry["pyramid_limit_units"] = None
-        entry["pyramid_active"] = False
+        entry["pyramid_add_active"] = False
         entry["target_reached_once"] = False
     else:
         # Runtime state is authoritative. Config changes or program restarts must not
@@ -2576,7 +2576,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
             if pyramid_mode == "yes":
                 pyramid_status = "已开启"
             elif pyramid_mode == "auto":
-                pyramid_status = "已触发" if bool(dcf_state.get("pyramid_active", False)) else "auto待触发"
+                pyramid_status = "已触发" if bool(dcf_state.get("pyramid_add_active", False)) else "auto待触发"
             else:
                 pyramid_status = "未开启"
             cur_step = int(dcf_state.get("pyramid_step", 0) or 0)
@@ -2663,7 +2663,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     last_add_price = dcf_state.get("last_add_price")
     if last_add_price is None or last_add_price <= 0:
         last_add_price = current_price
-    pyramid_active = dcf_state.get("pyramid_active", False)
+    pyramid_add_active = dcf_state.get("pyramid_add_active", False)
     target_reached_once = dcf_state.get("target_reached_once", False)
 
     state_dict = {
@@ -2674,7 +2674,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "pyramid_start_units": dcf_state.get("pyramid_start_units"),
         "pyramid_limit_units": dcf_state.get("pyramid_limit_units"),
         "pyramid_step": pyramid_step,
-        "pyramid_active": pyramid_active,
+        "pyramid_add_active": pyramid_add_active,
         "target_reached_once": target_reached_once,
         "clear_step": clear_step,
         "clear_anchor_price": dcf_state.get("clear_anchor_price"),
@@ -2729,7 +2729,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         dcf_state["pyramid_start_units"] = add_state.get("pyramid_start_units", dcf_state.get("pyramid_start_units"))
         dcf_state["pyramid_limit_units"] = add_state.get("pyramid_limit_units", dcf_state.get("pyramid_limit_units"))
         dcf_state["target_reached_once"] = add_state.get("target_reached_once", target_reached_once)
-        dcf_state["pyramid_active"] = add_state.get("pyramid_active", pyramid_active)
+        dcf_state["pyramid_add_active"] = add_state.get("pyramid_add_active", pyramid_add_active)
         persist_runtime_position_to_config(name, current_units, current_avg_cost)
         extra_info = f"🏛{add_reason}: {format_units_for_display(add_qty, position_mode)}\n⏳动态K={dynamic_k150:.3f}，横盘评分={sideways_score:.2f}"
         trade_msg = build_trade_message(
@@ -2748,7 +2748,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
     state_dict.update(add_state)
     # 即使本轮未成交，也保存机会区倒金字塔的运行锚点。
     # 这能保证中途加入标的后，后续继续以 MA150 第0步和已追认步数推进。
-    for _k in ("pyramid_step", "last_add_price", "pyramid_anchor_price", "pyramid_start_units", "pyramid_limit_units", "pyramid_active", "target_reached_once"):
+    for _k in ("pyramid_step", "last_add_price", "pyramid_anchor_price", "pyramid_start_units", "pyramid_limit_units", "pyramid_add_active", "target_reached_once"):
         if _k in add_state:
             dcf_state[_k] = add_state.get(_k)
     pyramid_step = dcf_state.get("pyramid_step", pyramid_step)
@@ -2865,7 +2865,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
                     break
 
     # 交易态字段只在真实 BUY/SELL 分支内写入；普通 NO_TRADE 不回写
-    # last_add_price/pyramid_step/clear_step/pyramid_active/target_reached_once。
+    # last_add_price/pyramid_step/clear_step/pyramid_add_active/target_reached_once。
     action = "TRADE" if messages else "NO_TRADE"
     if messages:
         reason = "; ".join([line.split("🗞交易:", 1)[-1].strip() for line in messages if "🗞交易:" in line])
@@ -2895,7 +2895,7 @@ def strategy_for_dcf(name, cfg, state, allow_trade=True, refresh_reason="", refr
         "last_trade_side": dcf_state.get("last_trade_side"),
         "last_add_price": dcf_state.get("last_add_price"),
         "pyramid_step": dcf_state.get("pyramid_step"),
-        "pyramid_active": dcf_state.get("pyramid_active"),
+        "pyramid_add_active": dcf_state.get("pyramid_add_active"),
         "target_reached_once": dcf_state.get("target_reached_once"),
         "clear_step": dcf_state.get("clear_step"),
         "trade_allowed": True,
